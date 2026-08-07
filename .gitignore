@@ -23,6 +23,16 @@ ml/models/*.pth
 ml/models/*.onnx
 ml/notebooks/.ipynb_checkpoints/
 
+# Raw drone footage (large media, not code)
+ml/data/raw_footage/*
+!ml/data/raw_footage/.gitkeep
+
+# Inference/training outputs
+ml/data/results/
+
+# Downloaded datasets
+ml/data/datasets/
+
 # Simulation output
 simulation/data_export/*
 !simulation/data_export/.gitkeep
