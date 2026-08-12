@@ -2,7 +2,7 @@
 ## Autonomous Aerial Surveillance Framework for Traffic Anomaly Detection and Digital Twin-Based Urban Planning
 
 > Part of the [Use Case Diagram set](01_Use_Case_Diagram.md) · Companion to [Product_Requirements_Document.md](../Product_Requirements_Document.md)
-> Notation: `[ Actor ]` = human or external system actor, `(( Use Case ))` = system functionality, subgraph = system boundary.
+> Notation: `[ Actor ]` = human or external system actor · `(( Use Case ))` = system functionality · plain line = association · dashed arrow `<<include>>` = base use case always performs the included one · subgraph = system boundary.
 
 ---
 
@@ -34,6 +34,8 @@ flowchart LR
 
     subgraph SYS[Pillar 3 - Digital Twin]
         direction TB
+        UC5(( Visualize & Overlay<br/>Live Twin Data ))
+        UC6(( Simulate What-If &<br/>Plan Improvements ))
 
         subgraph VIS[Visualization]
             V1(( Render Live<br/>Vehicle Markers ))
@@ -54,30 +56,38 @@ flowchart LR
         end
     end
 
-    P1 -- "violation events" --> V2
-    P2 -- "anomaly events" --> V2
-    V2 -.accumulates into.-> V4
-    V6 -.updates.-> V3
-    S1 --> S2 --> S3
-    S4 --> S5 -.savable as.-> S6
-    V4 -.historical basis for.-> S1
+    UC5 -. "&lt;&lt;include&gt;&gt;" .-> V1
+    UC5 -. "&lt;&lt;include&gt;&gt;" .-> V2
+    UC5 -. "&lt;&lt;include&gt;&gt;" .-> V3
+    UC5 -. "&lt;&lt;include&gt;&gt;" .-> V4
+    UC5 -. "&lt;&lt;include&gt;&gt;" .-> V5
+    UC5 -. "&lt;&lt;include&gt;&gt;" .-> V6
 
-    MON --> V1
-    MON --> V2
-    MON --> V5
+    UC6 -. "&lt;&lt;include&gt;&gt;" .-> S1
+    UC6 -. "&lt;&lt;include&gt;&gt;" .-> S2
+    UC6 -. "&lt;&lt;include&gt;&gt;" .-> S3
+    UC6 -. "&lt;&lt;include&gt;&gt;" .-> S4
+    UC6 -. "&lt;&lt;include&gt;&gt;" .-> S5
+    UC6 -. "&lt;&lt;include&gt;&gt;" .-> S6
 
-    PLN --> V3
-    PLN --> V4
-    PLN --> V5
-    PLN --> V6
-    PLN --> S3
-    PLN --> S4
-    PLN --> S6
+    S1 -. "&lt;&lt;include&gt;&gt;" .-> V4
+
+    P1 --- V2
+    P2 --- V2
+
+    MON --- UC5
+    PLN --- UC5
+    PLN --- UC6
 ```
 
 ---
 
 ## Use Case Details
+
+| Use Case | Description |
+|---|---|
+| **Visualize & Overlay Live Twin Data** (UC5) | Primary use case — includes V1–V6 below |
+| **Simulate What-If & Plan Improvements** (UC6) | Primary use case — includes S1–S6 below; S1 (clustering) includes V4 (historical heatmap) as its data basis |
 
 ### Visualization
 
