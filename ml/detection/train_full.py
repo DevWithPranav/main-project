@@ -39,7 +39,9 @@ def main() -> None:
 
     best_pt = RESULTS_DIR / "train" / "weights" / "best.pt"
     print(f"\n=== Final eval of best.pt on full VisDrone val split ===")
-    metrics = YOLO(str(best_pt)).val(data="VisDrone.yaml", split="val")
+    metrics = YOLO(str(best_pt)).val(
+        data="VisDrone.yaml", split="val", project=str(RESULTS_DIR), name="final_eval", exist_ok=True
+    )
     print(f"mAP50:    {metrics.box.map50:.4f}")
     print(f"mAP50-95: {metrics.box.map:.4f}")
     print(f"\nWeights saved at: {best_pt}")

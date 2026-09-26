@@ -1,0 +1,17 @@
+# ByteTrack tuned for CARLA/AirSim synthetic footage (Stage 6 sim validation).
+#
+# Default ultralytics bytetrack.yaml assumes detections drop out only briefly;
+# on CARLA renders the VisDrone-trained detector's confidence flickers frame
+# to frame (see docs/main_project_tracker.md Section 2.3), so tracks rarely
+# form or survive with the stock thresholds. Loosened here to trade some
+# false/merged tracks for actually maintaining continuity on this footage.
+# Not used for real VisDrone footage (Stage 3), which already tracks well
+# with the stock config.
+
+tracker_type: bytetrack
+track_high_thresh: 0.15   # was 0.25 — accept weaker first-stage matches
+track_low_thresh: 0.05    # was 0.1 — recover more low-score detections
+new_track_thresh: 0.15    # was 0.25 — start tracks from weaker initial hits
+track_buffer: 60          # was 30 — survive longer gaps between sparse detections
+match_thresh: 0.6         # was 0.8 — tolerate more drone-motion-induced displacement
+fuse_score: True
