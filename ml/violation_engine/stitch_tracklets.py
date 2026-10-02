@@ -380,7 +380,8 @@ def stitch(source: Path, traj_csv: Path, fps: float, max_gap: int = 90, max_app_
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("run_id", help="Recorded flight run_id under simulation/data_export/recorded_flights/")
-    ap.add_argument("--tracker", default="botsort", help="Which tracker's output folder to stitch (default: botsort)")
+    ap.add_argument("--tracker", default="tracktrack_ours",
+                    help="Which tracker's output folder to stitch (default: tracktrack_ours)")
     ap.add_argument("--max-gap", type=int, default=90, help="Max frames between a track ending and its continuation")
     ap.add_argument("--max-app-dist", type=float, default=0.4,
                     help="Max colour-histogram (Bhattacharyya) distance to accept a link, 0 = identical")

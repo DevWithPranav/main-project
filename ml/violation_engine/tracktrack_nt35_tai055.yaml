@@ -1,5 +1,4 @@
-# Pipeline tracker (Improvement Plan 3.5, 2026-10-02): TrackTrack (CVPR 2025), built into Ultralytics 8.4.
-# Chosen over BoT-SORT on the GT clip: final IDF1 0.874 vs 0.859, 2 vs 3 ID switches, 0 vs 1 FP tracks.
+# Improvement Plan C2 candidate: TrackTrack (CVPR 2025), built into Ultralytics 8.4.
 #
 # Stock thresholds (track_high 0.6, new_track 0.7) would drop most of our detections
 # (our vehicles score 0.1-0.5), so the confidence levels are set to botsort_sim.yaml's
@@ -17,8 +16,7 @@
 tracker_type: tracktrack
 track_high_thresh: 0.15    # stock 0.6
 track_low_thresh: 0.05     # stock 0.25
-new_track_thresh: 0.35     # stock 0.7 — minimum score for TAI to start a track. C3 (2026-10-02):
-                           # 0.15 / 0.25 / 0.35 score the same on the GT; 0.35 also blocks faint snow blobs
+new_track_thresh: 0.35
 track_buffer: 90           # stock 30; frames (3 s at 30 fps)
 match_thresh: 0.7          # stock
 lost_match_thr: 0.9        # stock 0.0 (off) — looser rebind for still-lost tracks
@@ -32,7 +30,7 @@ penalty_p: 0.2
 penalty_q: 0.4
 reduce_step: 0.05
 
-tai_thr: 0.45              # stock 0.55 — crowded scenes
+tai_thr: 0.55
 min_track_len: 3
 
 gmc_method: sparseOptFlow

@@ -141,7 +141,7 @@ def log_rows(args: argparse.Namespace, run_dir: Path, scores: dict, run_cfg: dic
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--clip", default="gt_1080p", help="Folder under ml/data/eval/ (default: gt_1080p)")
-    ap.add_argument("--tracker", default="botsort", help="Tracker config name, as process_recorded_flight.py --tracker")
+    ap.add_argument("--tracker", default="tracktrack_ours", help="Tracker config name, as process_recorded_flight.py --tracker")
     ap.add_argument("--change", required=True, help="One line: the single change this run tests")
     ap.add_argument("--member", default="", help="Who ran it")
     ap.add_argument("--notes", default="")

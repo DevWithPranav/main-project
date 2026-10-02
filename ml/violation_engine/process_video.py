@@ -31,7 +31,7 @@ RESULTS_DIR = Path(__file__).resolve().parents[1] / "data" / "results" / "video_
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("video", type=Path, help="Input video file")
-    ap.add_argument("--tracker", choices=sorted(TRACKER_CONFIGS), default="botsort")
+    ap.add_argument("--tracker", choices=sorted(TRACKER_CONFIGS), default="tracktrack_ours")
     ap.add_argument("--imgsz", type=int, default=1280, help="Detector input size (default 1280, see module docstring)")
     ap.add_argument("--no-stitch", action="store_true", help="Skip the tracklet-stitching pass")
     ap.add_argument("--no-postprocess", action="store_true", help="Skip class voting + track filtering after stitching")

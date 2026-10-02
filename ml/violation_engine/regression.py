@@ -23,7 +23,7 @@ sys.path.insert(0, str(HERE))
 from eval_tracking import score  # noqa: E402
 from run_experiment import EVAL_DIR, EXPERIMENTS_DIR, REPO_ROOT, STAGE_FILES  # noqa: E402
 
-DEFAULT_CONFIGS = ["botsort", "tracktrack_ours"]  # current pipeline + provisional C2 winner
+DEFAULT_CONFIGS = ["tracktrack_ours", "botsort"]  # pipeline tracker (plan 3.5) + previous one for reference
 COLUMNS = [("hota", "HOTA", ".3f"), ("idf1", "IDF1", ".3f"), ("mota", "MOTA", ".3f"), ("num_switches", "IDsw", "d"),
            ("det_precision", "P", ".3f"), ("det_recall", "R", ".3f"), ("fp_tracks", "FPtr", "d"),
            ("pred_ids", "IDs", "d"), ("gt_ids", "GT", "d")]

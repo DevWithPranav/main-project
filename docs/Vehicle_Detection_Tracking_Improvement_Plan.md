@@ -94,7 +94,43 @@ Why this split: W4 is the easiest to start and unblocks everyone else's measurem
 
 ## 5. Expected improvement
 
-**These are estimates, not measurements.** No ground-truth score exists yet, so there is no baseline number to improve from. The ranges come from our own measurements where we have them (marked *measured*) and from published results on similar benchmarks otherwise. Published gains on VisDrone/MOT17 usually shrink on our footage (tiny vehicles, moving camera). The first Phase 2 run replaces this table with real numbers.
+### 5.1 Measured (2026-10-02, item 3.9)
+
+All on the one GT clip (CARLA `20260926_215405`, 1080p, 1,987 frames, 40 vehicles; the team is not providing a second clip). Every row is in `ml/data/results/experiments.csv`. **Caveat:** this clip is easy for the tracker. The baseline already has only 3 ID switches and there are no sudden camera moves, so gains on camera moves, parked-car re-entry and snow are **not measured**.
+
+| Change (one per run) | HOTA | IDF1 | MOTA | ID sw | Det P / R | FP tracks | IDs (GT 40) | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| **Baseline** — BoT-SORT, imgsz 640, raw tracker output | 0.620 | 0.852 | 0.804 | 3 | 0.918 / 0.882 | 7 | 48 | — |
+| + stitching + D2 class voting + D4 track filter | — | 0.852 | 0.806 | 3 | 0.923 / 0.878 | 2 | 41 | Keep: FP tracks 7 → 2, class changes 180 → 0 |
+| + D3 gap filling (1 s) | 0.630 | 0.859 | 0.828 | 3 | 0.924 / 0.902 | 1 | 41 | Keep: MOTA +2.2, recall +2.4 |
+| A4 class gates (bus/truck ≥ 0.4) | 0.627 | 0.856 | 0.822 | 3 | 0.925 / 0.893 | 1 | 41 | Drop (slightly worse) |
+| A4 size filter | 0.630 | 0.859 | 0.828 | 3 | 0.924 / 0.902 | 1 | 41 | Drop (no effect) |
+| A2 imgsz 1280 / 1920 (ours) | — | 0.802 / 0.716 | 0.702 / 0.519 | 3 / 3 | 0.849 / 0.852 · 0.798 / 0.692 | 8 / 9 | 46 / 43 | Drop: 640 is best |
+| C1 ReID: yolo26s-reid / appearance 0.8 / no ReID (loose gate) | — | 0.852 / 0.850 / 0.849 | 0.806 / 0.803 / 0.795 | 3 / 3 / 3 | ≈ baseline | 2 / 2 / 2 | 41 | ReID adds nothing → **3.8 closed**, no vehicle-ReID model |
+| C2 Deep OC-SORT / FastTrack / ByteTrack | — | 0.817 / 0.827 / 0.807 | 0.757 / 0.755 / 0.724 | 4 / 3 / 14 | — | 2 / 2 / 2 | 42 / 41 / 46 | Drop |
+| **C2 TrackTrack** (+ D3) | 0.631 | **0.874** | 0.816 | **2** | **0.930** / 0.881 | **0** | **39** | **Chosen (3.5)** |
+| C3 TrackTrack `new_track_thresh` 0.25 / 0.35 | 0.631 / 0.630 | 0.874 / 0.874 | 0.816 / 0.816 | 2 / 2 | 0.932 / 0.880 · 0.932 / 0.879 | 0 / 0 | 39 | Flat → **0.35 adopted** (snow defence, free here) |
+| C3 on top of 0.35: `match_thresh` 0.8 / `tai_thr` 0.55 / `track_buffer` 150 | 0.631 | 0.874 | 0.816 | 2 | 0.932 / 0.879 | 0 | 39 | Identical → kept at 0.7 / 0.45 / 90 (clip saturated) |
+| B2 + D1 scene map + map linking | 0.630 | 0.859 | 0.828 | 3 | 0.924 / 0.902 | 1 | 41 | No links made on this clip; kept on, **unproven** |
+| Geo-trax detector, imgsz 640 (BoT-SORT) | **0.654** | 0.857 | **0.865** | 4 | **0.936 / 0.928** | 2 | 42 | Better detector here → **pre-labelling model**; 1280 / 1920 worse |
+
+**Baseline → current pipeline (TrackTrack, new_track_thresh 0.35, stitching, D2–D4, gap fill):**
+
+| Metric | Baseline | Now | Change | Estimate was |
+|---|---|---|---|---|
+| ID switches | 3 | 2 | −33% | −30 to −50% |
+| IDF1 | 0.852 | 0.874 | **+2.2 points** | +10 to +20 points |
+| MOTA | 0.804 | 0.816 | +1.2 points | +5 to +15 points |
+| HOTA | 0.620 | 0.630 | +1.0 point | — |
+| False-positive tracks | 7 | 0 | **−100%** | −60 to −85% |
+| Unique IDs / true vehicles | 48 / 40 = 1.20× | 39 / 40 = 0.98× | — | 1.2–1.5× |
+| Class changes per track | 180 total | 0 | — | 0 |
+
+The baseline was already strong on this clip (IDF1 0.852), so the IDF1 and MOTA estimates (made against the much worse real-footage behaviour) could not be reached here. The clearest wins are false-positive tracks and ID counts. One trade-off: TrackTrack's final recall is 2 points below BoT-SORT + gap fill (0.879 vs 0.902), so BoT-SORT's MOTA is higher (0.828 vs 0.816); TrackTrack was chosen for identity (IDF1, switches, FP tracks), which is what the violation logic depends on. The detector is now the main lever: Geo-trax at the same size gains +2.6 recall / +3.7 MOTA, which the Stage 5 retrain targets.
+
+### 5.2 Original estimates (2026-09-26, before any GT; kept for comparison)
+
+These ranges came from our own measurements where we had them (marked *measured*) and from published results on similar benchmarks otherwise.
 
 | Change | Problem it targets | Expected effect | Confidence |
 |---|---|---|---|
@@ -152,21 +188,21 @@ Status: ✅ done · 🔄 in progress · ⏳ to do · ⏸ waiting on data from th
 | B2 `scene_map.py` | ✅ | Stopped cars within 0.05–0.16 vehicle lengths; scale drift late in the clip |
 | D3 gap filling, HOTA, `regression.py` (moved up from Phase 3) | ✅ | Gap fill on by default (MOTA +1.6–2.3); HOTA 0.630 / 0.631 |
 
-### Stage 3 — Improve the pipeline with the current detector ⏳ (current stage)
+### Stage 3 — Improve the pipeline with the current detector ✅ (3.4 / 3.6 skipped: no second GT clip)
 
 | # | Item | WS | Status | Needs | Done when |
 |---|---|---|---|---|---|
-| 3.1 | Score the A4 filters on the GT (class gates, size filter; one run each) | W1 | 🔄 running | — | Kept or dropped by the numbers |
-| 3.2 | Score the Geo-trax detector on the GT (imgsz 640 / 1280 / 1920) | W1 | 🔄 queued | — | Decides the pre-labelling model and whether it beats ours |
-| 3.3 | D1 map-based linking in `stitch_tracklets.py` (stationary + moving rules, Section 7-D) | W3 | 🔄 code written, **not yet tested** | — | IDF1 up / ID switches down, no wrong merges |
-| 3.4 | Import + check the **second GT clip** (1 min, 30 fps, sudden camera moves); `regression.py` on both clips | W4 | ⏸ | Team delivers the clip | Both clips in the regression table |
-| 3.5 | Final tracker + ReID choice (TrackTrack vs BoT-SORT) | W2 | ⏸ | 3.4 | Choice backed by both clips |
-| 3.6 | Test the scene map + D1 on camera moves and on pan-away-and-return | W3 | ⏸ | 3.4 | Drift < 1 vehicle length; D1 links correct |
-| 3.7 | C3 threshold tuning on the chosen tracker, one parameter per run (`new_track_thresh` first) | W2 | ⏳ | 3.5 | Tuned config committed |
-| 3.8 | Vehicle ReID model (`clip_vehicleid` / OSNet on VRAI) — **only if 3.4 shows ReID helps**, otherwise closed with that evidence | W2 | ⏳ | 3.4 | ReID decision backed by numbers |
-| 3.9 | Replace the Section 5 estimates with measured numbers | W4 | ⏳ | 3.4 | Section 5 updated |
+| 3.1 | Score the A4 filters on the GT (class gates, size filter; one run each) | W1 | ✅ | — | Both dropped: class gates slightly worse, size filter no effect |
+| 3.2 | Score the Geo-trax detector on the GT (imgsz 640 / 1280 / 1920) | W1 | ✅ | — | Geo-trax 640 beats ours on detection (R 0.928 vs 0.902) → pre-labelling model; larger sizes worse |
+| 3.3 | D1 map-based linking in `stitch_tracklets.py` (stationary + moving rules, Section 7-D) | W3 | ✅ tested | — | Runs cleanly; no links on this clip (nothing to link), so no gain and no wrong merges. Kept on, unproven on camera moves |
+| 3.4 | Import + check the **second GT clip** (1 min, 30 fps, sudden camera moves); `regression.py` on both clips | W4 | ✖ skipped | — | Team decision (2026-10-02): no second clip |
+| 3.5 | Final tracker + ReID choice (TrackTrack vs BoT-SORT) | W2 | ✅ | — | **TrackTrack, no ReID** (one clip); now the default in all scripts |
+| 3.6 | Test the scene map + D1 on camera moves and on pan-away-and-return | W3 | ✖ skipped | — | Needs a clip with camera moves; open risk |
+| 3.7 | C3 threshold tuning on the chosen tracker, one parameter per run (`new_track_thresh` first) | W2 | ✅ | — | `new_track_thresh` 0.35 in `tracktrack_ours.yaml`; other parameters in Section 5.1 |
+| 3.8 | Vehicle ReID model (`clip_vehicleid` / OSNet on VRAI) — **only if ReID helps**, otherwise closed with that evidence | W2 | ✅ closed | — | ReID adds nothing on the GT (Section 5.1) → not built |
+| 3.9 | Replace the Section 5 estimates with measured numbers | W4 | ✅ | — | Section 5.1 |
 
-**Stage 3 exit:** the full pipeline with the current detector is chosen, tuned and scored on both GT clips.
+**Stage 3 exit (met 2026-10-02, on one clip):** the full pipeline with the current detector is chosen, tuned and scored. Not covered: sudden camera moves, pan-away-and-return, snow.
 
 ### Stage 4 — Prepare the retrain dataset ⏳ (was Phase 2 W1; no training yet)
 

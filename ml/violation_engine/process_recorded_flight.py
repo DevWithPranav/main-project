@@ -192,8 +192,8 @@ def main() -> None:
                      help="Recorded flight run_id under simulation/data_export/recorded_flights/ (default: latest)")
     ap.add_argument("--output-fps", type=float, default=None,
                      help="Playback fps for annotated.mp4 (default: the flight's own measured avg_fps)")
-    ap.add_argument("--tracker", choices=sorted(TRACKER_CONFIGS), default="botsort",
-                     help="Which tracker config to use (default: botsort)")
+    ap.add_argument("--tracker", choices=sorted(TRACKER_CONFIGS), default="tracktrack_ours",
+                     help="Which tracker config to use (default: tracktrack_ours, Improvement Plan 3.5)")
     ap.add_argument("--no-stitch", action="store_true", help="Skip the tracklet-stitching pass")
     ap.add_argument("--no-postprocess", action="store_true", help="Skip class voting + track filtering after stitching")
     ap.add_argument("--imgsz", type=int, default=None, help="Detector input size (default: the model's own)")
