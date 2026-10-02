@@ -1,0 +1,22 @@
+# Improvement Plan C2 candidate: FastTracker, built into Ultralytics 8.4 — an
+# occlusion-aware ByteTrack variant with init-IoU suppression (no new track on a box
+# overlapping an active one, like TrackTrack's TAI). No GMC and no ReID.
+#
+# Confidence levels set to botsort_sim.yaml's for a like-for-like tracker comparison.
+
+tracker_type: fasttrack
+track_high_thresh: 0.15    # stock 0.25
+track_low_thresh: 0.05     # stock 0.1
+new_track_thresh: 0.15     # stock 0.25
+track_buffer: 90           # stock 30
+match_thresh: 0.8
+fuse_score: True
+
+reset_velocity_offset_occ: 5
+reset_pos_offset_occ: 3
+enlarge_bbox_occ: 1.1
+dampen_motion_occ: 0.5
+active_occ_to_lost_thresh: 10
+occ_cover_thresh: 0.7
+occ_reappear_window: 40
+init_iou_suppress: 0.7

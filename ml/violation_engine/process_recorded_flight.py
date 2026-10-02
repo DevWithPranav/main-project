@@ -20,22 +20,29 @@ outputs (skip with --no-stitch).
 
 import argparse
 import csv
+import datetime
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import cv2
 import torchvision
+import ultralytics
+import yaml
 from ultralytics import YOLO
 
-from extract_trajectories import BEST_PT, VEHICLE_CLASS_IDS
-from stitch_tracklets import stitch
+from detection_filters import DetectionFilter
+from extract_trajectories import BEST_PT
+from stitch_tracklets import print_stats, stitch
 
 RECORDED_FLIGHTS_DIR = Path(__file__).resolve().parents[2] / "simulation" / "data_export" / "recorded_flights"
 RESULTS_DIR = Path(__file__).resolve().parents[1] / "data" / "results" / "recorded_flight_validation"
-TRACKER_CONFIGS = {
-    "bytetrack": str(Path(__file__).resolve().parent / "bytetrack_sim.yaml"),
-    "botsort": str(Path(__file__).resolve().parent / "botsort_sim.yaml"),
-}
+REPO_ROOT = Path(__file__).resolve().parents[2]
+# Every tracker yaml in this folder, keyed by file name without the "_sim" suffix:
+# bytetrack_sim.yaml -> "bytetrack", botsort_sim.yaml -> "botsort", tracktrack_ours.yaml -> "tracktrack_ours"
+TRACKER_CONFIGS = {p.stem.removesuffix("_sim"): str(p) for p in sorted(Path(__file__).resolve().parent.glob("*.yaml"))}
+VEHICLE_NAMES = {"car", "van", "truck", "bus"}  # tracked classes, by name so any detector's weights work
 DETECT_CONF = 0.1  # default ~0.25 gate drops the sparse/weak detections that break tracking on CARLA footage
 DEDUPE_IOU = 0.5
 
@@ -59,22 +66,71 @@ def load_frame_times(path: Path) -> dict[int, float]:
     return times
 
 
+def git_commit() -> str:
+    try:
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True,
+                             check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=REPO_ROOT,
+                               capture_output=True, text=True).stdout.strip()
+        return sha + ("-dirty" if dirty else "")
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def vehicle_class_ids(model) -> list[int]:
+    return sorted(i for i, n in model.names.items() if n.lower() in VEHICLE_NAMES)
+
+
+def write_run_config(out_dir: Path, **fields) -> Path:
+    """run_config.json next to a run's outputs, so every result can be traced back to
+    exactly what produced it (shared rule in the Improvement Plan, Section 4)."""
+    tracker_path = Path(fields["tracker_config"])
+    cfg = {
+        "date": datetime.datetime.now().isoformat(timespec="seconds"),
+        "git_commit": git_commit(),
+        "command": " ".join(sys.argv),
+        "ultralytics": ultralytics.__version__,
+        **fields,
+        "tracker_yaml": yaml.safe_load(tracker_path.read_text()),
+    }
+    path = out_dir / "run_config.json"
+    path.write_text(json.dumps(cfg, indent=1, default=str))
+    return path
+
+
 def run_tracking(source: Path, out_dir: Path, tracker: str, fps: float, frame_times: dict[int, float] | None = None,
-                 imgsz: int | None = None, conf: float = DETECT_CONF) -> tuple[Path, int, int, int]:
+                 imgsz: int | None = None, conf: float = DETECT_CONF, class_gates: bool = False,
+                 size_filter: bool = False, max_frames: int | None = None,
+                 video: bool = True, weights: Path | None = None) -> tuple[Path, int, int, int]:
     """Detect + track every frame of `source` (frame directory or video file), writing
-    trajectories.csv and the tracker's own annotated.mp4 into out_dir.
+    trajectories.csv, run_config.json and the tracker's own annotated.mp4 into out_dir.
+    class_gates / size_filter: optional A4 detection filters (detection_filters.py).
+    max_frames: stop early (smoke tests). weights: detector weights (default: our BEST_PT); vehicle
+    classes are picked by name, so another model's class numbering works too.
     Returns (csv_path, n_rows, n_frames, n_unique_ids)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / "trajectories.csv"
     video_path = out_dir / "annotated.mp4"
     frame_times = frame_times or {}
 
-    model = YOLO(str(BEST_PT))
-    model.add_callback("on_predict_postprocess_end", dedupe_boxes)  # must be added before track() registers the tracker
+    weights = Path(weights or BEST_PT)
+    model = YOLO(str(weights))
+    classes = vehicle_class_ids(model)
+    # callbacks must be added before track() registers the tracker; filters run before dedupe (see detection_filters.py)
+    det_filter = DetectionFilter(class_gates, size_filter)
+    if class_gates or size_filter:
+        model.add_callback("on_predict_postprocess_end", det_filter)
+    model.add_callback("on_predict_postprocess_end", dedupe_boxes)
+    run_config = write_run_config(
+        out_dir, detector_weights=str(weights), source=str(source), tracker=tracker, tracker_config=TRACKER_CONFIGS[tracker], fps=fps,
+        imgsz=imgsz or "model default", conf=conf, dedupe_iou=DEDUPE_IOU, classes=classes,
+        max_frames=max_frames, **det_filter.config(),
+    )
+    started = datetime.datetime.now()
     results = model.track(
         source=str(source),
         tracker=TRACKER_CONFIGS[tracker],
-        classes=VEHICLE_CLASS_IDS,
+        classes=classes,
         conf=conf,
         stream=True,
         persist=True,
@@ -96,20 +152,30 @@ def run_tracking(source: Path, out_dir: Path, tracker: str, fps: float, frame_ti
                 for box, track_id in zip(result.boxes, result.boxes.id):
                     cx, cy, w, h = (float(v) for v in box.xywh[0])
                     csv_writer.writerow([
-                        frame_idx, time_s, int(track_id), names[int(box.cls)],
+                        frame_idx, time_s, int(track_id), names[int(box.cls)].lower(),
                         round(cx, 1), round(cy, 1), round(w, 1), round(h, 1), round(float(box.conf), 3),
                     ])
                     track_ids.add(int(track_id))
                     n_rows += 1
-            annotated = result.plot()
-            if writer is None:
-                h, w = annotated.shape[:2]
-                writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
-            writer.write(annotated)
+            if video:
+                annotated = result.plot()
+                if writer is None:
+                    h, w = annotated.shape[:2]
+                    writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+                writer.write(annotated)
             if n_frames % 500 == 0:
                 print(f"[tracking] {n_frames} frames processed", flush=True)
+            if max_frames and n_frames >= max_frames:
+                break
     if writer is not None:
         writer.release()
+
+    elapsed = (datetime.datetime.now() - started).total_seconds()
+    cfg = json.loads(run_config.read_text())
+    cfg["result"] = {"frames": n_frames, "rows": n_rows, "unique_ids": len(track_ids),
+                     "seconds": round(elapsed, 1), "ms_per_frame": round(1000 * elapsed / max(n_frames, 1), 1),
+                     "filter_stats": det_filter.stats}
+    run_config.write_text(json.dumps(cfg, indent=1, default=str))
     return csv_path, n_rows, n_frames, len(track_ids)
 
 
@@ -129,6 +195,10 @@ def main() -> None:
     ap.add_argument("--tracker", choices=sorted(TRACKER_CONFIGS), default="botsort",
                      help="Which tracker config to use (default: botsort)")
     ap.add_argument("--no-stitch", action="store_true", help="Skip the tracklet-stitching pass")
+    ap.add_argument("--no-postprocess", action="store_true", help="Skip class voting + track filtering after stitching")
+    ap.add_argument("--imgsz", type=int, default=None, help="Detector input size (default: the model's own)")
+    ap.add_argument("--class-gates", action="store_true", help="A4: require bus/truck conf >= 0.4")
+    ap.add_argument("--size-filter", action="store_true", help="A4: drop boxes far outside the median vehicle size")
     args = ap.parse_args()
 
     if not BEST_PT.exists():
@@ -149,7 +219,9 @@ def main() -> None:
     output_fps = args.output_fps or metadata.get("avg_fps") or 15.0
 
     out_dir = RESULTS_DIR / run_id / args.tracker
-    csv_path, n_rows, n_frames, n_ids = run_tracking(frames_dir, out_dir, args.tracker, output_fps, frame_times)
+    csv_path, n_rows, n_frames, n_ids = run_tracking(frames_dir, out_dir, args.tracker, output_fps, frame_times,
+                                                     imgsz=args.imgsz, class_gates=args.class_gates,
+                                                     size_filter=args.size_filter)
 
     print(f"[tracker] {args.tracker} ({TRACKER_CONFIGS[args.tracker]})")
     print(f"[trajectories] wrote {n_rows} rows across {n_frames} frames -> {csv_path}")
@@ -157,9 +229,7 @@ def main() -> None:
     print(f"[video] annotated video ({n_frames} frames, every frame processed) -> {out_dir / 'annotated.mp4'}")
 
     if not args.no_stitch and n_rows:
-        stats = stitch(frames_dir, csv_path, output_fps)
-        print(f"[stitch] {stats['links']} links: unique IDs {stats['ids_before']} -> {stats['ids_after']} "
-              f"-> {stats['out_csv']}")
+        print_stats(stitch(frames_dir, csv_path, output_fps, postprocess=not args.no_postprocess))
 
 
 if __name__ == "__main__":

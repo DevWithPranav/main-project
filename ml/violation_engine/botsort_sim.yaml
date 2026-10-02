@@ -31,7 +31,7 @@ track_high_thresh: 0.15
 track_low_thresh: 0.05
 new_track_thresh: 0.15
 track_buffer: 90           # was 60 — keep lost tracks alive through the detection dropout around a sudden move
-match_thresh: 0.6
+match_thresh: 0.6          # max association *cost* (1 - IoU-based similarity): 0.6 is STRICTER than the stock 0.8
 fuse_score: True
 
 # BoT-SORT-specific

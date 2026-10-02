@@ -1,0 +1,21 @@
+# Improvement Plan C1 candidate (b): botsort_sim.yaml with Ultralytics' own ReID
+# encoder yolo26s-reid.onnx (448 px input, auto-downloaded on first use) instead of
+# the generic yolo26n-cls.pt fallback. What it was trained on (person vs vehicle) is
+# not documented. Crops are only scaled to 0-1 by ultralytics/trackers/utils/reid.py.
+#
+# appearance_thresh is kept at botsort_sim.yaml's value so only the encoder changes;
+# retune it (C3) only if this encoder helps at all.
+
+tracker_type: botsort
+track_high_thresh: 0.15
+track_low_thresh: 0.05
+new_track_thresh: 0.15
+track_buffer: 90
+match_thresh: 0.6          # max association cost; 0.6 is stricter than the stock 0.8
+fuse_score: True
+
+gmc_method: sparseOptFlow
+proximity_thresh: 0.2
+appearance_thresh: 0.25
+with_reid: True
+model: yolo26s-reid.onnx

@@ -22,6 +22,8 @@ frontend/.env*.local
 ml/models/*.pt
 ml/models/*.pth
 ml/models/*.onnx
+# Ultralytics auto-downloads ReID encoders into the working directory
+/yolo26*-reid.onnx
 ml/notebooks/.ipynb_checkpoints/
 
 # Raw drone footage (large media, not code)

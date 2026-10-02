@@ -2,9 +2,10 @@
 (real footage, downloaded clips) — the video-file counterpart of
 process_recorded_flight.py, sharing the same tracker configs and stitching step.
 
-Outputs go to ml/data/results/video_validation/<video name>/<tracker>/:
-trajectories.csv, annotated.mp4 (tracker's raw IDs), and, unless --no-stitch,
-trajectories_stitched.csv, stitch_links.json, annotated_stitched.mp4 (final IDs + HUD).
+Outputs go to ml/data/results/video_validation/<video name>/<tracker or --out-name>/:
+run_config.json, trajectories.csv, annotated.mp4 (tracker's raw IDs), and, unless
+--no-stitch, trajectories_stitched.csv, stitch_links.json, then (unless --no-postprocess)
+trajectories_final.csv + track_summary.csv and annotated_final.mp4 (final IDs + HUD).
 
 --imgsz: the detector was trained at 640; for 720p footage with small vehicles
 1280 finds noticeably more of them (checked on the roundabout clip: ~35.5 vs ~30.5
@@ -22,7 +23,7 @@ import cv2
 
 from extract_trajectories import BEST_PT
 from process_recorded_flight import TRACKER_CONFIGS, run_tracking
-from stitch_tracklets import stitch
+from stitch_tracklets import print_stats, stitch
 
 RESULTS_DIR = Path(__file__).resolve().parents[1] / "data" / "results" / "video_validation"
 
@@ -33,6 +34,13 @@ def main() -> None:
     ap.add_argument("--tracker", choices=sorted(TRACKER_CONFIGS), default="botsort")
     ap.add_argument("--imgsz", type=int, default=1280, help="Detector input size (default 1280, see module docstring)")
     ap.add_argument("--no-stitch", action="store_true", help="Skip the tracklet-stitching pass")
+    ap.add_argument("--no-postprocess", action="store_true", help="Skip class voting + track filtering after stitching")
+    ap.add_argument("--class-gates", action="store_true", help="A4: require bus/truck conf >= 0.4")
+    ap.add_argument("--size-filter", action="store_true", help="A4: drop boxes far outside the median vehicle size")
+    ap.add_argument("--max-frames", type=int, default=None, help="Stop after this many frames (smoke tests)")
+    ap.add_argument("--no-video", action="store_true", help="Skip writing annotated videos")
+    ap.add_argument("--out-name", default=None,
+                    help="Output subfolder name (default: the tracker name) — use one per experiment")
     args = ap.parse_args()
 
     if not BEST_PT.exists():
@@ -47,16 +55,16 @@ def main() -> None:
     cap.release()
     print(f"[video] {args.video.name}: {n_total} frames, {fps:.1f} fps, {size[0]}x{size[1]}")
 
-    out_dir = RESULTS_DIR / args.video.stem / args.tracker
-    csv_path, n_rows, n_frames, n_ids = run_tracking(args.video, out_dir, args.tracker, fps, imgsz=args.imgsz)
+    out_dir = RESULTS_DIR / args.video.stem / (args.out_name or args.tracker)
+    csv_path, n_rows, n_frames, n_ids = run_tracking(args.video, out_dir, args.tracker, fps, imgsz=args.imgsz,
+                                                     class_gates=args.class_gates, size_filter=args.size_filter,
+                                                     max_frames=args.max_frames, video=not args.no_video)
     print(f"[tracker] {args.tracker}, imgsz {args.imgsz}")
     print(f"[trajectories] {n_rows} rows across {n_frames} frames -> {csv_path}")
     print(f"[tracking] unique vehicle track IDs: {n_ids}")
 
     if not args.no_stitch and n_rows:
-        stats = stitch(args.video, csv_path, fps)
-        print(f"[stitch] {stats['links']} links: unique IDs {stats['ids_before']} -> {stats['ids_after']}")
-        print(f"[output] final annotated video -> {out_dir / 'annotated_stitched.mp4'}")
+        print_stats(stitch(args.video, csv_path, fps, video=not args.no_video, postprocess=not args.no_postprocess))
 
 
 if __name__ == "__main__":

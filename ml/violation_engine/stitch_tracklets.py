@@ -19,8 +19,10 @@ Pairs are linked greedily by lowest combined cost; each track gets at most one
 predecessor and one successor, so chains (A -> B -> C) are allowed.
 
 Writes trajectories_stitched.csv (same schema; track_id rewritten to the first ID
-of each chain) next to the input, plus annotated_stitched.mp4 unless --no-video.
-The raw trajectories.csv is left untouched.
+of each chain) next to the input. Then, unless --no-postprocess, postprocess_tracks.py
+writes trajectories_final.csv (class voting, short/low-confidence tracks removed) and
+track_summary.csv. The video (unless --no-video) is annotated_final.mp4, or
+annotated_stitched.mp4 with --no-postprocess. The raw trajectories.csv is left untouched.
 
 Usage:
     python ml/violation_engine/stitch_tracklets.py 20260920_194932
@@ -39,6 +41,8 @@ import numpy as np
 from ultralytics.trackers.utils import gmc as gmc_module
 from ultralytics.trackers.utils.gmc import GMC
 
+import postprocess_tracks
+
 RECORDED_FLIGHTS_DIR = Path(__file__).resolve().parents[2] / "simulation" / "data_export" / "recorded_flights"
 RESULTS_DIR = Path(__file__).resolve().parents[1] / "data" / "results" / "recorded_flight_validation"
 
@@ -52,6 +56,7 @@ class Tracklet:
     frames: list[int] = field(default_factory=list)
     boxes: list[tuple[float, float, float, float]] = field(default_factory=list)  # cx, cy, w, h
     classes: list[str] = field(default_factory=list)
+    map_pts: list[tuple[float, float]] = field(default_factory=list)  # map_x, map_y per row (D1), if present
     end_hist: np.ndarray | None = None
     start_hist: np.ndarray | None = None
 
@@ -76,6 +81,8 @@ def load_tracklets(csv_path: Path) -> tuple[list[dict], dict[int, Tracklet]]:
         t.frames.append(int(r["frame"]))
         t.boxes.append((float(r["cx"]), float(r["cy"]), float(r["w"]), float(r["h"])))
         t.classes.append(r["class"])
+        if r.get("map_x") not in (None, ""):
+            t.map_pts.append((float(r["map_x"]), float(r["map_y"])))
     return rows, tracks
 
 
@@ -199,7 +206,11 @@ def find_links(tracks: dict[int, Tracklet], warps: list[np.ndarray], max_gap: in
                 continue
             candidates.append({"from": a.track_id, "to": b.track_id, "gap": gap, "dist": round(dist, 1),
                                "max_dist": round(max_dist, 1), "app": round(app, 3), "cost": round(cost, 3)})
+    return select_links(candidates)
 
+
+def select_links(candidates: list[dict]) -> list[dict]:
+    """Greedy by lowest cost; each track gets at most one predecessor and one successor."""
     links, has_next, has_prev = [], set(), set()
     for c in sorted(candidates, key=lambda c: c["cost"]):
         if c["from"] in has_next or c["to"] in has_prev:
@@ -208,6 +219,70 @@ def find_links(tracks: dict[int, Tracklet], warps: list[np.ndarray], max_gap: in
         has_next.add(c["from"])
         has_prev.add(c["to"])
     return links
+
+
+# ---------------------------------------------------------------- D1: map-based linking
+
+STATIONARY_MAX_MOVE = 0.5  # vehicle lengths moved over the track's first/last second to count as stationary
+MOVING_MAX_GAP_S = 3.0
+
+
+def map_edge(t: Tracklet, H: np.ndarray, fps: float, end: bool) -> dict:
+    """Map position, length (map units) and velocity (map units/frame) over the track's first/last second."""
+    n = max(2, round(fps))
+    fr, bx, mp = (t.frames[-n:], t.boxes[-n:], t.map_pts[-n:]) if end else (t.frames[:n], t.boxes[:n], t.map_pts[:n])
+    f, (cx, cy, w, h) = (fr[-1], bx[-1]) if end else (fr[0], bx[0])
+    from scene_map import map_length  # scene_map imports this module (iter_frames)
+    length = map_length(H, f, cx, cy, w, h)
+    pts = np.array(mp)
+    span = max(fr[-1] - fr[0], 1)
+    velocity = (pts[-1] - pts[0]) / span
+    moved = float(np.linalg.norm(pts[-1] - pts[0])) / max(length, 1e-6)
+    return {"pos": pts[-1] if end else pts[0], "len": length, "vel": velocity,
+            "stationary": moved < STATIONARY_MAX_MOVE and len(pts) >= n // 2}
+
+
+def find_links_map(tracks: dict[int, Tracklet], H: np.ndarray, fps: float, max_app_dist: float, max_cost: float,
+                   moving_max_gap_s: float = MOVING_MAX_GAP_S) -> list[dict]:
+    """D1 (Improvement Plan): link tracklets by stabilised map position.
+    stationary: a ends and b starts standing still within 1 vehicle length of each other on the map, similar
+                size and class -> same (parked / queued) vehicle, whatever the gap (camera panned away and back).
+    moving:     a's map velocity carried forward over the gap (<= moving_max_gap_s) lands near b's start.
+    Appearance (colour histogram) must still match when both crops exist; a wrong merge is worse than a miss."""
+    usable = {tid: t for tid, t in tracks.items() if len(t.map_pts) == len(t.frames) and t.map_pts}
+    ends = {tid: map_edge(t, H, fps, end=True) for tid, t in usable.items()}
+    starts = {tid: map_edge(t, H, fps, end=False) for tid, t in usable.items()}
+    max_gap_moving = round(moving_max_gap_s * fps)
+    candidates = []
+    for a in usable.values():
+        ea = ends[a.track_id]
+        for b in usable.values():
+            if b.track_id == a.track_id or b.start <= a.end:
+                continue
+            sb, gap = starts[b.track_id], b.start - a.end
+            if not 0.6 <= sb["len"] / max(ea["len"], 1e-6) <= 1.67 or not classes_compatible(a.label, b.label):
+                continue
+            if ea["stationary"] and sb["stationary"]:
+                kind, predicted, max_dist = "stationary", ea["pos"], 1.0 * ea["len"]
+            elif gap <= max_gap_moving and not (ea["stationary"] and sb["stationary"]):
+                kind, predicted = "moving", ea["pos"] + ea["vel"] * gap
+                max_dist = ea["len"] * (1.0 + 0.5 * gap / fps)  # uncertainty grows with the gap
+            else:
+                continue
+            dist = float(np.linalg.norm(predicted - sb["pos"]))
+            if dist > max_dist:
+                continue
+            app = 0.0
+            if a.end_hist is not None and b.start_hist is not None:
+                app = float(cv2.compareHist(a.end_hist, b.start_hist, cv2.HISTCMP_BHATTACHARYYA))
+                if app > max_app_dist:
+                    continue
+            cost = dist / max_dist + app / max_app_dist
+            if cost > max_cost:
+                continue
+            candidates.append({"from": a.track_id, "to": b.track_id, "kind": kind, "gap": gap,
+                               "dist_len": round(dist / ea["len"], 2), "app": round(app, 3), "cost": round(cost, 3)})
+    return select_links(candidates)
 
 
 def chain_ids(tracks: dict[int, Tracklet], links: list[dict]) -> dict[int, int]:
@@ -226,7 +301,8 @@ def id_color(tid: int) -> tuple[int, int, int]:
     return tuple(int(c) for c in rng.integers(60, 255, 3))
 
 
-def write_video(source: Path, rows: list[dict], root: dict[int, int], out_path: Path, fps: float) -> None:
+def write_video(source: Path, rows: list[dict], out_path: Path, fps: float) -> None:
+    """rows carry final track IDs (after stitching / post-processing)."""
     by_frame = defaultdict(list)
     for r in rows:
         by_frame[int(r["frame"])].append(r)
@@ -236,7 +312,7 @@ def write_video(source: Path, rows: list[dict], root: dict[int, int], out_path: 
         font = max(0.4, img.shape[1] / 2560)  # 0.75 at 1920 px wide, 0.5 at 1280
         thick = 1 if font < 0.6 else 2
         for r in by_frame.get(f, []):
-            sid = root[int(r["track_id"])]
+            sid = int(r["track_id"])
             seen.add(sid)
             cx, cy, w, h = (float(r[k]) for k in ("cx", "cy", "w", "h"))
             p0, p1 = (int(cx - w / 2), int(cy - h / 2)), (int(cx + w / 2), int(cy + h / 2))
@@ -260,26 +336,45 @@ def write_video(source: Path, rows: list[dict], root: dict[int, int], out_path: 
 
 
 def stitch(source: Path, traj_csv: Path, fps: float, max_gap: int = 90, max_app_dist: float = 0.4,
-           max_cost: float = 1.0, video: bool = True) -> dict:
-    """source: a directory of frame JPGs or a video file, matching traj_csv's frame numbering."""
+           max_cost: float = 1.0, video: bool = True, postprocess: bool = True, map_linking: bool = True) -> dict:
+    """source: a directory of frame JPGs or a video file, matching traj_csv's frame numbering.
+
+    Writes trajectories_stitched.csv (stitching only). With postprocess, also runs
+    postprocess_tracks.py (class voting + short/low-confidence track removal) and writes
+    trajectories_final.csv + track_summary.csv; the video then shows the final tracks.
+    If traj_csv has map_x/map_y and scene_map.npz sits next to it (scene_map.py), links are found in map
+    coordinates (D1, find_links_map) instead of by chained per-frame GMC; map_linking=False forces the latter."""
     rows, tracks = load_tracklets(traj_csv)
     warps = camera_motion_and_appearance(source, tracks)
-    links = find_links(tracks, warps, max_gap, max_app_dist, max_cost)
+    sm_path = traj_csv.with_name("scene_map.npz")
+    if map_linking and sm_path.exists() and all(len(t.map_pts) == len(t.frames) for t in tracks.values()):
+        links = find_links_map(tracks, np.load(sm_path)["H"], fps, max_app_dist, max_cost)
+    else:
+        links = find_links(tracks, warps, max_gap, max_app_dist, max_cost)
     root = chain_ids(tracks, links)
 
+    stitched = [{**r, "track_id": str(root[int(r["track_id"])])} for r in rows]
     out_csv = traj_csv.with_name("trajectories_stitched.csv")
     with open(out_csv, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader()
-        for r in rows:
-            w.writerow({**r, "track_id": root[int(r["track_id"])]})
+        w.writerows(stitched)
     traj_csv.with_name("stitch_links.json").write_text(json.dumps(links, indent=1))
+    stats = {"ids_before": len(tracks), "ids_after": len(set(root.values())), "links": len(links),
+             "link_kinds": dict(Counter(l.get("kind", "gmc") for l in links)),
+             "out_csv": out_csv}
+
+    video_rows, video_name = stitched, "annotated_stitched.mp4"
+    if postprocess:
+        kept, summary, pp = postprocess_tracks.postprocess(stitched, fps)
+        pp["out_csv"], pp["summary_csv"] = postprocess_tracks.write_outputs(traj_csv, kept, summary, pp["columns"])
+        stats["postprocess"] = pp
+        video_rows, video_name = kept, "annotated_final.mp4"
 
     if video:
-        write_video(source, rows, root, traj_csv.with_name("annotated_stitched.mp4"), fps)
-
-    return {"ids_before": len(tracks), "ids_after": len(set(root.values())), "links": len(links),
-            "out_csv": out_csv}
+        write_video(source, video_rows, traj_csv.with_name(video_name), fps)
+        stats["video"] = traj_csv.with_name(video_name)
+    return stats
 
 
 def main() -> None:
@@ -291,7 +386,8 @@ def main() -> None:
                     help="Max colour-histogram (Bhattacharyya) distance to accept a link, 0 = identical")
     ap.add_argument("--max-cost", type=float, default=1.0,
                     help="Max combined position+appearance cost (0-2) to accept a link; lower = stricter")
-    ap.add_argument("--no-video", action="store_true", help="Skip writing annotated_stitched.mp4")
+    ap.add_argument("--no-video", action="store_true", help="Skip writing the annotated video")
+    ap.add_argument("--no-postprocess", action="store_true", help="Skip class voting + track filtering")
     args = ap.parse_args()
 
     run_dir = RECORDED_FLIGHTS_DIR / args.run_id
@@ -302,10 +398,18 @@ def main() -> None:
     fps = json.loads(metadata_path.read_text()).get("avg_fps", 15.0) if metadata_path.exists() else 15.0
 
     stats = stitch(run_dir / "frames", traj_csv, fps, args.max_gap, args.max_app_dist, args.max_cost,
-                   not args.no_video)
-    print(f"[stitch] {stats['links']} links: unique IDs {stats['ids_before']} -> {stats['ids_after']}")
-    print(f"[stitch] wrote {stats['out_csv']} (+ stitch_links.json"
-          f"{', annotated_stitched.mp4' if not args.no_video else ''})")
+                   not args.no_video, not args.no_postprocess)
+    print_stats(stats)
+
+
+def print_stats(stats: dict) -> None:
+    print(f"[stitch] {stats['links']} links: unique IDs {stats['ids_before']} -> {stats['ids_after']} "
+          f"-> {stats['out_csv']}")
+    if "postprocess" in stats:
+        print(f"[postprocess] {postprocess_tracks.format_stats(stats['postprocess'])} "
+              f"-> {stats['postprocess']['out_csv']}")
+    if "video" in stats:
+        print(f"[video] {stats['video']}")
 
 
 if __name__ == "__main__":

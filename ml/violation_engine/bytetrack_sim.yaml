@@ -13,5 +13,5 @@ track_high_thresh: 0.15   # was 0.25 — accept weaker first-stage matches
 track_low_thresh: 0.05    # was 0.1 — recover more low-score detections
 new_track_thresh: 0.15    # was 0.25 — start tracks from weaker initial hits
 track_buffer: 60          # was 30 — survive longer gaps between sparse detections
-match_thresh: 0.6         # was 0.8 — tolerate more drone-motion-induced displacement
+match_thresh: 0.6         # was 0.8 — NOTE: a max association *cost*, so 0.6 is STRICTER (needs more overlap), not looser
 fuse_score: True
