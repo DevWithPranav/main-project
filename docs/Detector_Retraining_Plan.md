@@ -260,10 +260,10 @@ After acceptance, go to **Stage 6** of the improvement plan: re-check the input 
 |---|---|---|---|---|
 | 1 | Download the **UAVDT annotations** (`UAV-benchmark-MOTD_v1.0`) into `project data\UAV-benchmark-M\` | Afif | UAVDT part | ✅ 2026-09-28: attributes (`M_attr`) + box labels (`UAV-benchmark-MOTD_v1.0\GT`) downloaded and verified; see the UAVDT notes below |
 | 2 | ~~Extract `AdditionalMaps_Latest.zip`~~: **not doing** (team decision); CARLA uses Town01–05 + Town10HD | — | — | ✖ dropped |
-| 3 | `record_flight.py` dataset mode: instance-segmentation camera, frame pairing / synchronous mode, motion blur, weather/sun/altitude/pitch settings, `meta.csv`, parked-vehicle spawning, class-weighted spawning, pickup → `car` override | CARLA team | CARLA part | 🔄 in progress |
-| 4 | Record the CARLA flights (Section 5.1), including the 800 hard-negative frames; QA each flight | CARLA team | CARLA part | ⏳ |
-| 5 | `ml/detection/build_retrain_dataset.py`: convert VisDrone-DET/VID, UAVDT and CARLA to 3-class YOLO, grey-fill ignore regions, sample per Section 3, split per Section 6 → `ml/data/datasets/retrain_v1/` + `data.yaml` + `manifest.csv` (source, sequence, frame, split) | Afif | Training | ⏳ |
-| 6 | Label check: boxes drawn on ~200 random training images across all sources | Afif | Training | ⏳ |
+| 3 | `record_flight.py` dataset mode: instance-segmentation camera, frame pairing / synchronous mode, motion blur, weather/sun/altitude/pitch settings, `meta.csv`, parked-vehicle spawning, class-weighted spawning, pickup → `car` override | CARLA team | CARLA part | ✅ |
+| 4 | Record the CARLA flights (Section 5.1), including the 800 hard-negative frames; QA each flight | CARLA team | CARLA part | ✅ declared done 2026-10-02: 1,248 train (incl. 62 negatives), 102 val, 177 test |
+| 5 | `ml/detection/build_retrain_dataset.py`: convert VisDrone-DET/VID, UAVDT and CARLA to 3-class YOLO, grey-fill ignore regions, sample per Section 3, split per Section 6 → `ml/data/datasets/retrain_v1/` + `data.yaml` + `manifest.csv` (source, sequence, frame, split) | Afif | Training | ✅ 2026-10-02: train 13,719 / val 1,211 / test 1,787 (see tracker) |
+| 6 | Label check: boxes drawn on ~200 random training images across all sources | Afif | Training | 🔄 spot check done (one image per source, all correct); full 200-image check not done |
 | 7 | Re-score the **current** model on the new val/test sets and GT clips (3 classes): the baseline to beat | Afif | Acceptance | ⏳ |
 | 8 | One-epoch timing test at imgsz 960; fix the batch size and epoch count | Afif | Full run | ⏳ |
 | 9 | **Full retrain (24 h)**, only after Stage 3 of the improvement plan is done | Afif | — | ⏳ last |
