@@ -1,0 +1,271 @@
+{
+ "video": "Urban Motion from the Sky Roundabout Traffic Drone Video.mp4",
+ "note": "Stock clip, snowy town roundabout (German/Dutch style, right-hand traffic, counter-clockwise circulation), oblique camera (~44 deg tilt) mostly hovering. Calibration: homography from an ellipse fitted to 8 points on the outer edge of the circular carriageway (fit within +-5%), mapped to a circle of assumed diameter D; D then set so the median car length comes out ~4.6 m (real_geometry.py --check). No sign visible: 30 km/h assumed (town). The circular carriageway is a no-stopping zone (German StVO 12: no stopping in a roundabout), 10 s grace; crosswalks traced from the frame.",
+ "reference_frame": 0,
+ "frame_size": [
+  1280,
+  720
+ ],
+ "ref_point": 0.75,
+ "speed_sigma_kmh": 3.0,
+ "calibration": {
+  "method": "homography",
+  "image_points": [
+   [
+    510.8,
+    326.1
+   ],
+   [
+    772.0,
+    356.6
+   ],
+   [
+    652.3,
+    247.7
+   ],
+   [
+    630.5,
+    435.1
+   ]
+  ],
+  "world_points": [
+   [
+    -15.0,
+    0.0
+   ],
+   [
+    15.0,
+    0.0
+   ],
+   [
+    0.0,
+    -15.0
+   ],
+   [
+    0.0,
+    15.0
+   ]
+  ],
+  "circle_diameter_m": 30.0
+ },
+ "lanes": [],
+ "zones": [
+  {
+   "id": "crosswalk_west",
+   "type": "crosswalk",
+   "polygon_px": [
+    [
+     490.0,
+     257.5
+    ],
+    [
+     520.0,
+     260.0
+    ],
+    [
+     498.8,
+     301.3
+    ],
+    [
+     468.8,
+     297.5
+    ]
+   ]
+  },
+  {
+   "id": "crosswalk_east",
+   "type": "crosswalk",
+   "polygon_px": [
+    [
+     802.5,
+     328.8
+    ],
+    [
+     831.3,
+     330.0
+    ],
+    [
+     830.0,
+     380.0
+    ],
+    [
+     797.5,
+     378.8
+    ]
+   ]
+  },
+  {
+   "id": "crosswalk_south",
+   "type": "crosswalk",
+   "polygon_px": [
+    [
+     541.3,
+     461.3
+    ],
+    [
+     596.3,
+     461.3
+    ],
+    [
+     592.5,
+     493.8
+    ],
+    [
+     535.0,
+     492.5
+    ]
+   ]
+  },
+  {
+   "id": "roundabout_no_stopping",
+   "type": "no_parking",
+   "polygon_px": [
+    [
+     630.4,
+     435.1
+    ],
+    [
+     607.9,
+     431.0
+    ],
+    [
+     586.4,
+     424.2
+    ],
+    [
+     566.6,
+     414.9
+    ],
+    [
+     549.1,
+     403.3
+    ],
+    [
+     534.3,
+     389.9
+    ],
+    [
+     522.8,
+     375.0
+    ],
+    [
+     515.0,
+     359.0
+    ],
+    [
+     510.9,
+     342.6
+    ],
+    [
+     510.8,
+     326.1
+    ],
+    [
+     514.7,
+     310.0
+    ],
+    [
+     522.5,
+     294.9
+    ],
+    [
+     533.8,
+     281.3
+    ],
+    [
+     548.5,
+     269.4
+    ],
+    [
+     565.9,
+     259.8
+    ],
+    [
+     585.7,
+     252.6
+    ],
+    [
+     607.1,
+     248.1
+    ],
+    [
+     629.6,
+     246.5
+    ],
+    [
+     652.4,
+     247.7
+    ],
+    [
+     674.9,
+     251.8
+    ],
+    [
+     696.4,
+     258.6
+    ],
+    [
+     716.2,
+     267.9
+    ],
+    [
+     733.7,
+     279.5
+    ],
+    [
+     748.5,
+     292.9
+    ],
+    [
+     760.0,
+     307.8
+    ],
+    [
+     767.8,
+     323.8
+    ],
+    [
+     771.9,
+     340.2
+    ],
+    [
+     772.0,
+     356.7
+    ],
+    [
+     768.1,
+     372.8
+    ],
+    [
+     760.3,
+     387.9
+    ],
+    [
+     749.0,
+     401.5
+    ],
+    [
+     734.3,
+     413.4
+    ],
+    [
+     716.9,
+     423.0
+    ],
+    [
+     697.1,
+     430.2
+    ],
+    [
+     675.7,
+     434.7
+    ],
+    [
+     653.2,
+     436.3
+    ]
+   ],
+   "grace_s": 10
+  }
+ ]
+}

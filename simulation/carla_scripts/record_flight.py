@@ -317,18 +317,24 @@ class CarlaCameraGrabber:
         self.lock = threading.Lock()
         self.saved_count = 0
         self._times_file = open(frame_times_path, "w", newline="")
-        self._times_file.write("frame,time_s,carla_frame\n")  # carla_frame pairs each frame with its seg/ image
+        # carla_frame pairs each frame with its seg/ image; sim_time and the camera's world pose on
+        # every frame let ml/violation_engine/ground_coords.py project pixels to metres without
+        # interpolating between the sparser seg-tick poses in camera_poses.csv
+        self._times_file.write("frame,time_s,carla_frame,sim_time,x,y,z,pitch,yaw,roll\n")
         self.camera.listen(self._on_image)
 
     def _on_image(self, image) -> None:
         arr = np.frombuffer(image.raw_data, dtype=np.uint8).reshape(image.height, image.width, 4)
         bgr = np.ascontiguousarray(arr[:, :, :3])  # CARLA raw_data is BGRA — drop alpha, already BGR
+        tf = image.transform
+        pose = ",".join(f"{v:.4f}" for v in (tf.location.x, tf.location.y, tf.location.z,
+                                              tf.rotation.pitch, tf.rotation.yaw, tf.rotation.roll))
 
         with self.lock:
             idx = self.saved_count
             self.saved_count += 1
             t = round(time.perf_counter() - self.start_time, 4)
-            self._times_file.write(f"{idx},{t},{image.frame}\n")
+            self._times_file.write(f"{idx},{t},{image.frame},{image.timestamp:.4f},{pose}\n")
         cv2.imwrite(str(self.frames_dir / f"{idx:05d}.jpg"), bgr, JPEG_SAVE_PARAMS)
 
     def stop(self) -> None:
