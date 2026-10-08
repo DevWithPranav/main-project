@@ -12,8 +12,9 @@
 --extra-index-url https://download.pytorch.org/whl/cu128
 
 # Deep learning
-torch>=2.7
-torchvision>=0.22
+# Pinned to the +cu128 builds: unpinned, pip picks a newer CPU-only torch from PyPI.
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
 ultralytics>=8.4          # YOLO26 + built-in TrackTrack / BoT-SORT / ByteTrack trackers
 
 # Vision / numerics
