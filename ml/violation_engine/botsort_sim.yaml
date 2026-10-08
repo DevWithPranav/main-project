@@ -1,0 +1,42 @@
+# BoT-SORT-ReID, tuned as a drop-in replacement for bytetrack_sim.yaml on
+# CARLA/AirSim + manually-recorded drone footage (Stage 6 sim/flight validation).
+#
+# Adopted per docs/Vehicle_Tracking_ID_Consistency_Plan.md Phase 2: our drone is
+# airborne and moving throughout every flight, which is exactly the scenario
+# plain ByteTrack (IoU/motion only, no appearance model, no camera-motion
+# compensation) struggles with. BoT-SORT adds:
+#   - with_reid: appearance embedding to disambiguate crossing/occluded vehicles
+#     that look similar in motion alone (off by default in Ultralytics — must be
+#     explicitly enabled here)
+#   - gmc_method: cancels drone ego-motion before matching, so the tracker isn't
+#     confusing camera movement with object movement
+#
+# Same relaxed detection-association thresholds as bytetrack_sim.yaml (see that
+# file's comments) as a starting point — not yet re-tuned against a real
+# tracking-quality metric (no ground-truth clip / motmetrics run yet, see
+# docs/Vehicle_Tracking_ID_Consistency_Plan.md Phase 1). Treat these numbers as
+# provisional until that exists.
+#
+# ID switches during sudden camera movement (investigated 2026-09-26 on
+# 20260920_194932): GMC is not the cause — sparseOptFlow only failed on blank
+# (no-scene) frames, never on real footage; orb/sift were no better. The actual
+# mechanism: detections drop during a sudden move, the track goes lost, and when
+# the vehicle is re-detected its box rarely overlaps the Kalman prediction by
+# IoU >= proximity_thresh. Ultralytics BoT-SORT disables the ReID match entirely
+# below that overlap (bot_sort.py get_dists), so appearance never gets a chance
+# to re-link it. proximity_thresh is loosened to let ReID reach further.
+
+tracker_type: botsort
+track_high_thresh: 0.15
+track_low_thresh: 0.05
+new_track_thresh: 0.15
+track_buffer: 90           # was 60 — keep lost tracks alive through the detection dropout around a sudden move
+match_thresh: 0.6          # max association *cost* (1 - IoU-based similarity): 0.6 is STRICTER than the stock 0.8
+fuse_score: True
+
+# BoT-SORT-specific
+gmc_method: sparseOptFlow
+proximity_thresh: 0.2      # was 0.5 — min IoU before ReID is even consulted; too strict after sudden moves
+appearance_thresh: 0.25
+with_reid: True
+model: auto   # Ultralytics' default lightweight ReID embedder (generic, not domain-tuned — see Plan Section 2.3)

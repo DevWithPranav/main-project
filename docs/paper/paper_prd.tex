@@ -1,0 +1,281 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Autonomous Aerial Surveillance Framework for Traffic Anomaly Detection and Digital Twin-Based Urban Planning\\
+\large \textit{(System Design Paper -- Working Draft)}}
+
+\author{
+\IEEEauthorblockN{1\textsuperscript{st} Afif Showfeer}
+\IEEEauthorblockA{
+\textit{Dept. of ---} \\
+\textit{--- Institution} \\
+City, Country \\
+email@placeholder.edu}
+}
+
+\maketitle
+
+\begin{abstract}
+Urban road networks are today monitored through fixed-point CCTV and periodic manual inspection, which together cover isolated points rather than continuous areas and leave road surface condition tracked only reactively, after a complaint, a vehicle-damage claim, or an accident. City planners consequently make infrastructure decisions from anecdotal complaint data and periodic manual studies rather than continuous, structured evidence, and have no way to test a proposed change -- a new signal, a lane reconfiguration, a one-way conversion, a resurfacing priority -- before committing budget to it. This paper presents the design of an autonomous aerial surveillance framework that uses unmanned aerial vehicle (UAV) footage and two parallel computer-vision pipelines -- vehicle behaviour detection and road surface anomaly detection -- to convert continuous aerial observation into structured, geo-tagged events. These events populate a shared three-dimensional digital twin of the monitored road network, which serves simultaneously as a live monitoring environment and as a simulation environment: planners construct a proposed infrastructure change directly on the twin and the system projects its estimated impact against the platform's own historical event data, before any physical or administrative action is taken. An automated analysis and reporting layer and a spatial-clustering-based urban planning recommendation engine close the loop from raw aerial observation to decision-ready output. The system is explicitly scoped as a monitoring, analysis, and planning-support platform rather than an automated enforcement system: no component identifies individuals, issues penalties, or dispatches enforcement action on its own; every flagged event is surfaced for human review, and legal or corrective action remains with the relevant human authority throughout. This paper presents the complete proposed system design -- objectives, architecture, violation and anomaly taxonomy, digital twin design, urban planning engine, reporting architecture, simulation strategy, security and compliance framework, and deployment plan -- as specified in the project's Product Requirements Document (v2.0), together with its benchmarking targets, novelty claims relative to existing aerial enforcement and fixed-CCTV systems, and its current limitations and future scope.
+\end{abstract}
+
+\begin{IEEEkeywords}
+UAV surveillance, digital twin, urban planning, traffic anomaly detection, road surface anomaly detection, object detection, multi-object tracking, DBSCAN, CARLA simulation, smart cities
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+\subsection{Problem Statement}
+
+Traffic monitoring in most urban areas relies on static ground-level CCTV at a handful of high-risk intersections and periodic human inspection. Between these fixed points, the road network is effectively unobserved -- unsafe driving behaviour, road surface damage, and emerging congestion patterns go undetected unless a citizen complains or an incident forces attention. Existing CCTV/automatic number-plate recognition (ANPR) infrastructure monitors specific fixed points rather than continuous areas, and suffers from a fixed field of view, occlusion from buildings and other vehicles, a single-plane perspective with no trajectory data, and no cross-zone awareness; expanding coverage means physically installing new hardware. Road surface degradation -- potholes, cracking, waterlogging, and debris accumulation -- is identified almost entirely reactively, and municipal bodies rarely maintain a continuously updated, geo-tagged inventory of road surface condition across their network. Even where violation or condition data is collected, it is rarely structured, aggregated, or delivered to city planners in a form that supports infrastructure decisions, and there is no existing tool that lets a planner draw a proposed change on a live model of the city and see a data-grounded projection of its effect before committing budget to it.
+
+\subsection{Proposed Solution}
+
+This project proposes an autonomous aerial surveillance and digital twin framework built on five integrated pillars: (1) an \textbf{Aerial Detection Engine} that detects and tracks vehicles from UAV aerial footage to identify traffic behaviour patterns in real time; (2) a \textbf{Road Surface Anomaly Engine}, a parallel computer-vision pipeline that scans the road surface for potholes, cracking, waterlogging, and debris, geo-tagging each defect with a severity score; (3) a \textbf{Digital Twin Environment}, a three-dimensional virtual replica of the monitored road network serving as the shared visualization, monitoring, and scenario-simulation interface; (4) an \textbf{Automated Analysis and Reporting Layer} that converts every detected event into structured, aggregated reports and trend dashboards without manual compilation; and (5) an \textbf{Intelligent Urban Planning Engine}, spatial clustering and rule-based recommendation logic that turns recurring violation and anomaly patterns into concrete infrastructure suggestions, testable via a what-if scenario simulator. The entire pipeline is developed, trained, and validated using CARLA, an open-source driving simulator, as a synthetic data generation environment, enabling testing of all violation types, anomaly types, and edge cases before real UAV deployment.
+
+\subsection{Scope: Monitoring, Analysis, and Planning Support -- Not Automated Enforcement}
+
+This platform is not designed as an automated legal-enforcement tool. It does not itself issue penalties, dispatch enforcement action, or determine legal outcomes; detected events are surfaced with a confidence or severity score for human review, and any consequent action rests with the relevant human authority. This is a deliberate, documented design boundary (see Section~\ref{sec:security}), not an incidental gap: the project's requirements were revised (v1.0 to v2.0) specifically to keep the platform's core purpose centred on continuous observation, digital twin visualization, and simulation-driven planning support, with an automatic ANPR/legal-challan pipeline explicitly kept outside the core platform scope and noted only as an optional, jurisdiction-specific future integration (Section~\ref{sec:future}).
+
+\subsection{Paper Organization}
+
+Section~\ref{sec:related} compares the proposed system against existing aerial enforcement systems, fixed CCTV, manual survey practice, and academic literature. Section~\ref{sec:objectives} states the project objectives and success criteria. Section~\ref{sec:architecture} presents the system architecture. Section~\ref{sec:approach} details the technical approach per objective. Section~\ref{sec:taxonomy} defines the violation and road anomaly taxonomy. Section~\ref{sec:twin} describes the digital twin design, Section~\ref{sec:dashboards} the user personas and dashboards, Section~\ref{sec:planning} the urban planning and recommendation engine, and Section~\ref{sec:reporting} the automated reporting architecture. Section~\ref{sec:stack} summarizes the technology stack, Section~\ref{sec:sim} the CARLA simulation strategy, and Section~\ref{sec:security} the security, privacy, and ethics framework. Section~\ref{sec:bench} states the benchmarking plan, Section~\ref{sec:novelty} the novelty claims, Section~\ref{sec:limitations} the limitations and future scope, Section~\ref{sec:deployment} the deployment plan, and Section~\ref{sec:conclusion} concludes.
+
+\section{Related Work and Comparison with Existing Systems}
+\label{sec:related}
+
+Table~\ref{tab:comparison} compares the proposed system against representative existing approaches: aerial drone enforcement systems (e.g. those operated by traffic authorities such as Dubai RTA), fixed intelligent traffic management systems (e.g. Hyderabad's ITMS), standard fixed CCTV, and manual road-condition survey practice.
+
+\begin{table}[htbp]
+\caption{Feature comparison with existing systems}
+\label{tab:comparison}
+\centering
+\footnotesize
+\begin{tabular}{@{}p{0.34\linewidth}ccccc@{}}
+\toprule
+\textbf{Feature} & \textbf{Ours} & \textbf{Drone Enf.} & \textbf{ITMS} & \textbf{CCTV} & \textbf{Manual} \\
+\midrule
+Aerial detection & \checkmark & \checkmark & -- & -- & -- \\
+Dynamic coverage area & \checkmark & \checkmark & -- & -- & Partial \\
+Multiple violation types & \checkmark (10) & $\sim$3--4 & $\sim$5--6 & $\sim$2--3 & N/A \\
+Road surface anomaly detection & \checkmark & -- & -- & -- & \checkmark (infrequent) \\
+Digital twin environment & \checkmark & -- & Partial & -- & -- \\
+City planning intelligence layer & \checkmark & -- & -- & -- & -- \\
+Automated report generation & \checkmark & -- & Partial & -- & -- \\
+What-if infrastructure simulator & \checkmark & -- & -- & -- & -- \\
+Simulator-based validation & \checkmark & -- & -- & -- & -- \\
+Open-source stack & \checkmark & -- & -- & Partial & N/A \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A survey of academic literature on aerial traffic monitoring and pavement-distress detection shows the same pattern: most work treats traffic violation detection and road surface condition monitoring as entirely separate research problems, rarely unified on one aerial platform; few combine aerial detection with a digital twin and a planner-facing simulation tool; and none, to the best of our knowledge, combine violation detection, road anomaly detection, urban planning recommendations, and automated reporting in a single coherent platform. Simulator-based (sim-to-real) approaches using CARLA for aerial traffic and surface-condition dataset generation are correspondingly rare at this project scale.
+
+\section{Objectives}
+\label{sec:objectives}
+
+\subsection{Primary and Supporting Objectives}
+
+The project defines six primary objectives -- (1) detect violations in traffic, (2) create a digital twin system, (3) road surface anomaly detection, (4) intelligent urban planning, (5) automated analysis and reporting, and (6) improved road safety and infrastructure management -- together with three supporting technical objectives: (7) geo-spatial coordinate mapping, (8) CARLA-based simulation and validation, and (9) scalable backend infrastructure. Table~\ref{tab:objectives} states the measurable success criteria defined for each.
+
+\begin{table}[htbp]
+\caption{Objectives and success criteria}
+\label{tab:objectives}
+\centering
+\footnotesize
+\begin{tabular}{@{}p{0.06\linewidth}p{0.86\linewidth}@{}}
+\toprule
+\textbf{Obj.} & \textbf{Success Criteria} \\
+\midrule
+1 & mAP $\geq$ 0.75 on aerial vehicle detection; tracking continuity $\geq$ 90\%; all 10 violation types detectable with F1 $\geq$ 0.70 \\
+2 & Twin updates within 500\,ms of a real-world event; violation and anomaly overlays both functional \\
+3 & Detection F1 $\geq$ 0.65 per anomaly category; severity scoring validated against manual inspection \\
+4 & Recommendations generated for any cluster with $\geq$ 50 historical events; what-if simulator produces a projection for any drawn scenario \\
+5 & Structured report (PDF/Excel/GeoJSON) generated for any date range/zone within 10 seconds \\
+6 & Every detection event traceable end-to-end from raw footage to a report or recommendation an authority can act on \\
+7 & GPS projection error $\leq$ 2\,m at 100\,m altitude \\
+8 & All violation and anomaly scripts executable in CARLA; dataset of 10,000+ frames generated \\
+9 & API response time $\leq$ 200\,ms under 100 concurrent connections \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{System Architecture}
+\label{sec:architecture}
+
+The system is layered as six stages. The \textit{input layer} accepts either CARLA simulator frame dumps with ground-truth metadata (training/testing phase) or real UAV RTSP video with MAVLink telemetry (production phase), both normalised to a common frame-plus-GPS-telemetry format. The \textit{detection pipeline layer} runs two parallel vision pipelines per frame: a vehicle pipeline (YOLO26l detector + ByteTrack tracker) producing tracked trajectories, and a road-surface pipeline (YOLO26l-seg) segmenting anomaly classes and feeding a severity scorer; both share a common geo-projection engine converting pixel coordinates to GPS. The \textit{violation and anomaly engine layer} evaluates tracked trajectories against ten defined violation types and deduplicates and severity-scores segmented anomalies against previously logged defects, producing structured events with a confidence/severity score. The \textit{backend infrastructure layer} -- FastAPI handling REST and WebSocket traffic, PostgreSQL/PostGIS for persistent geo-spatial storage, Redis for live state with TTL expiry, and MinIO for event snapshot object storage -- persists and serves this event stream. The \textit{analysis, reporting and planning layer} runs DBSCAN clustering across both event types, a recommendation rule engine, a what-if scenario simulator, and an automated report generator. Finally, the \textit{presentation layer} is a React/Next.js frontend with a CesiumJS three-dimensional digital twin embedded as a shared component, with role-based routing serving different overlay configurations and data endpoints per user type.
+
+\textit{Implementation note:} the requirements document originally specified YOLOv8 with a DeepSORT tracker. The realized detection and tracking pipeline instead uses \textbf{YOLO26l} (and its segmentation variant, YOLO26l-seg) as the base detector, and \textbf{ByteTrack} -- via Ultralytics' native tracking integration -- as the tracker, rather than DeepSORT. This reflects the latest Ultralytics model generation available at implementation time and avoids a separate DeepSORT integration, since ByteTrack ships natively alongside the detector and performed reliably on the vehicle classes in scope. All technology references throughout this paper describe this realized (YOLO26l/ByteTrack) stack rather than the document's original YOLOv8/DeepSORT specification.
+
+\section{Objective-Wise Technical Approach}
+\label{sec:approach}
+
+\textbf{Violation detection (Obj.~1):} a YOLO26l model fine-tuned on aerial vehicle imagery; a ByteTrack tracker maintaining unique track identifiers via confidence-tiered detection association and Kalman-filter motion prediction; a 30-frame rolling trajectory buffer per track; and a rule-based/trajectory-anomaly violation engine evaluating each buffer against the ten defined violation types, on either an RTSP drone stream or a CARLA frame dump.
+
+\textbf{Digital twin (Obj.~2):} CesiumJS as the three-dimensional rendering engine with Cesium Ion terrain tiles and OpenStreetMap building data; vehicle entities updated via WebSocket at 10\,Hz; violation and road-anomaly events persisted as geo-tagged markers with metadata popups; zone polygons and anomaly severity heat layers stored as GeoJSON and rendered as CesiumJS entities; a scenario-builder module lets planners draw proposed changes directly on the twin.
+
+\textbf{Road surface anomaly detection (Obj.~3):} a YOLO26l-seg (segmentation) model fine-tuned for pothole, crack, waterlogging, and debris classes, using a pavement-distress dataset adapted to an aerial/oblique drone perspective; a per-defect severity score computed from segmented area (via ground sampling distance) and class weighting; anomaly events deduplicated across patrol passes using GPS proximity clustering; a per-road-segment anomaly inventory with a rolling condition score.
+
+\textbf{Intelligent urban planning (Obj.~4):} DBSCAN spatial clustering on both violation and road-anomaly tables in PostGIS; a rule engine mapping cluster characteristics to recommendation types; recommendations stored as GeoJSON polygons with supporting metadata; a what-if scenario simulator that identifies historically affected events for a planner-drawn change and projects the estimated reduction or improvement.
+
+\textbf{Automated analysis and reporting (Obj.~5):} scheduled and on-demand aggregation jobs (Celery) rolling up events into summary statistics per zone, type, and time window; report templates rendering aggregated data into PDF, Excel, and GeoJSON formats; trend dashboards computed via time-bucketed PostGIS queries.
+
+\textbf{Improved road safety/infrastructure outcomes (Obj.~6):} every event is scored, geo-tagged, and routed to the relevant dashboard or report; severity-based prioritisation surfaces the most safety-critical issues first; a closed-loop status field (pending $\to$ reviewed $\to$ actioned) makes infrastructure management activity auditable over time.
+
+\textbf{Geo-spatial coordinate mapping (Obj.~7):} a homography matrix computed from drone altitude and gimbal pitch/roll/yaw, mapping pixel coordinates through camera coordinates to world coordinates via the pinhole camera model, using \texttt{pyproj} for coordinate reference system transformations. Ground sampling distance (GSD) is computed per frame as
+\begin{equation}
+\text{GSD (m/pixel)} = \frac{H \times SW}{f \times IW}
+\end{equation}
+where $H$ is drone altitude, $SW$ is sensor width, $f$ is focal length, and $IW$ is image width in pixels.
+
+\textbf{CARLA-based simulation and validation (Obj.~8):} CARLA 0.9.15 in synchronous mode at 20\,FPS; a spectator camera mounted at 100\,m altitude simulating the drone; per-violation-type and per-anomaly-type Python scripts for controlled dataset generation; auto-exported ground-truth bounding boxes/segmentation masks and GPS coordinates per frame; models trained on CARLA data and evaluated on real drone footage.
+
+\textbf{Scalable backend infrastructure (Obj.~9):} FastAPI async endpoints with Pydantic validation; PostgreSQL~16 + PostGIS~3.4 for persistent geo-spatial storage; Redis~7 for live vehicle/session state with TTL; a WebSocket manager using FastAPI WebSockets and Redis Pub/Sub for fan-out; MinIO S3-compatible storage for violation and anomaly snapshot images.
+
+\section{Violation and Road Anomaly Taxonomy}
+\label{sec:taxonomy}
+
+The system defines ten traffic violation types -- no-parking zone violation, wrong-way driving, illegal U-turn, red-light jumping, speeding, lane violation, zebra crossing violation, helmet-less riding, two-wheeler overloading, and illegal stopping on a highway/flyover -- each specified with a detection method, a trigger condition, documented edge cases, and a confidence threshold (ranging 78--92\% across types). For example, no-parking is triggered by a vehicle centroid inside a no-parking polygon with velocity below 2\,km/h sustained past a configurable grace period (default 30\,s), at a 90\% confidence threshold, since zone intersection is geometrically deterministic; speeding is computed from pixel displacement per frame $\times$ GSD $\times$ frame rate, flagged above the segment's speed limit for more than 10 consecutive frames, at an 85\% threshold, with Kalman-filter smoothing applied to reduce GPS-drift-induced false spikes.
+
+Four road surface anomaly categories are defined -- potholes, surface cracking, waterlogging/flooding, and debris/obstruction -- each with a YOLO26l-seg-based detection method and a severity score derived from segmented area (via GSD), depth-proxy or density metrics, and class weighting, banded into Low/Medium/High severity. Documented edge cases include waterlogged potholes obscuring the true boundary (flagged at reduced confidence and cross-checked against the waterlogging class) and shadows or repair patches misclassified as defects (filtered via texture and edge-consistency checks). Unlike a legal-enforcement pipeline, no category carries a hard statutory confidence cutoff -- every event carries its computed confidence/severity score into the digital twin and reports, and downstream dashboards allow filtering by confidence level.
+
+\section{Digital Twin Design}
+\label{sec:twin}
+
+The digital twin is a continuously updated three-dimensional virtual replica of the monitored road network, mirroring every tracked vehicle's real-time position, speed, and class; all defined zone polygons as geo-fenced overlays; all violation and road-anomaly events with exact GPS coordinates, timestamps, and snapshots; drone position and altitude; and, in planning mode, historical event density as heatmap layers plus AI recommendation polygons and saved what-if scenarios. Zone polygons -- the foundational layer defining where violation logic applies -- are drawn directly on the twin, stored as GeoJSON in PostGIS, colour-coded by type, and immediately active in the violation engine upon save. Live vehicle entities appear as colour-coded three-dimensional markers (green: normal, yellow: approaching a violation threshold, red: active violation), updated at 10\,Hz via WebSocket and removed after 30 seconds without an update. Flagged events drop a persistent, filterable pin at their exact GPS coordinate, colour/icon-coded by type or severity band. In planning mode, event points aggregate into a heatmap layer (cool-to-hot density scale, adjustable date range and type filters, batch-computed rather than real-time), and a scenario builder lets planners draw a proposed infrastructure change directly on the twin, with recommendation polygons from the clustering engine rendered as semi-transparent overlays whose opacity reflects accepted/rejected status.
+
+\section{User Personas and Dashboards}
+\label{sec:dashboards}
+
+Six user personas are defined: a field traffic monitoring officer (basic tech comfort, needs a simple mobile alert with GPS location and photo evidence), a control-room supervisor (needs a full command-mode twin view and one-click dispatch), a city planner/urban planning engineer (needs historical heatmaps, trend charts, AI recommendations, and a scenario simulator), a municipal maintenance engineer (needs a severity-ranked anomaly inventory and exportable work-order lists), a system administrator (needs user/zone management and system health visibility), and a drone operator (needs feed-status and altitude-compliance indicators). These map to two primary dashboards. The \textit{Monitoring Dashboard} (live operations) presents a live event feed, the digital twin with live vehicle markers and drone position, and zone status, with features including vehicle spotlight, field-responder mapping, one-click dispatch, and a session timeline. The \textit{Urban Planning Dashboard} (historical intelligence and simulation) presents filter controls, the twin in planning mode (heatmap, recommendation overlays, scenario builder), and analytics charts, with features including violation and road-condition heatmaps, trend charts, zone problem ranking, the AI recommendation panel, the what-if scenario simulator, time-of-day analysis, condition-inventory export, and PDF/Excel/GeoJSON export.
+
+\section{Urban Planning and Recommendation Engine}
+\label{sec:planning}
+
+DBSCAN (Density-Based Spatial Clustering of Applications with Noise) is applied to historical violation and road-anomaly GPS coordinates to identify spatial hotspots, with $\text{eps} = 50$\,m and $\text{min\_samples} = 10$, run separately per event type, on demand or automatically on a weekly schedule; events outside all clusters are treated as noise rather than actionable patterns. A rule set maps cluster composition to a recommendation type -- for example, more than 40\% red-light jumping at an intersection maps to a traffic-signal recommendation, more than 40\% wrong-way driving on a segment maps to a one-way conversion with physical barriers, and a high-severity pothole cluster on an arterial road maps to a priority-resurfacing recommendation. The what-if scenario simulator lets a planner draw a proposed change on the twin; the system identifies all historical events that change would affect and applies a rule-based impact model (e.g. a new signal at an intersection projected against historical signal-compliance study benchmarks) to display a before/after projection such as ``Before: 142 violations/month $\to$ Projected After: $\sim$35 violations/month.'' This projection is explicitly rule-based rather than causal-ML, and is labelled as an estimate for planning guidance in the interface rather than a precise forecast. Scenarios and recommendations are exportable as PDF (executive summary, heatmap, top recommendations, projections), GeoJSON (for import into government GIS systems), and Excel (tabular data for spreadsheet analysis).
+
+\section{Automated Analysis and Reporting}
+\label{sec:reporting}
+
+The reporting layer converts raw detection events into decision-ready output without manual compilation: events flow through a scheduled or on-demand aggregation engine producing counts, trends, hotspot summaries, and severity breakdowns, then a template renderer producing PDF, Excel, or GeoJSON output, delivered via dashboard download, scheduled email, or GIS import. Four report types are defined -- a Zone Summary Report (event counts by type and trend, for control room and planners), a Road Condition Report (severity-ranked anomaly inventory with recurrence trend, for maintenance engineers), a Planning Recommendation Report (AI recommendations with supporting cluster data and what-if projections, for planners and municipal council), and a Session Report (per-drone-session coverage and detection summary, for operators and admins). On-demand reports target readiness within 10 seconds for a standard zone/date-range scope; every figure in a generated report is traceable back to the underlying event records, and low-confidence or degraded-session events are included but visually distinguished rather than silently excluded.
+
+\section{Technology Stack}
+\label{sec:stack}
+
+Table~\ref{tab:stack} summarizes the technology assigned to each system layer.
+
+\begin{table}[htbp]
+\caption{Technology stack by layer}
+\label{tab:stack}
+\centering
+\footnotesize
+\begin{tabular}{@{}p{0.32\linewidth}p{0.58\linewidth}@{}}
+\toprule
+\textbf{Layer} & \textbf{Technology} \\
+\midrule
+Object detection & YOLO26l (Ultralytics) \\
+Object tracking & ByteTrack (Ultralytics native) \\
+Road surface segmentation & YOLO26l-seg (Ultralytics) \\
+Trajectory anomaly detection & Isolation Forest (scikit-learn) \\
+Video processing & OpenCV \\
+Geo-projection & pyproj, geopy \\
+Backend API & FastAPI \\
+Database & PostgreSQL 16 + PostGIS 3.4 \\
+Live state & Redis 7 \\
+Object storage & MinIO \\
+Async tasks & Celery + Redis \\
+Spatial analysis & GeoPandas, Shapely \\
+Clustering & scikit-learn DBSCAN \\
+Simulation & CARLA 0.9.15 \\
+Digital twin & CesiumJS \\
+Frontend & React + Next.js 14 \\
+Charts & Recharts + D3.js \\
+Report generation & WeasyPrint/ReportLab, openpyxl \\
+Auth & JWT (python-jose) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{CARLA Simulation Strategy}
+\label{sec:sim}
+
+CARLA provides photorealistic three-dimensional urban environments, a rich Python scenario-scripting API, ground-truth sensor data, and a broad vehicle blueprint library, eliminating the need for real drone footage during development. The simulated drone is a spectator camera mounted at 100\,m altitude with a nadir (straight-down) gimbal pose, with an RGB camera sensor (1920$\times$1080, 90$^\circ$ field of view) attached, run in synchronous mode at 20\,FPS on CARLA's Town05 map. Each of the ten violation types is scripted individually -- for example, no-parking spawns a vehicle inside a no-parking polygon and applies a sustained full brake, wrong-way spawns a vehicle facing the opposite road direction with autopilot on reversed waypoints, and red-light jumping sets the simulated signal state to RED via the CARLA API while a vehicle crosses the stop line. Since CARLA does not natively model road surface degradation, anomaly training data uses a hybrid approach: synthetic pothole/crack/waterlogging texture patches procedurally composited onto CARLA road meshes with an auto-exported ground-truth segmentation mask, supplemented by a public pavement-distress dataset re-perspectived toward an aerial viewing angle, plus CARLA static prop actors for debris simulation. The dataset generation pipeline exports RGB images, semantic segmentation masks, YOLO-format bounding boxes, composited anomaly masks, vehicle GPS coordinates, and violation ground-truth labels per frame (every 5th frame, 4\,FPS), targeting 10,000+ frames per violation type and 3,000+ frames per anomaly type, augmented with weather, brightness, motion blur, and compression artefacts before training. Sim-to-real transfer is addressed through training-time augmentation, fine-tuning on a small set of manually labelled real drone and pavement-distress images, and confidence-threshold calibration on real footage before production deployment.
+
+\section{Security, Privacy, and Ethics Framework}
+\label{sec:security}
+
+\subsection{Role-Based Access Control}
+
+Five roles -- OFFICER, OPERATOR, PLANNER, MAINTENANCE, and ADMIN -- are granted differentiated access across dashboards and actions (e.g. only OFFICER and ADMIN may review/dismiss events; only PLANNER and ADMIN may trigger recommendation generation or run the what-if simulator). All REST endpoints are protected by a JWT bearer token with an 8-hour expiry for field/shift roles and 30-day refresh tokens stored in HTTP-only cookies; failed authentication attempts are logged with IP and timestamp. All actions on violation and anomaly events are recorded in an immutable, append-only audit log (user, role, action, resource, timestamp, IP, result), with no delete permission for any role including ADMIN.
+
+\subsection{Regulatory Compliance}
+
+The system is designed against India's Drone Rules 2021 (DGCA): real-time altitude monitoring alerts the operator at 110\,m and hard-flags at the 120\,m AGL limit, patrol zone planning integrates Digital Sky Platform no-fly zone data, and all sessions are logged with operator ID, altitude profile, and zone metadata for regulatory audit. Against the Digital Personal Data Protection Act 2023, the system applies data minimisation (non-flagged vehicle data held only in Redis with a 30-second TTL and never archived), purpose limitation (data used only for traffic monitoring, road condition assessment, and urban planning), and a 2-year maximum retention on event data.
+
+\subsection{Facial Recognition and Privacy Boundaries}
+
+The system explicitly does not implement facial recognition at any point in the pipeline; occupant-related inference is limited to binary helmet presence/absence and two-wheeler passenger count, neither of which constitutes identity inference. Drone cameras are constrained to road-facing angles only, with patrol-zone and camera-tilt constraints preventing surveillance of residential windows or private property.
+
+\subsection{Human-in-the-Loop Principle}
+
+While the platform does not issue legal penalties itself, every flagged violation and anomaly is presented for human review before being marked actioned or resolved -- both a data-quality safeguard and an ethics measure, ensuring the system surfaces evidence and prioritisation while judgement and any consequent action remain with a human authority.
+
+\section{Benchmarking Plan}
+\label{sec:bench}
+
+Beyond the per-objective success criteria in Table~\ref{tab:objectives}, the project defines target thresholds across five metric families: object detection (mAP@0.5 $\geq$ 0.75, mAP@0.5:0.95 $\geq$ 0.55, per-class AP $\geq$ 0.70, inference $\leq$ 100\,ms/frame), tracking (MOTA $\geq$ 0.65, ID switch rate $\leq$ 5\%, track continuity $\geq$ 90\%), violation detection (precision $\geq$ 0.85, recall $\geq$ 0.75, F1 $\geq$ 0.70 per type, false-positive rate $\leq$ 15\%, false-negative rate $\leq$ 25\%, measured across a CARLA test set of 100 scripted scenarios per violation type), road anomaly detection (segmentation IoU $\geq$ 0.55, precision $\geq$ 0.80, recall $\geq$ 0.70, F1 $\geq$ 0.65 per category, severity-score correlation against manual inspection Spearman $\rho \geq 0.6$), and system performance (end-to-end alert latency $\leq$ 3\,s, twin update rate 10\,Hz, API response $\leq$ 200\,ms under 100 concurrent users, report generation $\leq$ 10\,s, GPS projection error $\leq$ 2\,m at 100\,m altitude).
+
+\section{Innovation Highlights}
+\label{sec:novelty}
+
+Five novel contributions are identified relative to existing work. \textit{Unified aerial detection of behavioural and physical road conditions}: existing systems treat traffic enforcement and pavement-condition monitoring as separate domains with separate hardware and teams; this platform unifies both detection tasks on one aerial pipeline and one digital twin. \textit{CARLA sim-to-real extended to road surface anomalies}: CARLA is widely used for ground-level autonomous driving research but rarely for aerial traffic monitoring and essentially never for road-surface-defect simulation, since it has no native pavement-degradation support; extending it via synthetic texture-overlay compositing is a novel application. \textit{Unified governance digital twin for monitoring, planning, and maintenance}: existing traffic digital twins are typically either purely operational or purely analytical, and rarely extend to maintenance stakeholders; this platform serves all three from one spatial data layer. \textit{Automated reporting closing the observation-to-action loop}: existing systems collect data but rarely close the loop into an automatically generated, stakeholder-ready document. \textit{A what-if infrastructure simulator grounded in the platform's own historical data}: projecting safety outcomes from a proposed infrastructure change using the same platform's own historical trajectory and violation data, rather than a generic traffic model, is not documented in existing traffic management platforms at this scale.
+
+\section{Limitations and Future Scope}
+\label{sec:limitations}
+
+\subsection{Current Limitations}
+
+Detection accuracy is expected to drop in night/low-light conditions (mitigated by session-level low-light flagging with visible confidence caveats rather than suppression); a CARLA-to-real domain gap may reduce first-deployment performance (mitigated by fine-tuning and augmentation); CARLA's lack of native road-surface-degradation modelling requires a hybrid synthetic-overlay-plus-real-dataset approach; the what-if simulator is rule-based rather than causal and is labelled as an estimate; high vehicle density is expected to reduce tracking accuracy (mitigated by a ByteTrack fallback and raised confidence thresholds); and, by design, the system implements no automated legal enforcement pipeline -- it does not itself issue penalties, and enforcement action remains with human authorities.
+
+\subsection{Future Scope}
+\label{sec:future}
+
+Planned extensions include multi-drone fleet coordination with conflict resolution, edge (onboard) inference to eliminate ground-processing latency, predictive maintenance modelling for road segments likely to degrade, predictive deployment modelling for high-violation time-location combinations, night-mode operation via thermal cameras, a causal (rather than rule-based) what-if model, real-time smart-signal integration, federated learning across multiple city deployments, a carbon-footprint analysis layer mapping idling-in-violation-zone data to emissions estimates, and -- explicitly kept outside the core platform scope -- an optional, opt-in module bridging flagged violations to existing ground-level ANPR/legal-challan infrastructure for jurisdictions that require it.
+
+\section{Deployment Plan}
+\label{sec:deployment}
+
+A phased pilot is recommended: Phase~0 completes CARLA-only simulation validation and dataset generation for both detection domains; Phase~1 deploys a single 1\,km\textsuperscript{2} zone pilot with one drone operator for 30 days, collecting accuracy and false-positive benchmarks; Phase~2 expands to 3--5 zones and onboards Urban Planning Dashboard users, generating the first planning recommendations and condition inventories; Phase~3 is a city-wide rollout with drone-fleet coordination, scheduled reporting integrated into municipal workflows, and a government MoU for continued operation. Estimated pilot hardware and setup cost is approximately \textrm{\textrupee}13.6--21.2 lakh, which the requirements document positions as cost-competitive per square kilometre against a single fixed CCTV installation (\textrm{\textrupee}3--5 lakh, one-point coverage) combined with a separate periodic manual road-condition survey contract.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+This paper has presented the complete design of an autonomous aerial surveillance framework that converts continuous UAV observation of both traffic behaviour and road surface condition into a shared digital twin, an automated reporting layer, and a spatial-clustering-driven urban planning recommendation and simulation engine. The system is deliberately scoped around monitoring, analysis, and simulation-driven decision support rather than automated enforcement, with every flagged event routed through human review before any action is taken. The design specifies concrete, measurable success criteria across detection, tracking, anomaly, planning, and system-performance metrics, a validation strategy grounded in CARLA simulation prior to real UAV deployment, and a phased pilot-to-city-wide deployment plan. Realizing this design against its stated benchmarks is the subject of ongoing implementation work.
+
+\section*{Acknowledgment}
+The system design presented in this paper is drawn from the project's Product Requirements Document (v2.0).
+
+\begin{thebibliography}{00}
+\bibitem{ultralytics} G. Jocher, A. Chaurasia, and J. Qiu, ``Ultralytics YOLO (YOLO26),'' 2026. [Online]. Available: https://docs.ultralytics.com
+\bibitem{bytetrack} Y. Zhang, P. Sun, Y. Jiang, D. Yu, F. Weng, Z. Yuan, P. Luo, W. Liu, and X. Wang, ``ByteTrack: Multi-Object Tracking by Associating Every Detection Box,'' in \textit{Proc. European Conference on Computer Vision (ECCV)}, 2022.
+\bibitem{carla} A. Dosovitskiy, G. Ros, F. Codevilla, A. Lopez, and V. Koltun, ``CARLA: An Open Urban Driving Simulator,'' in \textit{Proc. 1st Annual Conference on Robot Learning (CoRL)}, 2017.
+\bibitem{dgca2021} DGCA India, ``Drone Rules 2021,'' Ministry of Civil Aviation, Government of India, 2021.
+\bibitem{dpdp2023} Government of India, ``Digital Personal Data Protection Act 2023,'' 2023.
+\bibitem{rdd} D. Arya et al., ``Global Road Damage Detection: State-of-the-Art Solutions,'' in \textit{Proc. IEEE International Conference on Big Data (BigData)}, 2020.
+\bibitem{dbscan} M. Ester, H.-P. Kriegel, J. Sander, and X. Xu, ``A Density-Based Algorithm for Discovering Clusters in Large Spatial Databases with Noise,'' in \textit{Proc. 2nd International Conference on Knowledge Discovery and Data Mining (KDD)}, 1996.
+\bibitem{idd} Indian Institute of Technology, ``India Driving Dataset (IDD),'' [Online]. Available: https://idd.insaan.iiit.ac.in
+\bibitem{cesium} Cesium, ``CesiumJS Documentation,'' [Online]. Available: https://cesium.com/docs
+\end{thebibliography}
+
+\end{document}

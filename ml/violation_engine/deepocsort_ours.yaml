@@ -1,0 +1,25 @@
+# Improvement Plan C2 candidate: Deep OC-SORT, built into Ultralytics 8.4.
+#
+# Confidence levels set to botsort_sim.yaml's for a like-for-like tracker comparison
+# (C3 tunes them later). Stock gmc_method is `none`; our camera moves, so GMC is on.
+# ReID off here — whether ReID helps at all is measured separately (C1), and the
+# `auto` model would fall back to the generic yolo26n-cls.pt with YOLO26.
+
+tracker_type: deepocsort
+track_high_thresh: 0.15    # stock 0.3
+track_low_thresh: 0.05     # stock 0.1
+new_track_thresh: 0.15     # stock 0.3
+track_buffer: 90           # stock 30
+match_thresh: 0.8
+fuse_score: True
+
+delta_t: 3
+inertia: 0.2
+use_byte: True             # stock False — second pass on weak boxes; our detector scores low
+
+gmc_method: sparseOptFlow  # stock none
+with_reid: False
+model: auto
+proximity_thresh: 0.5
+appearance_thresh: 0.9
+alpha_fixed_emb: 0.95

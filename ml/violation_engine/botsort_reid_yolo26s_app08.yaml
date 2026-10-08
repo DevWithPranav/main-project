@@ -1,0 +1,21 @@
+# Improvement Plan C1: botsort_reid_yolo26s.yaml with appearance_thresh at the stock 0.8.
+#
+# Phase 1 found that at appearance_thresh 0.25 the embedding never rejects a match
+# (bot_sort.py get_dists: emb distance = cosine/2, rejected only above 1 - thresh = 0.75,
+# i.e. cosine similarity < -0.5), so every encoder gave identical IDs. At 0.8 a match
+# needs embedding distance <= 0.2 (cosine similarity >= 0.6) for appearance to count,
+# so the encoder actually has to recognise the vehicle.
+
+tracker_type: botsort
+track_high_thresh: 0.15
+track_low_thresh: 0.05
+new_track_thresh: 0.15
+track_buffer: 90
+match_thresh: 0.6          # max association cost; 0.6 is stricter than the stock 0.8
+fuse_score: True
+
+gmc_method: sparseOptFlow
+proximity_thresh: 0.2
+appearance_thresh: 0.8
+with_reid: True
+model: yolo26s-reid.onnx
