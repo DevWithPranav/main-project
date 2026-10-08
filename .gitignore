@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+venv_*/
 env/
 
 # Node / Next.js
@@ -65,3 +66,4 @@ Thumbs.db
 .vscode/
 .idea/
 .claude/
+/CLAUDE.md

@@ -1,0 +1,35 @@
+# Main environment: everything under ml/ (detection, tracking, violation engine, pothole).
+# Python 3.12, NVIDIA GPU (CUDA 12.8 wheels).
+#
+#   py -3.12 -m venv venv
+#   venv\Scripts\activate
+#   python -m pip install --upgrade pip
+#   pip install -r requirements.txt
+#
+# The CARLA/AirSim simulator scripts need a separate Python 3.10 env:
+# see simulation/requirements-sim.txt.
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# Deep learning
+torch>=2.7
+torchvision>=0.22
+ultralytics>=8.4          # YOLO26 + built-in TrackTrack / BoT-SORT / ByteTrack trackers
+
+# Vision / numerics
+numpy
+opencv-python
+pillow
+scipy
+shapely>=2.0
+pyyaml
+
+# Training augmentations (ml/detection/train_retrain.py)
+albumentations
+
+# Camera-motion stabilisation (ml/violation_engine/scene_map.py)
+stabilo
+
+# Tracking evaluation (ml/violation_engine/eval_tracking.py)
+motmetrics
+trackeval @ git+https://github.com/JonathonLuiten/TrackEval.git
