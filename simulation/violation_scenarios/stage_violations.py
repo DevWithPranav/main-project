@@ -12,7 +12,12 @@ so speed, timing and position are exactly what was planned:
   illegal_u_turn   U-turn inside a no-U-turn zone                    + negative: same U-turn outside any zone
   lane_violation   drive on the line between two same-direction lanes for 7 s
   zebra_crossing   stop 15 s on a crosswalk                          + negative: stop behind a queue
-  highway_stop     stop 30 s in a highway lane (only where a lane has a limit >= 90 km/h)
+  road features    Build Plan M2, one act per condition that fits the view (plan_road_feature_acts):
+                   A1 wrong lane through a junction, A3 across a mixed line's solid side, A5 car in a bus
+                   lane, A6 on the shoulder, A8 cut-in (TTC 0.9 s), B1 / B4 / B5 stop on a highway / ramp /
+                   bridge lane, C2 / C4 / C5 wrong way in from a junction / on a ramp / one-way, D2 U-turn
+                   across a solid centre line, D3 at a no-U-turn junction, D4 through a median, E4 truck
+                   over its class limit, each with a negative where one means something
   red_light        through a stop line at 30 km/h, red 1.5 s and 3 s before   + negative: red 1.5 s after
                    (optional, CARLA only; the light is switched by the script, all lights frozen meanwhile)
 
@@ -25,9 +30,13 @@ evaluation:
 Acts are placed inside the camera's 16:9 ground footprint (View: altitude, heading, 90 deg FOV),
 --margin m from its edge; an act whose scored part would leave it is dropped with a message.
 
-Check the plan offline first (no simulator needed), then run it with CarlaAir up:
-    python stage_violations.py --town Town05 --center -40 -137 --altitude 67.6 --yaw 0 --plan-only
+Find drone spots that cover every condition, check a plan offline (no simulator needed), then
+run it with CarlaAir up:
+    python stage_violations.py --suggest --town Town04
+    python stage_violations.py --town Town05 --center -40 -137 --altitude 67.6 --yaw 0 --plan-only --out plan/scenario_log.json
+    python ml/violation_engine/run_violations.py --plan plan/scenario_log.json --scene ml/violation_engine/configs/scenes/Town05.json --profile town05
     python stage_violations.py --out <flight folder>/scenario_log.json   # centre, height, heading from the drone
+Red-light acts only with --red-light (out of scope since 2026-10-09).
 
 Run in the carlaAir conda env.
 """
@@ -100,6 +109,8 @@ class Trajectory:
         if not self.p:
             self.p.append(pts[0])
             self.yaw.append(_yaw(pts[0], pts[1], reverse))
+        elif np.hypot(*(pts[0] - self.p[-1])[:2]) > 1e-6:
+            pts = [self.p[-1]] + pts  # drive from where the car is, never jump to the next piece's start
         for a, b in zip(pts[:-1], pts[1:]):
             d = float(np.hypot(*(b - a)[:2]))
             if d < 1e-6:
@@ -192,7 +203,17 @@ def lane_props(town: str):
     lanes = [l for l in json.loads(path.read_text())["lanes"] if l.get("lane_type", "driving") == "driving"]
     pts = np.vstack([np.array(l["centreline"]) for l in lanes])
     owner = np.concatenate([[i] * len(l["centreline"]) for i, l in enumerate(lanes)])
-    return lambda x, y: lanes[int(owner[int(np.argmin((pts[:, 0] - x) ** 2 + (pts[:, 1] - y) ** 2))])]
+    cell = 10.0  # grid of centreline points: a query looks at its own and the 8 neighbouring cells
+    grid: dict[tuple, list] = {}
+    for k, (x, y) in enumerate(pts):
+        grid.setdefault((int(x // cell), int(y // cell)), []).append(k)
+
+    def lookup(x, y):
+        gx, gy = int(x // cell), int(y // cell)
+        near = [k for dx in (-1, 0, 1) for dy in (-1, 0, 1) for k in grid.get((gx + dx, gy + dy), ())]
+        idx = np.array(near) if near else np.arange(len(pts))
+        return lanes[int(owner[idx[int(np.argmin((pts[idx, 0] - x) ** 2 + (pts[idx, 1] - y) ** 2))]])]
+    return lookup
 
 
 def candidates(m, view: View, length, in_view_m: int = 40) -> list:
@@ -209,7 +230,7 @@ def candidates(m, view: View, length, in_view_m: int = 40) -> list:
     return out
 
 
-def plan(m, town: str, view: View, seed: int, world=None) -> dict:
+def plan(m, town: str, view: View, seed: int, world=None, red_light: bool = False) -> dict:
     rng = random.Random(seed)
     props = lane_props(town)
     limit = lambda x, y: float(props(x, y)["speed_limit_kmh"])  # noqa: E731
@@ -288,18 +309,11 @@ def plan(m, town: str, view: View, seed: int, world=None) -> dict:
     def two_way(run):
         left = run[25].get_left_lane()
         return left is not None and left.lane_type == carla.LaneType.Driving and left.lane_id * run[25].lane_id < 0
-    nou_centre = None
-    for in_zone in (True, False):
-        if in_zone:
-            r = take(two_way)
-        else:  # the legal one must be clearly outside the no-U-turn zone, on another road
-            r = take(lambda run: two_way(run) and nou_centre is not None
-                     and math.hypot(*(xyz(run[25])[:2] - nou_centre)) > 30.0)
-            if r is not None and math.hypot(*(xyz(r[25])[:2] - nou_centre)) <= 30.0:
-                r = None
+    # (the legal negative is now D2's: outside a zone a U-turn is legal only across a broken line)
+    for in_zone in (True,):
+        r = take(two_way)
         if r is None:
             break
-        nou_centre = xyz(r[25])[:2] if in_zone else nou_centre
         p, q = r[25], r[25].get_left_lane()
         a, b = xyz(p), xyz(q)
         c, rad = (a + b) / 2, float(np.hypot(*(b - a)[:2])) / 2
@@ -359,18 +373,14 @@ def plan(m, town: str, view: View, seed: int, world=None) -> dict:
             acts.append({"type": "zebra_crossing", "expected": False, "traj": foll, "lead": lead,
                          "note": "on the crossing behind a stopped car (queue)", "truth": ("start", "end")})
 
-    # highway stop: only where a lane has a limit >= 90 km/h
-    r = take(lambda run: limit(*xyz(run[30])[:2]) >= 90)
-    if r is not None and limit(*xyz(r[30])[:2]) >= 90:
-        tr = Trajectory().move([xyz(w) for w in r[:31]], 60 / 3.6).mark("start").hold(30.0).mark("end")
-        tr.move([xyz(w) for w in r[30:]], 40 / 3.6)
-        acts.append({"type": "highway_stop", "expected": True, "traj": tr, "note": "30 s stop in a highway lane",
-                     "truth": ("start", "end")})
+    # highway stops (B1 / B4 / B5) and the other road-feature conditions: plan_road_feature_acts
+    m2_acts, extras = plan_road_feature_acts(m, view, runs, take, props, limit, used_roads, zones)
+    acts += m2_acts
 
     # red light (optional, CARLA only): through a stop line at 30 km/h; the light turns red 1.5 s /
     # 3 s before the front reaches the line (violations, R22's typical range), or 1.5 s after the car
     # has passed it (negative: already past the line at the change, PRD 4 edge case 1)
-    appr = _signal_approach(m, world, center, radius)
+    appr = _signal_approach(m, world, center, radius) if red_light else None  # out of scope: only on request
     if appr is not None:
         sid, stop, back, ahead = appr
         v = 30 / 3.6
@@ -391,7 +401,413 @@ def plan(m, town: str, view: View, seed: int, world=None) -> dict:
             kept.append(a)
         else:
             print(f"[plan] dropped {a['type']} ({a['note']}): it leaves the camera view (margin {view.margin:.0f} m)")
-    return {"acts": kept, "zones": zones}
+
+    # A5 last: the bus-lane override holds for the whole session, so the lane must be one no other
+    # act drives in (else their cars raise A5 too). Background traffic in it is natural A5.
+    lane_of = lambda x, y: props(x, y)["id"].split("_p")[0]  # noqa: E731
+    touched = {lane_of(*pt[:2]) for a in kept for tr in (a["traj"], a.get("lead")) if tr is not None for pt in tr.p[::5]}
+    bus = next((run for run in runs if lane_of(*xyz(run[20])[:2]) not in touched
+                and len({lane_of(*xyz(w)[:2]) for w in run[5:41:5]}) == 1), None)
+    if bus is None:
+        print("[plan] A5: no lane in view that no other act uses - act skipped")
+    else:
+        extras["lane_overrides"].append({"lane_id": props(*xyz(bus[20])[:2])["id"].split("_p")[0] + "*", "restricted": "bus"})
+        for cls, expected in (("car", True), ("bus", False)):
+            kept.append({"type": "lane_violation", "condition": "A5", "expected": expected, "cls": cls,
+                         "traj": Trajectory().move([xyz(w) for w in bus[:6]], 30 / 3.6).mark("start")
+                         .move([xyz(w) for w in bus[5:41]], 30 / 3.6).mark("end"),
+                         "note": f"a {cls} in a bus lane", "truth": ("start", "end")})
+    return {"acts": kept, "zones": zones, **{k: v for k, v in extras.items() if v}}
+
+
+# --- Build Plan M2: one act (+ a negative where it means something) per road-feature condition ------
+#
+# Each act names the condition it should be detected as (Expected_Output 4.2), so a dry run
+# (run_violations.py --plan) and the scorer check the condition, not only the type. Acts that need
+# a rule setting carry it in the log: lane_overrides (a bus lane, A5) and engine_params (the junction
+# where a U-turn is prohibited, D3; a truck speed limit, E4). Lane-change acts follow a cut-in as
+# in NCAP-style tests (lane change over ~1.2 s; unsafe: TTC ~0.9 s; safe: same speed, 20 m gap).
+
+CUTIN_TTC_S = 0.9
+CHANGER_KMH, LAG_KMH = 30.0, 50.0
+
+
+def _mark(m) -> str:
+    return str(m.type).split(".")[-1].lower() if m is not None else "none"
+
+
+def _offset_path(run, k0: int, k1: int, off0: float, off1: float) -> list:
+    """Points along run, offset sideways (+ = right) from off0 to off1 between run[k0] and run[k1] (smooth)."""
+    pts = []
+    for k, w in enumerate(run):
+        a = min(max((k - k0) / max(k1 - k0, 1), 0.0), 1.0)
+        a = 3 * a * a - 2 * a ** 3
+        pts.append(lateral(w, off0 + (off1 - off0) * a))
+    return pts
+
+
+def _neighbour(w, side: str):
+    nb = w.get_right_lane() if side == "right" else w.get_left_lane()
+    if nb is not None and nb.lane_type == carla.LaneType.Driving and nb.lane_id * w.lane_id > 0:
+        return nb
+    return None
+
+
+def _exit_of(wp, max_steps: int = 80):
+    """Follow a junction connector to the first non-junction waypoint: (exit waypoint, path points)."""
+    pts, w = [], wp
+    for _ in range(max_steps):
+        pts.append(xyz(w))
+        if not w.is_junction:
+            return w, pts
+        nxt = w.next(1.0)
+        if not nxt:
+            return None, pts
+        w = nxt[0]
+    return None, pts
+
+
+def _lane_glob(w) -> str:
+    return f"r{w.road_id}_s{w.section_id}_l{w.lane_id}*"
+
+
+def plan_road_feature_acts(m, view: View, runs: list, take, props, limit, used_roads: set,
+                           zones: list) -> tuple[list, dict]:
+    """Acts for A1, A3, A5, A6, A8, B1, B4, B5, C2, C4, C5, D2, D3, D4, E4 that fit this view.
+    Returns (acts, log extras: lane_overrides / engine_params)."""
+    acts, extras = [], {"lane_overrides": [], "engine_params": {}}
+    p = lambda w: props(*xyz(w)[:2])  # noqa: E731
+    inview = lambda pts: view.contains(pts)  # noqa: E731
+    skip = lambda cond, why: print(f"[plan] {cond}: {why} - act skipped")  # noqa: E731
+    v_ch, v_lag = CHANGER_KMH / 3.6, LAG_KMH / 3.6
+
+    def act(cond, vtype, expected, tr, note, **kw):
+        acts.append({"type": vtype, "condition": cond, "expected": expected, "traj": tr, "note": note,
+                     "truth": ("start", "end"), **kw})
+
+    # A3: a lane change across a mixed line from its solid side (not permitted, but not a solid line:
+    # A2 is for solid / double solid); negative: the same line crossed from its broken side
+    def mixed(run):
+        w = run[20]
+        for side in ("right", "left"):
+            nb = _neighbour(w, side)
+            mark = _mark(w.right_lane_marking if side == "right" else w.left_lane_marking)
+            ok = w.lane_change in ((carla.LaneChange.Right if side == "right" else carla.LaneChange.Left), carla.LaneChange.Both)
+            if nb is not None and mark in ("solidbroken", "brokensolid") and not ok:
+                return side
+        return None
+    r = take(lambda run: mixed(run) is not None)
+    side = mixed(r) if r is not None else None
+    if side is None:
+        skip("A3", "no lane in view with a mixed line it may not cross")
+    else:
+        sgn = 1.0 if side == "right" else -1.0
+        width = r[20].lane_width
+        go = _offset_path(r[:46], 15, 30, 0.0, sgn * width)
+        act("A3", "lane_violation", True, Trajectory().move(go[:16], v_ch).mark("start").move(go[15:], v_ch).mark("end"),
+            f"lane change to the {side} across its solid side")
+        back = _offset_path(r[:46], 15, 30, sgn * width, 0.0)
+        act("A3", "lane_violation", False, Trajectory().move(back[:16], v_ch).mark("start").move(back[15:], v_ch).mark("end"),
+            "the same line crossed from its broken side (permitted)")
+
+    # A2: a lane change across a solid line to a same-direction lane, else an overtake over a solid
+    # centre line (out into the opposing lane and back)
+    def solid_side(run):
+        w = run[20]
+        for side in ("right", "left"):
+            mark = _mark(w.right_lane_marking if side == "right" else w.left_lane_marking)
+            if mark in ("solid", "solidsolid") and _neighbour(w, side) is not None:
+                return side
+        return None
+    r = take(lambda run: solid_side(run) is not None)
+    if r is not None:
+        side = solid_side(r)
+        sgn = 1.0 if side == "right" else -1.0
+        go = _offset_path(r[:46], 15, 30, 0.0, sgn * r[20].lane_width)
+        act("A2", "lane_violation", True, Trajectory().move(go[:16], v_ch).mark("start").move(go[15:], v_ch).mark("end"),
+            f"lane change to the {side} across a solid line")
+    else:
+        r = take(lambda run: _mark(run[20].left_lane_marking) in ("solid", "solidsolid") and run[20].get_left_lane() is not None
+                 and run[20].get_left_lane().lane_type == carla.LaneType.Driving)
+        if r is None:
+            skip("A2", "no solid lane line in view")
+        else:
+            w = -r[20].lane_width  # into the opposing lane on the left, then back
+            path = [lateral(x, w * min(max((k - 10) / 8, 0), 1) * min(max((36 - k) / 8, 0), 1)) for k, x in enumerate(r[:46])]
+            # out in the oncoming lane it is driving against it: a wrong-way event too, by rule
+            act("A2", "lane_violation", True,
+                Trajectory().move(path[:11], v_ch).mark("start").move(path[10:], v_ch).mark("end"),
+                "overtake over the solid centre line and back", also=["wrong_way"])
+
+    # A8: cut-in in front of a faster car (TTC ~0.9 s at the crossing); negative: 20 m gap, same speed
+    r = take(lambda run: len(run) > 60 and _neighbour(run[5], "right") is not None
+             and _mark(run[5].right_lane_marking) in ("broken", "brokenbroken")
+             and inview([lateral(w, w.lane_width) for w in run[:61]] + [xyz(w) for w in run[:61]]))
+    if r is None:
+        skip("A8", "no two same-direction lanes with a broken line in view")
+    else:
+        width = r[5].lane_width
+        ch = _offset_path(r[:61], 40, 50, 0.0, width)  # crosses the line at s = 45
+        t_c = 15.0 / v_ch  # from s = 30 (start) to the crossing
+        lane_pts = [lateral(w, width) for w in r[:61]]
+        for expected, lag_v, gap, note in ((True, v_lag, CUTIN_TTC_S * (v_lag - v_ch), f"cut-in, TTC {CUTIN_TTC_S} s to a 50 km/h car"),
+                                           (False, v_ch, 20.0, "lane change with a 20 m gap, same speed")):
+            s_lag = 45.0 - 2 * FRONT_M - gap - lag_v * t_c  # lag start, so its bumper is `gap` behind at the crossing
+            if s_lag < 0:
+                continue
+            k0 = int(round(s_lag))
+            k_slow = min(int(45.0 - 2 * FRONT_M - gap + lag_v * 0.5), 60)  # brakes to the changer's speed 0.5 s after
+            lag = Trajectory().move(lane_pts[k0:k_slow + 1], lag_v).move(lane_pts[k_slow:], v_ch)
+            tr = Trajectory().move(ch[30:41], v_ch).mark("start").move(ch[40:56], v_ch).mark("end").move(ch[55:], v_ch)
+            act("A8", "lane_violation", expected, tr, note, lead=lag)
+
+    # A5 (a bus lane) is planned last, in plan(): the override holds for the whole session, so its
+    # lane must be one no other act drives in
+
+    # A6: driving along a full-width shoulder (25 km/h: below any limit here, so not speeding too);
+    # negative: pulling over slowly and stopping briefly
+    sh = None
+    for run in runs:
+        nb = run[10].get_right_lane()
+        if nb is not None and nb.lane_type == carla.LaneType.Shoulder and nb.lane_width >= 2.5:
+            pts = [lateral(w, (w.lane_width + nb.lane_width) / 2) for w in run[:41]]
+            if inview(pts):
+                sh = pts
+                break
+    if sh is None:
+        skip("A6", "no shoulder >= 2.5 m wide in view")
+    else:
+        act("A6", "lane_violation", True, Trajectory().mark("start").move(sh, 25 / 3.6).mark("end"), "25 km/h on the shoulder")
+        act("A6", "lane_violation", False, Trajectory().mark("start").move(sh[:12], 6 / 3.6).hold(5.0).mark("end"),
+            "pulling over at 6 km/h, 5 s stop")
+
+    # A1: through a junction from the wrong lane: the neighbour lane's connector to an exit this lane
+    # does not lead to; negative: the same path from the neighbour lane (legal)
+    found = None
+    for run in runs:
+        end = run[-1]
+        if not end.next(3.0) or not end.next(3.0)[0].is_junction:
+            continue
+        own_exits = {(e.road_id, e.lane_id) for e, _ in (_exit_of(c) for c in end.next(3.0)) if e is not None}
+        for side in ("left", "right"):
+            nb = _neighbour(end, side)
+            if nb is None:
+                continue
+            for c in nb.next(3.0):
+                e, conn = _exit_of(c)
+                if e is None or (e.road_id, e.lane_id) in own_exits:
+                    continue
+                out = lane_run(e, 20.0)
+                approach = [xyz(w) for w in run[-31:]]
+                nb_approach = [lateral(w, (1 if side == "right" else -1) * w.lane_width) for w in run[-31:]]
+                if inview(approach + conn + [xyz(w) for w in out]):
+                    found = (approach, nb_approach, conn, [xyz(w) for w in out])
+                    break
+            if found:
+                break
+        if found:
+            break
+    if found is None:
+        skip("A1", "no junction in view where a lane does not lead where its neighbour does")
+    else:
+        approach, nb_approach, conn, out = found
+        for start, expected, note in ((approach, True, "turns from the lane that doesn't lead there"),
+                                      (nb_approach, False, "the same turn from the right lane")):
+            act("A1", "lane_violation", expected,
+                Trajectory().move(start, 20 / 3.6).mark("start").move(conn[2:] + out, 20 / 3.6).mark("end"), note)
+
+    # B1 / B4 / B5: stops where the road itself forbids it (highway, ramp, bridge); negative: a 10 s stop
+    def stop_on(cond, pred, what):
+        cand = None
+        for w in m.generate_waypoints(3.0):
+            if w.lane_type != carla.LaneType.Driving or w.is_junction or not pred(p(w)):
+                continue
+            run = lane_run(w, 25.0)
+            if len(run) > 20 and inview([xyz(x) for x in run]) and all(pred(p(x)) for x in run[10:21:5]):
+                cand = run
+                break
+        if cand is None:
+            skip(cond, f"no {what} lane in view")
+            return
+        for hold, expected in ((30.0, True), (10.0, False)):
+            tr = Trajectory().move([xyz(w) for w in cand[:16]], 30 / 3.6).mark("start").hold(hold).mark("end")
+            tr.move([xyz(w) for w in cand[15:]], 30 / 3.6)
+            act(cond, "highway_stop", expected, tr, f"{hold:.0f} s stop on a {what} lane")
+    stop_on("B1", lambda q: q.get("road_class") == "highway" and not q.get("ramp") and not q.get("bridge"), "highway")
+    stop_on("B4", lambda q: q.get("ramp") in ("on", "off"), "ramp")
+    stop_on("B5", lambda q: bool(q.get("bridge")), "bridge")
+
+    # C2 / C4 / C5: wrong way by kind (C1 / C3 come from the general wrong-way act)
+    def from_junction(run):  # the lane's end (seen against it: its start) touches a junction in view
+        nxt = run[-1].next(8.0)
+        return bool(nxt) and nxt[0].is_junction and inview([xyz(nxt[0])])
+    r = take(from_junction)
+    if r is None:
+        skip("C2", "no lane in view that starts at a junction")
+    else:
+        into = [xyz(r[-1].next(8.0)[0])] + [xyz(w) for w in r[::-1][:41]]
+        act("C2", "wrong_way", True, Trajectory().mark("start").move(into, 30 / 3.6).mark("end"),
+            "out of the junction into a lane against its direction")
+    for cond, pred, what in (("C4", lambda q: q.get("ramp") in ("on", "off"), "ramp"),
+                             ("C5", lambda q: q.get("one_way") and q.get("road_class") == "urban" and not q.get("ramp"), "one-way")):
+        cand = None
+        for w in m.generate_waypoints(3.0):
+            if w.lane_type == carla.LaneType.Driving and not w.is_junction and pred(p(w)):
+                run = lane_run(w, 30.0)
+                # all of it on that kind of lane (a ramp run ending on the highway reads as C3 there)
+                if len(run) > 25 and inview([xyz(x) for x in run]) and all(pred(p(x)) for x in run[::3]):
+                    cand = run
+                    break
+        if cand is None:
+            skip(cond, f"no {what} lane in view")
+        else:
+            act(cond, "wrong_way", True, Trajectory().mark("start").move([xyz(w) for w in cand[::-1]], 30 / 3.6).mark("end"),
+                f"against a {what} lane")
+
+    # D2 / D4 and the legal negative: U-turns outside any zone, judged by what they cross
+    def u_turn(run, q_wp):
+        a, b = xyz(run[25]), xyz(q_wp)
+        c, rad = (a + b) / 2, float(np.hypot(*(b - a)[:2])) / 2
+        start_ang = math.atan2(a[1] - c[1], a[0] - c[0])
+        fwd = run[25].transform.get_forward_vector()
+        sweep = math.pi if (math.cos(start_ang + math.pi / 2) * fwd.x + math.sin(start_ang + math.pi / 2) * fwd.y) > 0 else -math.pi
+        tr = Trajectory().move([xyz(w) for w in run[:26]], 15 / 3.6).mark("start")
+        tr.move(arc(c, max(rad, 1.5), start_ang, start_ang + sweep, a[2]), 10 / 3.6).mark("end")
+        tr.move([xyz(w) for w in lane_run(q_wp, 25.0)], 15 / 3.6)
+        return tr
+    def opposite(run):
+        left = run[25].get_left_lane()
+        return left if left is not None and left.lane_type == carla.LaneType.Driving and left.lane_id * run[25].lane_id < 0 else None
+    def clear_of_zones(run):  # well away from any no-U-turn zone (that U-turn would be D1)
+        c = xyz(run[25])[:2]
+        return all(np.min(np.hypot(*(np.array(z["polygon"]) - c).T)) > 30.0 for z in zones if z["type"] == "no_u_turn")
+    for cond, centre, expected, note in (("D2", ("solid", "solidsolid"), True, "U-turn across the solid centre line"),
+                                         ("D2", ("broken", "brokenbroken"), False, "U-turn across a broken centre line (legal)")):
+        r = next((run for run in runs if run[0].road_id not in used_roads and opposite(run) is not None
+                  and _mark(run[25].left_lane_marking) in centre and not p(run[25]).get("median_left")
+                  and clear_of_zones(run)), None)
+        if r is not None:
+            used_roads.add(r[0].road_id)
+        if r is None:
+            skip(cond, f"no two-way road with a {centre[0]} centre line in view")
+        else:
+            act(cond, "illegal_u_turn", expected, u_turn(r, opposite(r)), note)
+    med = None
+    for w in m.generate_waypoints(3.0):
+        q = p(w)
+        if w.lane_type != carla.LaneType.Driving or w.is_junction or not q.get("median_left"):
+            continue
+        run = lane_run(w, 30.0)
+        if len(run) < 30:
+            continue
+        gap = float(q.get("median_gap_m") or 2.0)
+        far = lateral(run[25], -(run[25].lane_width + gap))  # across the median (left = negative)
+        wq = m.get_waypoint(carla.Location(*far), project_to_road=True, lane_type=carla.LaneType.Driving)
+        if wq is None or abs((wq.transform.rotation.yaw - run[25].transform.rotation.yaw + 180) % 360 - 180) < 150:
+            continue
+        if inview([xyz(x) for x in run[:26]] + [xyz(wq)]):
+            med = (run, wq)
+            break
+    if med is None:
+        skip("D4", "no divided road in view")
+    else:
+        act("D4", "illegal_u_turn", True, u_turn(*med), "U-turn through the median")
+
+    # D3: a U-turn inside a junction the log lists as no-U-turn; negative: at a junction not listed
+    jturns = []  # (junction id, its connector road ids, path to the end of the turn, exit path)
+    for run in runs:
+        end = run[-1]
+        q = end.get_left_lane()
+        nxt = end.next(3.0)
+        if (not nxt or not nxt[0].is_junction or q is None or q.lane_type != carla.LaneType.Driving
+                or q.lane_id * end.lane_id > 0):
+            continue
+        jn = nxt[0].get_junction()
+        a, b = xyz(end), xyz(q)
+        fwd = end.transform.get_forward_vector()
+        c = (a + b) / 2 + 6.0 * np.array([fwd.x, fwd.y, 0.0])  # the turn bulges 6 m into the junction
+        rad = float(np.hypot(*(b - a)[:2])) / 2
+        start_ang = math.atan2(a[1] - c[1], a[0] - c[0])
+        sweep = math.pi if (math.cos(start_ang + math.pi / 2) * fwd.x + math.sin(start_ang + math.pi / 2) * fwd.y) > 0 else -math.pi
+        into = [a + (c - (a + b) / 2) * k / 6 for k in range(1, 7)]
+        loop = arc(c, max(rad, 1.5), start_ang, start_ang + sweep, a[2])
+        back = [b + (c - (a + b) / 2) * k / 6 for k in range(6, 0, -1)]
+        out = [xyz(w) for w in lane_run(q, 25.0)]
+        path = [xyz(w) for w in run[-26:]] + into + loop + back
+        if jn is not None and inview(path + out) and all(j[0] != jn.id for j in jturns):
+            roads = sorted({wa.road_id for wa, wb in jn.get_waypoints(carla.LaneType.Driving)})
+            jturns.append((jn.id, roads, path, out))
+    if not jturns:
+        skip("D3", "no junction in view to turn at")
+    else:
+        extras["engine_params"].setdefault("illegal_u_turn", {})["no_u_turn_junctions"] = [f"r{rd}_*" for rd in jturns[0][1]]
+        cases = [(jturns[0], True, "(no U-turn)")] + ([(jturns[1], False, "(allowed)")] if len(jturns) > 1 else [])
+        for (jid, _, path, out), expected, tag in cases:
+            tr = Trajectory().move(path[:26], 15 / 3.6).mark("start").move(path[25:], 10 / 3.6).mark("end")
+            tr.move(out, 15 / 3.6)
+            act("D3", "illegal_u_turn", expected, tr, f"U-turn at junction {jid} {tag}")
+
+    # E4: a truck over a class limit set below the lane's; negative: a car at the same speed
+    need = int(math.ceil(60 / 3.6 * SPEED_IN_VIEW_S))
+    cand = next((run[:need + 1] for run in candidates(m, view, need, in_view_m=need)
+                 if len({limit(*xyz(w)[:2]) for w in run[:need + 1:5]}) == 1), None)
+    if cand is None:
+        skip("E4", "no lane in view long enough")
+    else:
+        lim = limit(*xyz(cand[0])[:2])
+        cls_lim = round(0.6 * lim)
+        kmh = min(cls_lim + 15.0, lim)
+        extras["engine_params"].setdefault("speeding", {})["class_limits_kmh"] = {"truck": cls_lim}
+        for cls, expected in (("truck", True), ("car", False)):
+            act("E4", "speeding", expected, Trajectory().mark("start").move([xyz(w) for w in cand], kmh / 3.6).mark("end"),
+                f"a {cls} at {kmh:.0f} km/h (lane {lim:.0f}, trucks {cls_lim})", cls=cls)
+    return acts, extras
+
+
+BASE_CONDITION = {"no_parking": "B3", "speeding": "E1", "illegal_u_turn": "D1", "zebra_crossing": "F1",
+                  "lane_violation": "A4", "highway_stop": "B1"}
+
+
+def act_condition(a: dict, props) -> str:
+    """The condition an act stages: its own, or its type's (a wrong-way act on a highway lane is C3)."""
+    if a.get("condition"):
+        return a["condition"]
+    if a["type"] == "wrong_way":
+        mid = a["traj"].p[len(a["traj"].p) // 2]
+        return "C3" if props(*mid[:2]).get("road_class") == "highway" else "C1"
+    return BASE_CONDITION.get(a["type"], a["type"])
+
+
+def suggest(m, town: str, altitude: float, step: float, margin: float) -> list[dict]:
+    """Drone spots that together stage every condition: plan at every grid centre (step m apart, over
+    the town's lanes) and heading 0 / 90, then pick spots greedily, most new conditions first."""
+    import contextlib
+    import io
+    props = lane_props(town)
+    pts = np.vstack([np.array(l["centreline"]) for l in json.loads((SCENES_DIR / f"{town}.json").read_text())["lanes"]])
+    (x0, y0), (x1, y1) = pts.min(0), pts.max(0)
+    spots = []
+    for cx in np.arange(x0 + step / 2, x1, step):
+        for cy in np.arange(y0 + step / 2, y1, step):
+            for yaw in (0.0, 90.0):
+                view = View((cx, cy), yaw, altitude, margin_m=margin)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    try:
+                        p = plan(m, town, view, 0)
+                    except SystemExit:
+                        continue
+                conds = sorted({act_condition(a, props) for a in p["acts"] if a["expected"]})
+                if conds:
+                    spots.append({"center": [round(float(cx), 1), round(float(cy), 1)], "yaw": yaw, "conditions": conds,
+                                  "acts": len(p["acts"])})
+    chosen, covered = [], set()
+    while True:
+        best = max(spots, key=lambda s: (len(set(s["conditions"]) - covered), s["acts"]), default=None)
+        if best is None or not set(best["conditions"]) - covered:
+            break
+        chosen.append({**best, "new": sorted(set(best["conditions"]) - covered)})
+        covered |= set(best["conditions"])
+    return chosen
 
 
 def _signal_approach(m, world, center, radius):
@@ -489,8 +905,17 @@ def _crosswalk_near(m, center, radius):
 
 # --- running ----------------------------------------------------------------------------------
 
-def spawn(world, bp_lib, tr: Trajectory):
-    bp = bp_lib.find(BLUEPRINT)
+BLUEPRINTS = {"car": [BLUEPRINT],
+              "bus": ["vehicle.mitsubishi.fusorosa"],
+              "truck": ["vehicle.carlamotors.carlacola", "vehicle.carlamotors.european_hgv", "vehicle.carlamotors.firetruck"]}
+
+
+def spawn(world, bp_lib, tr: Trajectory, cls: str = "car"):
+    names = [n for n in BLUEPRINTS.get(cls, [BLUEPRINT]) if bp_lib.filter(n)]
+    if not names:
+        print(f"[spawn] no {cls} blueprint in this build ({BLUEPRINTS.get(cls)})")
+        return None
+    bp = bp_lib.find(names[0])
     bp.set_attribute("role_name", SCRIPTED_ROLE)
     p, yaw = tr.at(0.0)
     v = world.try_spawn_actor(bp, carla.Transform(carla.Location(p[0], p[1], p[2] + 2.0), carla.Rotation(yaw=yaw)))
@@ -503,7 +928,7 @@ def run_act(world, bp_lib, act: dict) -> dict:
     trajs = [("main", act["traj"])] + ([("lead", act["lead"])] if "lead" in act else [])
     cars = {}
     for name, tr in trajs:
-        v = spawn(world, bp_lib, tr)
+        v = spawn(world, bp_lib, tr, act.get("cls", "car") if name == "main" else "car")
         if v is None:
             for c in cars.values():
                 c.destroy()
@@ -564,8 +989,27 @@ def main() -> None:
     ap.add_argument("--only", nargs="*", default=None, help="Run only these violation types")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--plan-only", action="store_true", help="Plan from the town's .xodr offline; no simulator")
+    ap.add_argument("--red-light", action="store_true", help="Also stage red-light acts (out of scope since 2026-10-09)")
     ap.add_argument("--out", type=Path, default=None, help="Scenario log JSON (default: runs/<time>/scenario_log.json)")
+    ap.add_argument("--suggest", action="store_true",
+                    help="Offline: list the fewest drone spots (centre, heading) that stage every condition in --town")
+    ap.add_argument("--step", type=float, default=50.0, help="--suggest grid spacing (m)")
     args = ap.parse_args()
+
+    if args.suggest:
+        if not args.town:
+            raise SystemExit("--suggest needs --town")
+        m = carla.Map(args.town, (XODR_DIR / f"{args.town}.xodr").read_text())
+        alt = args.altitude if args.altitude is not None else 67.6
+        chosen = suggest(m, args.town, alt, args.step, args.margin)
+        print(f"[suggest] {args.town} at {alt:.1f} m: {len(chosen)} spots cover "
+              f"{sorted({c for s in chosen for c in s['conditions']})}")
+        for s in chosen:
+            print(f"   --center {s['center'][0]} {s['center'][1]} --yaw {s['yaw']:.0f}   adds {s['new']}   ({s['acts']} acts)")
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(json.dumps({"town": args.town, "altitude_m": alt, "spots": chosen}, indent=1))
+        return
 
     if args.plan_only:
         if not args.town or args.center is None:
@@ -594,7 +1038,7 @@ def main() -> None:
 
     view = View(center, yaw, altitude, margin_m=args.margin)
     print(f"[view] {view.describe()}")
-    p = plan(m, town, view, args.seed, world)
+    p = plan(m, town, view, args.seed, world, red_light=args.red_light)
     acts = [a for a in p["acts"] if not args.only or a["type"] in args.only]
     zones = list(p["zones"])
     print(f"[plan] {town} centre ({center[0]:.0f}, {center[1]:.0f}): {len(acts)} acts, {len(zones)} zones")
@@ -605,14 +1049,17 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     log = {"town": town, "center": list(center), "view": view.describe(),
            "created": datetime.datetime.now().isoformat(timespec="seconds"),
-           "plan_only": args.plan_only, "zones": zones, "violations": [], "negatives": [], "acts": []}
+           "plan_only": args.plan_only, "zones": zones, "violations": [], "negatives": [], "acts": [],
+           # rule settings the acts need (run_violations.py --zones <log> applies them)
+           **{k: p[k] for k in ("lane_overrides", "engine_params") if k in p}}
     if args.plan_only:
         # planned paths sampled at 10 Hz, so `run_violations.py --plan` can dry-run the rules on them
         for a in acts:
             pts = np.array(a["traj"].p)
             ts = np.arange(0.0, a["traj"].duration, 0.1)
             samples = [[round(float(t), 2)] + a["traj"].at(t)[0][:2].round(3).tolist() for t in ts]
-            entry = {"type": a["type"], "expected": a["expected"], "note": a["note"],
+            entry = {"type": a["type"], "condition": a.get("condition"), "cls": a.get("cls", "car"),
+                     "also": a.get("also", []), "expected": a["expected"], "note": a["note"],
                      "duration_s": round(a["traj"].duration, 1), "truth_s": [a["traj"].marks[k] for k in a["truth"]],
                      "path_start": pts[0, :2].round(1).tolist(), "path_end": pts[-1, :2].round(1).tolist(),
                      "samples": samples}
@@ -632,7 +1079,8 @@ def main() -> None:
     for i, a in enumerate(acts):
         print(f"[act {i + 1}/{len(acts)}] {a['type']} - {a['note']}", flush=True)
         res = run_act(world, bp_lib, a)
-        entry = {"type": a["type"], "note": a["note"], **res}
+        entry = {"type": a["type"], "condition": a.get("condition"), "cls": a.get("cls", "car"),
+                 "also": a.get("also", []), "expected": a["expected"], "note": a["note"], **res}
         if "frames" in res:
             s, e = a["truth"]
             entry.update(start_frame=res["frames"][s][0], end_frame=res["frames"][e][0],

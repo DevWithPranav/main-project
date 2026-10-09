@@ -176,7 +176,8 @@ def plan_rows(plan: dict, gap_s: float = PLAN_GAP_S) -> tuple[list[dict], dict[i
             for n in range(len(a)):
                 h = k["heading_deg"][n]
                 rows.append({"frame": int(round(t[n] * 10)), "time_s": round(float(t[n]), 3), "track_id": tid,
-                             "class": "car", "conf": 1.0, "visible": 1, "x": round(float(k["x"][n]), 3),
+                             "class": act.get("cls", "car") if j == 0 else "car", "conf": 1.0, "visible": 1,
+                             "x": round(float(k["x"][n]), 3),
                              "y": round(float(k["y"][n]), 3), "vx": round(float(k["vx"][n]), 3),
                              "vy": round(float(k["vy"][n]), 3), "speed_kmh": round(float(k["speed_kmh"][n]), 2),
                              "speed_sigma_kmh": round(float(k["speed_sigma_kmh"][n]), 2),
@@ -186,17 +187,23 @@ def plan_rows(plan: dict, gap_s: float = PLAN_GAP_S) -> tuple[list[dict], dict[i
 
 
 def plan_report(events, owner: dict) -> list[dict]:
-    """Per planned act: did the rule of its type fire (counted), as the plan expects?"""
+    """Per planned act: did the rule of its type fire (counted), as the plan expects? An act that names
+    a condition (Expected_Output 4.2) must be detected as that condition."""
     out = []
     for tid, act in owner.items():
         if act["role"] != "main":
             continue
         got = [e for e in events if tid in e.track_ids and e.type == act["type"]]
         counted = [e for e in got if e.status in COUNTED_STATUS]
-        other = sorted({e.type for e in events if tid in e.track_ids and e.type != act["type"] and e.status in COUNTED_STATUS})
-        out.append({"act": act["act"], "type": act["type"], "note": act["note"], "expected": act["expected"],
-                    "detected": bool(counted), "ok": bool(counted) == act["expected"] and not other,
-                    "statuses": [f"{e.status}{'(' + ','.join(e.tags) + ')' if e.tags else ''}" for e in got],
+        also = set(act.get("also", []))  # other types the act raises by rule (an overtake is wrong-way too)
+        other = sorted({e.type for e in events if tid in e.track_ids and e.type != act["type"] and e.type not in also
+                        and e.status in COUNTED_STATUS})
+        cond = act.get("condition")
+        right = (not cond or any(e.condition == cond for e in counted)) if act["expected"] else True
+        out.append({"act": act["act"], "type": act["type"], "condition": cond, "note": act["note"],
+                    "expected": act["expected"], "detected": bool(counted),
+                    "ok": bool(counted) == act["expected"] and right and not other,
+                    "statuses": [f"{e.condition}:{e.status}{'(' + ','.join(e.tags) + ')' if e.tags else ''}" for e in got],
                     "other_types": other})
     return out
 
@@ -224,7 +231,7 @@ def run_site(args, params: dict | None, disabled: set[str]) -> None:
         scene_data = with_learned_flow(scene_data, rows)
     (out / "scene.json").write_text(json.dumps(scene_data))
     scene = SceneMap(scene_data)
-    events = Engine(scene, params, prefix=args.site.stem, disabled_conditions=disabled).run(rows)
+    events = Engine(scene, extra_params(params, args.zones), prefix=args.site.stem, disabled_conditions=disabled).run(rows)
     for e in events:  # no telemetry: every speed here rests on the site calibration
         if e.type == "speeding" and site.data["calibration"]["method"] != "srt":
             e.tags.append("estimated_speed")
@@ -289,12 +296,30 @@ def road_scene(scene: dict, args, derive_features: bool = False) -> dict:
 
 
 def merge_zones(scene: dict, extra: Path | None) -> dict:
+    """Zones and stop lines of an extra file (a scenario log, or hand-drawn zones) added to the scene;
+    its lane_overrides (e.g. a lane the stager marked bus-only) applied to the scene's lanes."""
     if extra:
         add = json.loads(extra.read_text())
         scene = dict(scene)
         scene["zones"] = scene.get("zones", []) + add.get("zones", [])
         scene["stop_lines"] = scene.get("stop_lines", []) + add.get("stop_lines", [])
+        if add.get("lane_overrides"):
+            scene["lanes"] = [dict(l) for l in scene.get("lanes", [])]
+            print(f"[zones] lane overrides from {extra.name}: {apply_overrides(scene, add['lane_overrides'])} lanes")
     return scene
+
+
+def extra_params(params: dict | None, extra: Path | None) -> dict | None:
+    """Rule settings a scenario log carries for its acts (engine_params: e.g. the junction where a
+    staged U-turn is prohibited, a truck speed limit), on top of the profile / --params."""
+    add = json.loads(extra.read_text()).get("engine_params", {}) if extra else {}
+    if not add:
+        return params
+    out = {k: dict(v) for k, v in (params or {}).items()}
+    for t, v in add.items():
+        out.setdefault(t, {}).update(v)
+    print(f"[zones] rule settings from {extra.name}: {add}")
+    return out
 
 
 def main() -> None:
@@ -327,7 +352,8 @@ def main() -> None:
         rows, owner = plan_rows(plan)
         scene = SceneMap(road_scene(merge_zones(json.loads(args.scene.read_text()), args.plan), args))
         signals = SignalLog.from_plan(plan, plan_offsets(plan)) if args.red_light else None
-        events = Engine(scene, params, prefix="plan", signals=signals, disabled_conditions=disabled).run(rows)
+        events = Engine(scene, extra_params(params, args.plan), prefix="plan", signals=signals,
+                        disabled_conditions=disabled).run(rows)
         out = args.out or args.plan.parent / "plan_check"
         out.mkdir(parents=True, exist_ok=True)
         write_rows(rows, out / "kinematics.csv")
@@ -335,7 +361,7 @@ def main() -> None:
         report = plan_report(events, owner)
         (out / "plan_report.json").write_text(json.dumps(report, indent=1))
         for r in report:
-            print(f"{'OK  ' if r['ok'] else 'FAIL'} {r['type']:15s} expected={'yes' if r['expected'] else 'no ':3s} "
+            print(f"{'OK  ' if r['ok'] else 'FAIL'} {r['type']:15s} {r['condition'] or '':3s} expected={'yes' if r['expected'] else 'no ':3s} "
                   f"detected={'yes' if r['detected'] else 'no ':3s} {r['note']}  {r['statuses']} {r['other_types'] or ''}")
         print(f"[plan check] {sum(r['ok'] for r in report)}/{len(report)} acts as expected -> {out}")
         return
@@ -369,7 +395,8 @@ def main() -> None:
         have = {sl["id"] for sl in scene_data.get("stop_lines", [])}
         scene_data["stop_lines"] = scene_data.get("stop_lines", []) + [sl for sl in flight_lines if sl["id"] not in have]
     scene = SceneMap(scene_data)
-    engine = Engine(scene, params, prefix=args.flight.name, signals=signals, disabled_conditions=disabled)
+    engine = Engine(scene, extra_params(params, args.zones), prefix=args.flight.name, signals=signals,
+                    disabled_conditions=disabled)
     events = engine.run(rows)
     write_events(events, out)
 

@@ -98,18 +98,36 @@ def actor_positions(flight: Path) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     return out
 
 
-def scenario_truth(log_path: Path, oracle_pos: dict) -> list[dict]:
-    """Staged violations -> truth events; track ids = every oracle track of that actor (actor * 10 + part)."""
+def scenario_truth(log_path: Path, oracle_pos: dict, key: str = "violations") -> list[dict]:
+    """Staged violations (or, key="negatives", the negative acts) -> truth events; track ids = every
+    oracle track of that actor (actor * 10 + part); condition = the act's (Build Plan M2 acts name one)."""
     log = json.loads(log_path.read_text())
     out = []
-    for i, s in enumerate(log.get("violations", [])):
+    for i, s in enumerate(log.get(key, [])):
         aid = int(s["actor_id"])
         tids = [t for t in oracle_pos if t // 10 == aid] or [aid * 10]
         # stage_violations.py logs simulator seconds (start_sim_s / end_sim_s), the oracle's time base
         start, end = s.get("start_s", s.get("start_sim_s")), s.get("end_s", s.get("end_sim_s"))
-        out.append({"event_id": f"staged-{i}", "type": s["type"], "track_ids": tids, "start_s": start,
-                    "end_s": end, "flag_s": s.get("flag_s", start), "status": "flagged"})
+        for k, vtype in enumerate([s["type"]] + (s.get("also", []) if key == "violations" else [])):
+            # "also": types the act raises by rule besides its own (an overtake over a solid centre
+            # line is wrong-way driving too): expected events, not false alarms
+            out.append({"event_id": f"staged-{key[:3]}-{i}" + (f"-{vtype}" if k else ""), "type": vtype,
+                        "condition": s.get("condition") if k == 0 else None, "track_ids": tids, "start_s": start,
+                        "end_s": end, "flag_s": s.get("flag_s", start), "status": "flagged"})
     return out
+
+
+def per_condition(tp: list, fn: list) -> dict:
+    """Staged acts that name a condition: detected as that condition / as another one / missed."""
+    out = {}
+    for p, g, _ in tp:
+        if g.get("condition"):
+            d = out.setdefault(g["condition"], {"detected": 0, "other_condition": 0, "missed": 0})
+            d["detected" if p.get("condition") == g["condition"] else "other_condition"] += 1
+    for g in fn:
+        if g.get("condition"):
+            out.setdefault(g["condition"], {"detected": 0, "other_condition": 0, "missed": 0})["missed"] += 1
+    return dict(sorted(out.items()))
 
 
 def match(pred: list[dict], truth: list[dict], truth_pos: dict) -> tuple[list, list, list]:
@@ -159,7 +177,7 @@ def score(pred: list[dict], truth: list[dict], truth_pos: dict, natural=None) ->
                   if a else None}
         if natural is not None:
             per[t]["natural"] = sum(1 for e in nat if e["type"] == t)
-    return {"per_type": per,
+    return {"per_type": per, "per_condition": per_condition(tp, fn),
             "natural_events": [(e["event_id"], e["type"], e["track_ids"], e["flag_s"]) for e in nat],
             "fp_events": [(e["event_id"], e["type"], e["track_ids"], e["flag_s"]) for e in fp],
             "fn_events": [(e["event_id"], e["type"], e["track_ids"], e["flag_s"]) for e in fn],
@@ -206,6 +224,13 @@ def main() -> None:
         pred_natural = {p["event_id"] for p, _, _ in tp_bg}
         result["pipeline_vs_staged"] = score(load_events(args.pred), staged, staged_pos,
                                              natural=lambda e: e["event_id"] in pred_natural)  # L2
+        # negative acts (staged to look close to a violation but legal): any counted event of their type
+        # on them is a false alarm the scenario was built to provoke
+        negs = [s for s in scenario_truth(args.scenario, {} if args.flight else oracle_pos, "negatives") if s["type"] not in ignore]
+        for name, d in (("oracle", args.oracle), ("pipeline", args.pred)):
+            hit, _, _ = match([e for e in load_events(d) if e["status"] in COUNTED_STATUS], negs, staged_pos)
+            result[f"{name}_on_negatives"] = {"negatives": len(negs), "triggered": len(hit),
+                                              "events": [(p["event_id"], g["type"], g.get("condition")) for p, g, _ in hit]}
     out = args.out or args.pred / "eval.json"
     out.write_text(json.dumps(result, indent=1))
     print(json.dumps(result, indent=1))

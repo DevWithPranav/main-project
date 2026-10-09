@@ -59,9 +59,17 @@ class LaneConditions(unittest.TestCase):
         self.assertLess(a8[0].value["min_ttc_s"], 2.0)
 
     def test_a2_over_the_double_solid_into_the_opposing_lane(self):
-        # the staged act on flight 20261009_201727: over the centre line and back
         ev = run(sc(BASE_LANES), track(lane_change(0, 3.5, v=kmh(20), x0=-40)))
         self.assertEqual(conds(ev, "lane_violation"), ["A2"])
+
+    def test_a2_out_and_back_counts_both_crossings(self):
+        # the staged act on flight 20261009_201727: an overtake over the double solid centre line and back
+        v = kmh(20)
+        fn = piecewise((4, lambda t: (-60 + v * t, 0)), (3, lambda t: (-60 + v * (4 + t), 3.5 * t / 3)),
+                       (5, lambda t: (-60 + v * (7 + t), 3.5)), (3, lambda t: (-60 + v * (12 + t), 3.5 - 3.5 * t / 3)),
+                       (4, lambda t: (-60 + v * (15 + t), 0)))
+        ev = run(sc(BASE_LANES), track(fn))
+        self.assertEqual(conds(ev, "lane_violation"), ["A2", "A2"])
 
     def test_a8_alongside_in_the_next_lane_is_not_a_conflict(self):
         # a car level with the changer but staying centred in lane C: the changer only reaches the line
@@ -176,10 +184,12 @@ def u_turn(y_from, y_to, x_turn, r, v=kmh(15)):
 class UTurnKinds(unittest.TestCase):
     def test_d4_through_the_median(self):
         lanes = [{"id": "E", "centreline": [[-300, 0], [300, 0]], "width_m": 3.5, "road_id": "1", "median_left": True,
-                  "left_line": "broken"},
+                  "left_line": "solid"},
                  {"id": "W", "centreline": [[300, 8], [-300, 8]], "width_m": 3.5, "road_id": "1", "median_left": True,
-                  "left_line": "broken"}]
-        self.assertEqual(conds(run(sc(lanes), track(u_turn(0, 8, 50, 4))), "illegal_u_turn"), ["D4"])
+                  "left_line": "solid"}]
+        ev = run(sc(lanes), track(u_turn(0, 8, 50, 4)))
+        self.assertEqual(conds(ev, "illegal_u_turn"), ["D4"])
+        self.assertEqual(conds(ev, "lane_violation"), [])  # a U-turn, not also a solid-line crossing (A2)
 
     def test_legal_u_turn_across_a_broken_centre_line(self):
         lanes = [dict(BASE_LANES[0], left_line="broken", road_id="1"), dict(BASE_LANES[2], left_line="broken", road_id="1")]
@@ -205,6 +215,22 @@ class UTurnKinds(unittest.TestCase):
 
     def test_junction_u_turn_allowed_by_default(self):
         self.assertEqual(conds(run(sc(self.JUNCTION), self.junction_turn()), "illegal_u_turn"), [])
+
+    def test_junction_u_turn_is_not_also_a_wrong_lane(self):
+        lanes = [dict(self.JUNCTION[0], next=["J1"]), dict(self.JUNCTION[1], next=[]), dict(self.JUNCTION[2], next=["E"])]
+        ev = run(sc(lanes), self.junction_turn(), params={"illegal_u_turn": {"no_u_turn_junctions": ["J*"]}})
+        self.assertEqual(conds(ev), ["D3"])  # turned round: the U-turn rule's case, not A1 too
+
+
+class QueueAcrossLanePieces(unittest.TestCase):
+    def test_queue_on_the_next_piece_suppresses_a_zebra_stop(self):
+        # the crossing sits at the end of piece P1; the car ahead waits on P2, just past it
+        lanes = [{"id": "P1", "centreline": [[-300, 0], [104, 0]], "width_m": 3.5, "next": ["P2"]},
+                 {"id": "P2", "centreline": [[104, 0], [300, 0]], "width_m": 3.5, "next": []}]
+        zones = [{"id": "z", "type": "crosswalk", "polygon": rect(98, 103, -1.75, 1.75)}]
+        car = track(drive_stop_leave(101, 0, 15), tid=1)
+        ahead = track(drive_stop_leave(108, 0, 18, x_start=-30), tid=2)
+        self.assertEqual(conds(run(sc(lanes, zones), car, ahead), "zebra_crossing"), [])
 
 
 class SpeedLimitOfTheDrivingLane(unittest.TestCase):

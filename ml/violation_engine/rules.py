@@ -585,10 +585,12 @@ class LaneViolationMonitor(Monitor):
             # same lane, or the next / previous piece of it (lanes are split at speed signs and where
             # they become a bridge): not a lane change
             st.update(lane=o.lane.lane.id, cand=None, last=o.lane, last_t=o.t)
+            if not math.isnan(o.heading_deg) and abs(o.lane.d) < o.lane.lane.width / 4:
+                st["heading"] = o.heading_deg  # while centred: before it starts to turn or drift out
             return
         if st["cand"] is None or st["cand"] != o.lane.lane.id:
             st.update(cand=o.lane.lane.id, cand_since=o.t, cand_obs=o, prev=st["last"], prev_since=st["since"],
-                      prev_t=st["last_t"])
+                      prev_t=st["last_t"], prev_heading=st.get("heading"))
             return
         if o.t - st["cand_since"] < p["stable_s"]:
             return
@@ -602,14 +604,22 @@ class LaneViolationMonitor(Monitor):
             side = "left" if prev.d > 0 else "right"
             line = line_on_side(prev, side)
             base = {"from_lane": prev.lane.id, "to_lane": o.lane.lane.id, "line": line, "side": side}
-            if line in SOLID_LINES:
+            # turned round = drove with the old lane and now heads with the opposing new one: a U-turn,
+            # judged by the U-turn rules (D2 / D4), not a line crossing too. An overtake out heads
+            # against the new lane; coming back from it, the car drove against the old lane: both A2.
+            # (Headings relative to each lane: a slow U-turn is only half round when the change is confirmed.)
+            ph = st.get("prev_heading")
+            turned = (not same_dir and ph is not None and not math.isnan(o.heading_deg)
+                      and angle_diff_deg(ph, prev.dir_deg) < 90.0 and angle_diff_deg(o.heading_deg, o.lane.dir_deg) < 90.0)
+            if line in SOLID_LINES and not turned:
                 self._instant(co, "solid_line_crossing", base)
             elif same_dir and not prev.lane.may_change(side):
                 self._instant(co, "lane_change_prohibited", {**base, "lane_change": prev.lane.lane_change})
             if same_dir and co.speed_kmh >= p["unsafe_min_kmh"]:
                 self._start_gap_watch(co, prev, o.lane.lane, hist)
         elif (not lateral and prev.lane.next and st.get("junction_t", -1e9) > st["prev_t"]
-              and p["junction_min_s"] <= st["cand_since"] - st["prev_t"] <= p["junction_max_s"]):
+              and p["junction_min_s"] <= st["cand_since"] - st["prev_t"] <= p["junction_max_s"]
+              and angle_diff_deg(prev.dir_deg, o.lane.dir_deg) < 150.0):  # turned round: the U-turn rules' case
             # left one lane through a junction and came out on another (A1)
             if not lane_reachable(prev.lane, o.lane.lane, self.lane_index):
                 self._instant(co, "wrong_lane_for_direction",

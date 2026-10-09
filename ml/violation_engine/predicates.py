@@ -163,8 +163,11 @@ def queue_context(o: Obs, others: list[Obs]) -> bool:
     for p in others:
         if p.track_id == o.track_id or p.speed_kmh >= QUEUE_SLOW_KMH:
             continue
-        if o.lane is not None and p.lane is not None and p.lane.lane.id == o.lane.lane.id:
-            if 0.0 < p.lane.s - o.lane.s <= QUEUE_AHEAD_M:
+        if o.lane is not None and p.lane is not None:
+            # same lane, or the next piece of it in the lane graph (a queue past a crossing or a
+            # speed sign sits on the next piece)
+            ahead = along_target(p, o.lane.lane)
+            if ahead is not None and 0.0 < ahead - o.lane.s <= QUEUE_AHEAD_M:
                 return True
         elif o.lane is None and math.hypot(p.x - o.x, p.y - o.y) <= QUEUE_NEAR_M:
             return True
