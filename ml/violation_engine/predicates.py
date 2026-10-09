@@ -44,8 +44,9 @@ class Obs:
     speed_kmh: float
     speed_sigma_kmh: float
     heading_deg: float  # NaN below kinematics.HEADING_MIN_KMH
-    lane: LaneMatch | None = None
+    lane: LaneMatch | None = None  # the lane it physically lies in (position only: wrong-way needs that)
     zones: list[Zone] = field(default_factory=list)
+    drive_lane: LaneMatch | None = None  # the lane it drives in: `lane`, unless that one runs against its heading
 
     def zones_of(self, ztype: str) -> list[Zone]:
         return [z for z in self.zones if z.type == ztype]

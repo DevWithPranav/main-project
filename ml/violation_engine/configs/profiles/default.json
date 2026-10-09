@@ -63,7 +63,8 @@
     "tolerance": "eu",
     "confirm_gap_s": 0.2,
     "close_gap_s": 2.0,
-    "class_limits_kmh": {}
+    "class_limits_kmh": {},
+    "min_track_age_s": 1.0
    }
   },
   "lane_violation": {

@@ -47,9 +47,12 @@ DEFAULTS = {
     # where U-turns are prohibited (D3), e.g. ["*"] for all
     "illegal_u_turn": {"turn_deg": 160.0, "flip_deg": 90.0, "anywhere": True, "window_s": 30.0,
                        "settle_s": 5.0, "no_u_turn_junctions": []},
-    # class_limits_kmh: per-class limit cap (E4), from the profile's road.class_speed_limits_kmh
+    # class_limits_kmh: per-class limit cap (E4), from the profile's road.class_speed_limits_kmh.
+    # min_track_age_s: on flight 20261009_201727 every pipeline speeding episode began on its track's
+    # first frame, and two were start-up transients (59.9 km/h read for a 29.6 km/h car entering at
+    # the frame corner; 39.7 decaying to 30 within a second)
     "speeding": {"min_s": 10 / 30, "sigmas": 2.0, "tolerance": "eu", "confirm_gap_s": 0.2, "close_gap_s": 2.0,
-                 "class_limits_kmh": {}},
+                 "class_limits_kmh": {}, "min_track_age_s": 1.0},
     # unsafe_*: A8, TTC to the lead / lag vehicle in the target lane; 2 s is the common risky/safe
     # threshold, 1 s high risk; closing speed > 0.5 m/s as SinD 2.0 (docs/Research_Notes.md, M2).
     # Judged in the unsafe_window_s after the centre crosses (the lane-change moment, as highD does):
@@ -279,6 +282,7 @@ class SpeedingMonitor(Monitor):
     def __init__(self, log, params):
         super().__init__(log, params)
         self.active: dict[int, Episode] = {}
+        self.first_seen: dict[int, float] = {}
 
     def limit(self, o: Obs) -> tuple[float | None, str]:
         """The limit that applies and where it comes from: a speed zone overrides the lane's own limit
@@ -288,8 +292,9 @@ class SpeedingMonitor(Monitor):
             if "limit_kmh" in z.params:
                 lim, src = float(z.params["limit_kmh"]), "zone"
                 break
-        if lim is None and o.lane is not None and o.lane.lane.speed_limit_kmh:
-            lim = float(o.lane.lane.speed_limit_kmh)
+        lane = o.drive_lane or o.lane  # the limit of the lane it drives in, not of the oncoming one
+        if lim is None and lane is not None and lane.lane.speed_limit_kmh:
+            lim = float(lane.lane.speed_limit_kmh)
         cls_lim = self.p.get("class_limits_kmh", {}).get(o.cls)
         if lim is not None and cls_lim is not None and float(cls_lim) < lim:
             lim, src = float(cls_lim), "class"
@@ -298,6 +303,9 @@ class SpeedingMonitor(Monitor):
     def step(self, t, frame, obs, hist):
         p = self.p
         for o in obs:
+            first = self.first_seen.setdefault(o.track_id, o.t)
+            if o.t - first < p["min_track_age_s"]:
+                continue  # a new track's speed rests on a few frames, often of a car cut by the frame edge
             lim, src = self.limit(o)
             if lim is None or not o.visible or o.lane is None:
                 continue
@@ -886,6 +894,7 @@ class Engine:
         self.hist = TrackHistory()
         self.disabled_conditions = set(disabled_conditions or ())
         self._road_zones: dict[str, Zone] = {}
+        self._level: dict[int, float] = {}  # track -> road height of its last lane match
 
     def observe(self, r: dict) -> Obs:
         """A kinematics row (kinematics.py) -> Obs with its lane match and zones."""
@@ -895,7 +904,18 @@ class Engine:
                 vx=float(r["vx"]), vy=float(r["vy"]), speed_kmh=float(r["speed_kmh"]),
                 speed_sigma_kmh=float(r.get("speed_sigma_kmh", 0.0)),
                 heading_deg=float(h) if h not in ("", None) and not (isinstance(h, float) and math.isnan(h)) else math.nan)
-        o.lane = self.scene.match(o.x, o.y)
+        # the road level: the row's own height if it has one (oracle: true z), else the level of the
+        # track's last match, so a car under a flyover keeps to the lower road
+        z = r.get("road_z", "")
+        z = float(z) if z not in ("", None) else self._level.get(o.track_id)
+        o.lane = self.scene.match(o.x, o.y, z)
+        o.drive_lane = o.lane
+        if o.lane is not None and not math.isnan(o.heading_deg) and angle_diff_deg(o.heading_deg, o.lane.dir_deg) > 90.0:
+            # on a centre line position noise can put a car in the oncoming lane; a real wrong-way
+            # driver has no lane its way here and keeps its physical one
+            o.drive_lane = self.scene.match_along(o.x, o.y, o.heading_deg, z=z) or o.lane
+        if o.lane is not None and o.lane.lane.z is not None:
+            self._level[o.track_id] = o.lane.lane.height_at(o.lane.s)
         o.zones = self.scene.zones_at(o.x, o.y)
         rz = self.road_zone(o)
         if rz is not None:

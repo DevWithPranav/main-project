@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 
 from events import COUNTED_STATUS, write_events
-from ground_coords import FlightCamera, RoadSurface, add_world_columns, true_centres
+from ground_coords import BOX_CENTRE_Z, FlightCamera, RoadSurface, add_world_columns, true_centres
 from kinematics import compute, smooth_track, write_rows
 from lane_map import SceneMap
 from profiles import REPO, disabled_conditions, engine_params, load_profile
@@ -120,7 +120,7 @@ def oracle_rows(flight: Path, cam: FlightCamera) -> list[dict]:
         t = float(np.interp(c, ft_cf, ft_t))
         for i, aid in enumerate(ids):
             if inside[i]:
-                per_actor[aid].append((t, frame, xyz[i, 0], xyz[i, 1]))
+                per_actor[aid].append((t, frame, xyz[i, 0], xyz[i, 1], xyz[i, 2]))
     rows = []
     for aid, pts in per_actor.items():
         pts.sort()
@@ -140,7 +140,10 @@ def oracle_rows(flight: Path, cam: FlightCamera) -> list[dict]:
                              "vx": round(float(k["vx"][i]), 3), "vy": round(float(k["vy"][i]), 3),
                              "speed_kmh": round(float(k["speed_kmh"][i]), 2),
                              "speed_sigma_kmh": round(float(k["speed_sigma_kmh"][i]), 2),
-                             "heading_deg": "" if math.isnan(h) else round(float(h), 1)})
+                             "heading_deg": "" if math.isnan(h) else round(float(h), 1),
+                             # the road under it (box centre minus BOX_CENTRE_Z): picks the right level
+                             # where roads cross over each other
+                             "road_z": round(float(seg[i, 4]) - BOX_CENTRE_Z, 2)})
     rows.sort(key=lambda r: (r["time_s"], r["track_id"]))
     return rows
 

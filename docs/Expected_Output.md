@@ -176,7 +176,7 @@ Each event stores:
 |---|---|---|
 | Vehicle detection mAP@0.5 | ≥ 0.75 | 0.696 VisDrone val (3-class), 0.702 GT clip, 0.844 CARLA Town05 |
 | Tracking continuity / ID switches | ≥ 90 % / ≤ 5 % | GT clip IDF1 0.881, 2 ID switches on 40 vehicles; staged flight: all 13 scripted cars tracked within 0.03–0.1 m of truth (wrong-way car 3 m) |
-| Violation F1 per type | ≥ 0.70 (precision ≥ 0.85, recall ≥ 0.75) | Staged flight `20261009_201727`, pipeline vs staged: wrong-way, U-turn, zebra 1.0; lane 0.5; speeding 0.4; no-parking missed (spot at the frame edge). One staged act per type, so far below the PRD's 100 scenarios per type |
+| Violation F1 per type | ≥ 0.70 (precision ≥ 0.85, recall ≥ 0.75) | Staged flight `20261009_201727`, pipeline vs staged (re-scored 2026-10-10 after M2): wrong-way, U-turn, zebra, speeding 1.0; lane 0.222 (natural lane events count against it); no-parking missed (spot at the frame edge; the stager now keeps acts in view). Pipeline vs oracle: highway stop 0.824, lane 0.421, others 1.0. One staged act per type, so far below the PRD's 100 scenarios per type |
 | Event-to-dashboard latency | ≤ 3 s | Not measurable yet (batch pipeline) |
 
 ---

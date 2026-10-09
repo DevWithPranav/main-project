@@ -207,6 +207,47 @@ class UTurnKinds(unittest.TestCase):
         self.assertEqual(conds(run(sc(self.JUNCTION), self.junction_turn()), "illegal_u_turn"), [])
 
 
+class SpeedLimitOfTheDrivingLane(unittest.TestCase):
+    # A eastbound 90 km/h, B westbound 30 km/h, centre line at y = 1.75
+    LANES = [dict(BASE_LANES[0], speed_limit_kmh=90), BASE_LANES[1], dict(BASE_LANES[2], speed_limit_kmh=30)]
+
+    def test_on_the_centre_line_the_oncoming_limit_does_not_apply(self):
+        # eastbound at 70, centre 0.2 m over the line: physically matched to B (Town05 ring road 37)
+        ev = run(sc(self.LANES), track(straight(-200, 1.95, kmh(70), 8.0), noise=0.05))
+        self.assertEqual(conds(ev, "speeding"), [])
+
+    def test_a_new_track_must_settle_first(self):
+        # 70 in a 30 lane, but in view only 0.9 s: its speed rests on too few frames (min_track_age_s)
+        ev = run(sc(self.LANES), track((lambda t: (200 - kmh(70) * t, 3.5), 0.9)))
+        self.assertEqual(conds(ev, "speeding"), [])
+
+    def test_in_its_own_30_lane_it_is_speeding(self):
+        ev = run(sc(self.LANES), track((lambda t: (200 - kmh(70) * t, 3.5), 8.0)))
+        self.assertEqual(conds(ev, "speeding"), ["E1"])
+
+
+class UnderAFlyover(unittest.TestCase):
+    # a flyover (30 km/h, 11 m up) along x crosses over a ground road (90 km/h) along y at the origin
+    LANES = [{"id": "fly", "centreline": [[-200, 0.4], [200, 0.4]], "z": [11.0, 11.0], "width_m": 3.5, "speed_limit_kmh": 30},
+             {"id": "ground", "centreline": [[0, -200], [0, 200]], "z": [0.0, 0.0], "width_m": 3.5, "speed_limit_kmh": 90}]
+
+    def test_match_by_level(self):
+        sm = sc(self.LANES)
+        # 1.5 m off the ground road's centreline, 0.1 m off the deck's: plan view alone picks the deck
+        self.assertEqual(sm.match(1.5, 0.3).lane.id, "fly")
+        self.assertEqual(sm.match(1.5, 0.3, z=0.0).lane.id, "ground")
+        self.assertEqual(sm.match(1.5, 0.3, z=11.0).lane.id, "fly")
+        self.assertEqual(sm.match(0.0, 50.0, z=11.0).lane.id, "ground")  # no lane at that level: nearest
+
+    def test_car_under_the_flyover_keeps_its_road(self):
+        ev = run(sc(self.LANES), track((lambda t: (0.0, -120 + kmh(70) * t), 7.0)))
+        self.assertEqual(conds(ev, "speeding"), [])
+
+    def test_car_on_the_flyover_is_speeding(self):
+        ev = run(sc(self.LANES), track((lambda t: (-120 + kmh(70) * t, 0.4), 7.0)))
+        self.assertEqual(conds(ev, "speeding"), ["E1"])
+
+
 class SpeedByClass(unittest.TestCase):
     LANES = [dict(BASE_LANES[0], speed_limit_kmh=90), BASE_LANES[1], BASE_LANES[2]]
     PARAMS = {"speeding": {"class_limits_kmh": {"truck": 60}}}

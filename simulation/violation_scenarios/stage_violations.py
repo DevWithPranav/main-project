@@ -22,9 +22,12 @@ evaluation:
     python ml/violation_engine/run_violations.py <flight> --scene .../Town05.json --zones <log>
     python ml/violation_engine/eval_violations.py <pipeline dir> <oracle dir> --scenario <log>
 
+Acts are placed inside the camera's 16:9 ground footprint (View: altitude, heading, 90 deg FOV),
+--margin m from its edge; an act whose scored part would leave it is dropped with a message.
+
 Check the plan offline first (no simulator needed), then run it with CarlaAir up:
-    python stage_violations.py --town Town05 --center -40 -137 --plan-only
-    python stage_violations.py --center -40 -137 --out <flight folder>/scenario_log.json
+    python stage_violations.py --town Town05 --center -40 -137 --altitude 67.6 --yaw 0 --plan-only
+    python stage_violations.py --out <flight folder>/scenario_log.json   # centre, height, heading from the drone
 
 Run in the carlaAir conda env.
 """
@@ -48,6 +51,7 @@ BLUEPRINT = "vehicle.tesla.model3"
 DT = 0.05  # planned trajectory resolution (s)
 GAP_S = 6.0  # pause between acts
 FRONT_M = 2.3  # Tesla Model 3 centre to front bumper (predicates.HALF_LENGTH_M["car"])
+SPEED_IN_VIEW_S = 2.5  # rules.DEFAULTS speeding: min_track_age_s 1.0 + min_s 0.33, plus margin
 
 
 # --- geometry ---------------------------------------------------------------------------------
@@ -141,42 +145,81 @@ def arc(c: np.ndarray, r: float, a0: float, a1: float, z: float, n: int = 24) ->
     return [np.array([c[0] + r * math.cos(a), c[1] + r * math.sin(a), z]) for a in np.linspace(a0, a1, n)]
 
 
+class View:
+    """The drone camera's ground footprint: nadir camera (record_flight.camera_mount, pitch -90, no
+    yaw offset), so the image width runs across the drone's heading and the height along it.
+    Half-extents: altitude * tan(hfov/2) across, times H/W along (67.6 m, 90 deg, 16:9: 67.6 x 38.0 m).
+    margin_m keeps acts clear of the frame edge, where boxes are cut and their centres are wrong
+    (flight 20261009_201727: the no-parking spot at the edge was missed; the stager used a circle)."""
+
+    def __init__(self, center, yaw_deg: float, altitude_m: float, hfov_deg: float = 90.0,
+                 width: int = 1920, height: int = 1080, margin_m: float = 8.0):
+        self.c = np.asarray(center[:2], float)
+        a = math.radians(yaw_deg)
+        self.fwd, self.across = np.array([math.cos(a), math.sin(a)]), np.array([-math.sin(a), math.cos(a)])
+        self.half_across = altitude_m * math.tan(math.radians(hfov_deg) / 2)
+        self.half_along = self.half_across * height / width
+        self.margin = margin_m
+        self.yaw, self.altitude = yaw_deg, altitude_m
+
+    def contains(self, xy) -> bool:
+        """Every point (one (x, y) or many) inside the footprint, margin_m from its edge."""
+        d = np.atleast_2d(np.asarray(xy, float))[:, :2] - self.c
+        return bool(np.all(np.abs(d @ self.fwd) <= self.half_along - self.margin)
+                    and np.all(np.abs(d @ self.across) <= self.half_across - self.margin))
+
+    def describe(self) -> dict:
+        return {"center": self.c.round(1).tolist(), "yaw_deg": round(self.yaw, 1), "altitude_m": round(self.altitude, 1),
+                "half_along_m": round(self.half_along, 1), "half_across_m": round(self.half_across, 1),
+                "margin_m": self.margin}
+
+
+def truth_points(a: dict) -> np.ndarray:
+    """The planned positions of an act between its truth marks (the part that is scored)."""
+    tr = a["traj"]
+    t0, t1 = (tr.marks[k] for k in a["truth"])
+    return np.array([tr.at(t)[0][:2] for t in np.arange(t0, t1 + 1e-9, 0.25)])
+
+
 # --- planning ---------------------------------------------------------------------------------
 
-def lane_limits(town: str):
-    """Nearest-lane speed limit lookup from the exported lane map (export_lane_map.py)."""
+def lane_props(town: str):
+    """Nearest-lane lookup (x, y) -> lane dict of the exported lane map (export_lane_map.py): speed
+    limit and the M1 road features (road_class, ramp, bridge, ...)."""
     path = SCENES_DIR / f"{town}.json"
     if not path.exists():
         raise SystemExit(f"{path} missing - run simulation/carla_scripts/export_lane_map.py {town} first")
-    lanes = json.loads(path.read_text())["lanes"]
+    lanes = [l for l in json.loads(path.read_text())["lanes"] if l.get("lane_type", "driving") == "driving"]
     pts = np.vstack([np.array(l["centreline"]) for l in lanes])
-    lim = np.concatenate([[l["speed_limit_kmh"]] * len(l["centreline"]) for l in lanes])
-    return lambda x, y: float(lim[int(np.argmin((pts[:, 0] - x) ** 2 + (pts[:, 1] - y) ** 2))])
+    owner = np.concatenate([[i] * len(l["centreline"]) for i, l in enumerate(lanes)])
+    return lambda x, y: lanes[int(owner[int(np.argmin((pts[:, 0] - x) ** 2 + (pts[:, 1] - y) ** 2))])]
 
 
-def candidates(m, center, radius, length) -> list:
-    """Start waypoints of straight, junction-free driving-lane runs of >= length m near center."""
+def candidates(m, view: View, length, in_view_m: int = 40) -> list:
+    """Straight, junction-free driving-lane runs of >= length m whose first in_view_m metres (the
+    part most acts are scored on) lie inside the camera view. Acts that drive the whole run check
+    the rest themselves."""
     out = []
     for wp in m.generate_waypoints(4.0):
         if wp.is_junction or wp.lane_type != carla.LaneType.Driving:
             continue
         run = lane_run(wp, length)
-        if len(run) - 1 < length:
-            continue
-        mid = xyz(run[len(run) // 2])
-        if math.hypot(mid[0] - center[0], mid[1] - center[1]) <= radius:
-            ends = xyz(run[0]), xyz(run[-1])
-            if all(math.hypot(e[0] - center[0], e[1] - center[1]) <= radius * 1.2 for e in ends):
-                out.append(run)
+        if len(run) - 1 >= length and view.contains([xyz(w) for w in run[:in_view_m + 1]]):
+            out.append(run)
     return out
 
 
-def plan(m, town: str, center, radius: float, seed: int, world=None) -> dict:
+def plan(m, town: str, view: View, seed: int, world=None) -> dict:
     rng = random.Random(seed)
-    limit = lane_limits(town)
-    runs = candidates(m, center, radius, 60.0)
+    props = lane_props(town)
+    limit = lambda x, y: float(props(x, y)["speed_limit_kmh"])  # noqa: E731
+    urban = lambda w: props(*xyz(w)[:2]).get("road_class", "urban") == "urban" and not props(*xyz(w)[:2]).get("ramp")  # noqa: E731
+    whole = lambda run: view.contains([xyz(w) for w in run])  # noqa: E731
+    one_limit = lambda run: len({limit(*xyz(w)[:2]) for w in run[::5]}) == 1  # noqa: E731
+    center, radius = view.c, float(np.hypot(view.half_along, view.half_across))
+    runs = candidates(m, view, 60.0)
     if not runs:
-        raise SystemExit("No straight 60 m lane near the centre - move --center or raise --radius.")
+        raise SystemExit("No straight 60 m lane inside the camera view - move the drone, fly higher or lower --margin.")
     rng.shuffle(runs)
     used_roads = set()
 
@@ -192,29 +235,54 @@ def plan(m, town: str, center, radius: float, seed: int, world=None) -> dict:
 
     acts, zones = [], []
 
-    # no-parking: zone 16 m long around a spot 40 m along a lane; 45 s stop, then a 15 s negative
-    r = take()
-    spot = r[40]
-    zones.append({"id": "np_staged", "type": "no_parking", "polygon": box(spot, 8.0, spot.lane_width / 2), "grace_s": 30})
-    for hold, expected in ((45.0, True), (15.0, False)):
-        tr = Trajectory().move([xyz(w) for w in r[:41]], 25 / 3.6).mark("start").hold(hold).mark("end")
-        tr.move([xyz(w) for w in r[40:]], 25 / 3.6)
-        acts.append({"type": "no_parking", "expected": expected, "traj": tr, "note": f"stop {hold:.0f} s",
-                     "truth": ("start", "end")})
+    # no-parking: zone 16 m long around a spot 40 m along an urban lane (on a highway-class road the
+    # stop is also illegal stopping, B1); 45 s stop, then a 15 s negative
+    r = take(lambda run: urban(run[40]))
+    if r is None:
+        print("[plan] no urban lane in view: no-parking act skipped (a stop on a highway lane is illegal stopping anyway)")
+    else:
+        spot = r[40]
+        zones.append({"id": "np_staged", "type": "no_parking", "polygon": box(spot, 8.0, spot.lane_width / 2), "grace_s": 30})
+        for hold, expected in ((45.0, True), (15.0, False)):
+            tr = Trajectory().move([xyz(w) for w in r[:41]], 25 / 3.6).mark("start").hold(hold).mark("end")
+            tr.move([xyz(w) for w in r[40:]], 25 / 3.6)
+            acts.append({"type": "no_parking", "expected": expected, "traj": tr, "note": f"stop {hold:.0f} s",
+                         "truth": ("start", "end")})
 
     # wrong-way: a full lane run driven backwards (car facing its motion)
-    r = take()
+    r = take(whole) or take()
     tr = Trajectory().mark("start").move([xyz(w) for w in r[::-1]], 30 / 3.6).mark("end")
     acts.append({"type": "wrong_way", "expected": True, "traj": tr, "note": "30 km/h against the lane",
                  "truth": ("start", "end")})
 
-    # speeding: 1.6x, 1.3x (violations) and 1.1x (inside the 5 km/h tolerance: not a violation)
-    r = take()
-    lim = limit(*xyz(r[30])[:2])
-    for f, expected in ((1.6, True), (1.3, True), (1.1, False)):
-        tr = Trajectory().mark("start").move([xyz(w) for w in r], f * lim / 3.6).mark("end")
-        acts.append({"type": "speeding", "expected": expected, "traj": tr,
-                     "note": f"{f:.1f} x {lim:.0f} km/h", "truth": ("start", "end")})
+    # speeding: 1.6x, 1.3x the limit (violations) and the limit + half the enforcement tolerance (EU:
+    # 5 km/h below 100, 5% above; not a violation). Each in view for >= SPEED_IN_VIEW_S (the engine
+    # needs a track 1 s old plus 0.33 s over the limit), on one speed limit all along, or the
+    # negative turns into a violation where the limit drops
+    def speed_run(lim_kmh):
+        """A run on one limit lim_kmh, in view long enough for 1.6x that limit (a road not used by
+        another act if there is one, as take() does)."""
+        need = int(math.ceil(1.6 * lim_kmh / 3.6 * SPEED_IN_VIEW_S))
+        ok = [run[:need + 1] for run in candidates(m, view, need, in_view_m=need)
+              if one_limit(run[:need + 1]) and limit(*xyz(run[0])[:2]) == lim_kmh]
+        best = next((run for run in ok if run[0].road_id not in used_roads), ok[0] if ok else None)
+        if best is not None:
+            used_roads.add(best[0].road_id)
+        return best
+    r = None
+    for lim_try in sorted({limit(*xyz(run[0])[:2]) for run in runs}):  # lower limits need shorter runs
+        r = speed_run(lim_try)
+        if r is not None:
+            break
+    if r is None:
+        print(f"[plan] no lane in view long enough for {SPEED_IN_VIEW_S:.1f} s at 1.6 x its limit: speeding acts skipped")
+    else:
+        lim = limit(*xyz(r[len(r) // 2])[:2])
+        tol = 5.0 if lim < 100 else 0.05 * lim
+        for kmh, expected, note in ((1.6 * lim, True, f"1.6 x {lim:.0f} km/h"), (1.3 * lim, True, f"1.3 x {lim:.0f} km/h"),
+                                    (lim + tol / 2, False, f"{lim:.0f} + {tol / 2:.1f} km/h (inside the tolerance)")):
+            tr = Trajectory().mark("start").move([xyz(w) for w in r], kmh / 3.6).mark("end")
+            acts.append({"type": "speeding", "expected": expected, "traj": tr, "note": note, "truth": ("start", "end")})
 
     # illegal U-turn: needs a two-way road (left neighbour lane runs the other way)
     def two_way(run):
@@ -255,7 +323,7 @@ def plan(m, town: str, center, radius: float, seed: int, world=None) -> dict:
         rn = run[5].get_right_lane()
         return (rn is not None and rn.lane_type == carla.LaneType.Driving and rn.lane_id * run[5].lane_id > 0
                 and str(run[5].right_lane_marking.type) not in ("NONE", "Curb", "Grass"))
-    r = take(has_neighbour)
+    r = take(lambda run: has_neighbour(run) and whole(run)) or take(has_neighbour)
     if r is not None:
         pts = [lateral(w, w.lane_width / 2) for w in r]
         tr = Trajectory().move([xyz(w) for w in r[:5]], 30 / 3.6).mark("start").move(pts[5:], 30 / 3.6).mark("end")
@@ -314,7 +382,16 @@ def plan(m, town: str, center, radius: float, seed: int, world=None) -> dict:
             acts.append({"type": "red_light", "expected": expected, "traj": tr, "note": note,
                          "truth": ("start", "end"), "signal": {"id": sid, "red_at_s": round(t_front - lead_s, 2)},
                          "stop_line": _stop_line(sid, stop)})
-    return {"acts": acts, "zones": zones}
+
+    # the crosswalk / signal searches look within the footprint's circle: keep only acts whose scored
+    # part stays inside the 16:9 view
+    kept = []
+    for a in acts:
+        if view.contains(truth_points(a)):
+            kept.append(a)
+        else:
+            print(f"[plan] dropped {a['type']} ({a['note']}): it leaves the camera view (margin {view.margin:.0f} m)")
+    return {"acts": kept, "zones": zones}
 
 
 def _signal_approach(m, world, center, radius):
@@ -479,7 +556,10 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=2000)
     ap.add_argument("--center", type=float, nargs=2, metavar=("X", "Y"), default=None,
                     help="Where to stage (default: under the drone)")
-    ap.add_argument("--radius", type=float, default=45.0, help="Keep acts within this many m (stay in view)")
+    ap.add_argument("--altitude", type=float, default=None,
+                    help="Camera height above the road (default: the drone's; --plan-only: 67.6, flight 20261009_201727)")
+    ap.add_argument("--yaw", type=float, default=None, help="Drone heading in degrees (default: the drone's; --plan-only: 0)")
+    ap.add_argument("--margin", type=float, default=8.0, help="Keep acts this many m inside the camera footprint's edge")
     ap.add_argument("--town", default=None, help="Town (default: the loaded map); needed with --plan-only")
     ap.add_argument("--only", nargs="*", default=None, help="Run only these violation types")
     ap.add_argument("--seed", type=int, default=0)
@@ -492,22 +572,29 @@ def main() -> None:
             raise SystemExit("--plan-only needs --town and --center")
         m, world, town = carla.Map(args.town, (XODR_DIR / f"{args.town}.xodr").read_text()), None, args.town
         center = args.center
+        altitude = args.altitude if args.altitude is not None else 67.6
+        yaw = args.yaw if args.yaw is not None else 0.0
     else:
         client = carla.Client(args.host, args.port)
         client.set_timeout(20.0)
         world = client.get_world()
         m = world.get_map()
         town = args.town or m.name.split("/")[-1]
-        if args.center is None:
-            drone = next(iter(world.get_actors().filter("airsim.*")), None)
-            if drone is None:
-                raise SystemExit("No drone found - give --center X Y")
-            loc = drone.get_location()
-            center = (loc.x, loc.y)
-        else:
-            center = args.center
+        drone = next(iter(world.get_actors().filter("airsim.*")), None)
+        if drone is None and (args.center is None or args.altitude is None or args.yaw is None):
+            raise SystemExit("No drone found - give --center X Y, --altitude and --yaw")
+        tf = drone.get_transform() if drone is not None else None
+        center = args.center if args.center is not None else (tf.location.x, tf.location.y)
+        if args.altitude is not None:
+            altitude = args.altitude
+        else:  # height above the road under the drone
+            road = m.get_waypoint(tf.location, project_to_road=True)
+            altitude = tf.location.z - (road.transform.location.z if road is not None else 0.0)
+        yaw = args.yaw if args.yaw is not None else tf.rotation.yaw
 
-    p = plan(m, town, center, args.radius, args.seed, world)
+    view = View(center, yaw, altitude, margin_m=args.margin)
+    print(f"[view] {view.describe()}")
+    p = plan(m, town, view, args.seed, world)
     acts = [a for a in p["acts"] if not args.only or a["type"] in args.only]
     zones = list(p["zones"])
     print(f"[plan] {town} centre ({center[0]:.0f}, {center[1]:.0f}): {len(acts)} acts, {len(zones)} zones")
@@ -516,7 +603,8 @@ def main() -> None:
 
     out = args.out or Path(__file__).parent / "runs" / datetime.datetime.now().strftime("%Y%m%d_%H%M%S") / "scenario_log.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    log = {"town": town, "center": list(center), "created": datetime.datetime.now().isoformat(timespec="seconds"),
+    log = {"town": town, "center": list(center), "view": view.describe(),
+           "created": datetime.datetime.now().isoformat(timespec="seconds"),
            "plan_only": args.plan_only, "zones": zones, "violations": [], "negatives": [], "acts": []}
     if args.plan_only:
         # planned paths sampled at 10 Hz, so `run_violations.py --plan` can dry-run the rules on them

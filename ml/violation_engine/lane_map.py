@@ -36,6 +36,7 @@ import shapely
 from scipy.spatial import cKDTree
 
 MATCH_MARGIN_M = 0.75  # a point up to this far outside a lane's edge still matches it (position noise)
+LEVEL_TOL_M = 2.5  # a lane counts as the vehicle's level within this height (ramps change gradually)
 SOLID_LINES = {"solid", "solidsolid"}  # mixed lines (solidbroken/brokensolid) depend on the side: treated as crossable
 
 
@@ -151,14 +152,39 @@ class SceneMap:
     def load(cls, path: Path) -> "SceneMap":
         return cls(json.loads(Path(path).read_text()))
 
-    def match(self, x: float, y: float) -> LaneMatch | None:
-        """The lane this point lies in (smallest |d| among lanes it is inside of), or None."""
+    def match(self, x: float, y: float, z: float | None = None) -> LaneMatch | None:
+        """The lane this point lies in (smallest |d| among lanes it is inside of), or None. With z
+        (the road height the vehicle is on) only lanes at that level count, if any does: under a
+        flyover the deck's lanes are nearer in plan view (Town04 road 39 at 11 m over road 47)."""
+        c = self._level(self._candidates(x, y), z)
+        return c[0] if c else None
+
+    def match_along(self, x: float, y: float, heading_deg: float, max_off_deg: float = 90.0,
+                    z: float | None = None) -> LaneMatch | None:
+        """The nearest lane containing the point that runs within max_off_deg of heading_deg, or None.
+        For rules that need the lane a vehicle drives in, not the one it is physically nearest to: on
+        a centre line, position noise alone can put a car in the oncoming lane and give it that
+        lane's speed limit (Town05 ring road 37, flight 20261009_201727: 30 vs 90 km/h)."""
+        for m in self._level(self._candidates(x, y), z):
+            if angle_diff_deg(heading_deg, m.dir_deg) <= max_off_deg:
+                return m
+        return None
+
+    @staticmethod
+    def _level(cands: list[LaneMatch], z: float | None) -> list[LaneMatch]:
+        if z is None:
+            return cands
+        same = [c for c in cands if c.lane.z is None or abs(c.lane.height_at(c.s) - z) <= LEVEL_TOL_M]
+        return same or cands
+
+    def _candidates(self, x: float, y: float) -> list[LaneMatch]:
+        """Every lane the point lies in (one match per lane, its nearest segment), nearest first."""
         if self._tree is None:
-            return None
+            return []
         radius = self._max_half_seg + self._max_half_width + MATCH_MARGIN_M
         idx = self._tree.query_ball_point([x, y], radius)
         if not idx:
-            return None
+            return []
         idx = np.array(idx)
         a, b = self._a[idx], self._b[idx]
         ab = b - a
@@ -171,17 +197,17 @@ class SceneMap:
         if self.left_handed:
             cross = -cross
         dist = np.hypot(dvec[:, 0], dvec[:, 1])
-        best = None
-        for i in np.argsort(dist):
-            lane = self.lanes[self._owner[idx[i]]]
-            if dist[i] > lane.width / 2 + MATCH_MARGIN_M:
+        out, seen = [], set()
+        for i in np.argsort(dist, kind="stable"):
+            li = self._owner[idx[i]]
+            lane = self.lanes[li]
+            if li in seen or dist[i] > lane.width / 2 + MATCH_MARGIN_M:
                 continue
-            # a point beyond the end of a segment is only "on" it if this is the lane's first/last segment
-            if best is None or dist[i] < best[0] - 1e-9:
-                k = self._k[idx[i]]
-                s = float(lane.cum[k] + t[i] * lane.seg_len[k])
-                best = (dist[i], LaneMatch(lane, s, float(cross[i]), math.degrees(math.atan2(ab[i, 1], ab[i, 0]))))
-        return best[1] if best else None
+            seen.add(li)
+            k = self._k[idx[i]]
+            s = float(lane.cum[k] + t[i] * lane.seg_len[k])
+            out.append(LaneMatch(lane, s, float(cross[i]), math.degrees(math.atan2(ab[i, 1], ab[i, 0]))))
+        return out
 
     def zones_at(self, x: float, y: float, types: set[str] | None = None) -> list[Zone]:
         p = shapely.Point(x, y)
