@@ -73,11 +73,16 @@ The sim and main environments never run in the same process (except `live_fly_an
 | `predicates.py` | reusable building blocks (stopped, in zone, against lane, straddle, ...) |
 | `rules.py` | `Engine`: the 7 violation monitors built from predicates + time conditions |
 | `events.py` | event records, statuses, writers |
-| `run_violations.py` | CLI: flight → events (pipeline or `--oracle`) |
+| `static_vehicles.py` | pixel-based "is a car really standing there" check for stop-type events |
+| `signals.py` | traffic-light states + stop lines (red-light rule, CARLA only) |
+| `flow_map.py` | learned traffic direction per 4 m cell, for footage without a lane map |
+| `run_violations.py` | CLI: flight → events (pipeline or `--oracle`; `--site` real; `--learn-flow`) |
 | `eval_violations.py` | match events to the staged scenario → precision / recall / F1 |
-| `render_violations.py` | overlay video |
+| `levelx.py` | run the engine on highD / inD / rounD real trajectories (false alarms per hour) |
+| `eval_uit_adrone.py` | frame-level scoring against UIT-ADrone anomaly labels |
+| `render_violations.py` | overlay video; `--clips` writes a 10 s evidence clip per event |
 
-**In-scope violations:** no-parking, wrong-way, illegal U-turn, speeding, lane violation, zebra crossing, highway stopping. Red-light is optional and CARLA-only. Helmet and overloading are out of scope.
+**In-scope violations:** no-parking, wrong-way, illegal U-turn, speeding, lane violation, zebra crossing, highway stopping. Red-light is optional and CARLA-only (built). Helmet and overloading are out of scope.
 
 ### Simulation (`simulation/`)
 - `carla_scripts/`: flying, recording, traffic, map loading, lane-map export, gamepad control.

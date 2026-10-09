@@ -18,6 +18,7 @@ from events import COUNTED_STATUS  # noqa: E402
 from kinematics import smooth_track  # noqa: E402
 from lane_map import SceneMap  # noqa: E402
 from rules import Engine  # noqa: E402
+from signals import SignalLog  # noqa: E402
 
 FPS = 27.0
 NOISE_M = 0.1
@@ -256,6 +257,46 @@ class HighwayStop(unittest.TestCase):
 
     def test_short_stop_not_flagged(self):
         self.assertEqual(counted(run(scene(zones=self.zones), track(drive_stop_leave(60, 0, 12))), "highway_stop"), [])
+
+
+class RedLight(unittest.TestCase):
+    """Stop line across lane A at x = 0 for eastbound traffic, signal "7". A car at 30 km/h from
+    x = -40 has its front (2.3 m ahead of the centre) on the line at t = 37.7 m / 8.33 m/s = 4.52 s."""
+    lines = [{"id": "tl_7_0", "line": [[0, -1.75], [0, 1.75]], "signal_id": "7", "dir": [1, 0]}]
+    cross_t = 37.7 / kmh(30)
+
+    def run_red(self, changes, rows=None):
+        sc = SceneMap({"scene": "test", "lanes": BASE_LANES, "zones": [], "stop_lines": self.lines})
+        signals = SignalLog({"7": [(int(round(t * FPS)), s) for t, s in changes]})
+        rows = rows or track((lambda t: (-40 + kmh(30) * t, 0), 10.0))
+        return [e for e in Engine(sc, signals=signals).run(rows) if e.type == "red_light"]
+
+    def test_crossing_on_red_flagged(self):
+        evs = self.run_red([(0, "Green"), (self.cross_t - 1.5, "Red")])
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0].status, "flagged")
+        self.assertAlmostEqual(evs[0].value["red_for_s"], 1.5, delta=0.15)
+
+    def test_crossing_on_green_or_yellow_not_flagged(self):
+        self.assertEqual(self.run_red([(0, "Green")]), [])
+        self.assertEqual(self.run_red([(0, "Green"), (self.cross_t - 1.0, "Yellow")]), [])
+
+    def test_already_past_when_red_not_flagged(self):  # PRD 4, edge case 1
+        self.assertEqual(self.run_red([(0, "Green"), (self.cross_t + 0.5, "Red")]), [])
+
+    def test_crossing_against_the_line_direction_ignored(self):
+        westbound = track((lambda t: (40 - kmh(30) * t, 0), 10.0))
+        self.assertEqual(self.run_red([(0, "Red")], westbound), [])
+
+    def test_right_at_the_change_needs_review(self):
+        evs = self.run_red([(0, "Green"), (self.cross_t - 0.1, "Red")])
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0].status, "needs_review")
+
+    def test_no_signal_log_no_rule(self):
+        sc = SceneMap({"scene": "test", "lanes": BASE_LANES, "zones": [], "stop_lines": self.lines})
+        rows = track((lambda t: (-40 + kmh(30) * t, 0), 10.0))
+        self.assertEqual([e for e in Engine(sc).run(rows) if e.type == "red_light"], [])
 
 
 if __name__ == "__main__":

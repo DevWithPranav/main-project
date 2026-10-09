@@ -1,11 +1,13 @@
 # Violation Engine — Architecture and Plan (Objective 1, Stage 4)
 
-**Version 2.1 — 2026-10-04.** Owner: Hussain (Stage 4). Prepared with Afif.
+**Version 2.2 — 2026-10-08.** Owner: Hussain (Stage 4). Prepared with Afif.
 **Status:**
-- **Phase A:** steps A1–A5 and A9 are done; A6–A8 (staged CARLA flight, F1 per type) wait for a CarlaAir session.
-- **Phase B:** B1 and B2 are built and tested on both real clips.
+- **Phase A:** steps A1–A5 and A9 are done, including per-event evidence clips. A6–A8 (staged CARLA flight, F1 per type) wait for a CarlaAir session.
+- **Phase B:** B1, B2 and B6 are built and tested. The B3 (highD/inD/rounD) and B5 (UIT-ADrone) tools are built and tested on synthetic data in the datasets' formats; running them needs the data.
+- **Phase C:** red-light (V4) and learned flow direction are built. V4 still needs a live CarlaAir run.
 
-Section 13 records what implementation changed or taught us.
+Section 13 records what implementation changed or taught us (v2.2 additions at its end).
+
 **What changed from v1.0:** scope grows from 3 to **7 violation types** (plus 1 optional), and the design covers real drone footage as well as CARLA (v2.0); v2.1 adds the implementation notes.
 
 All examples marked *(illustrative)* are made up to explain an idea. All numbers marked *(measured)* come from our own runs.
@@ -380,17 +382,21 @@ ml/violation_engine/
   lane_map.py               L4  load maps/zones, map matching, Frenet s/d
   predicates.py             L5  shared predicates
   rules.py                  L5  7 monitors (+ red_light)
-  static_vehicles.py        L5  background-model cross-check
-  events.py                 L6  episodes, confidence, evidence clips
+  static_vehicles.py        L5  static-vehicle cross-check (B6)
+  signals.py                L5  traffic-signal states + stop lines for V4
+  flow_map.py               L4  learned flow direction (Phase C)
+  events.py                 L6  episodes, confidence, evidence field
   run_violations.py         runner (L2-L7)
   eval_violations.py        L1/L2 evaluation
-  render_violations.py      overlay video
+  levelx.py                 L1 real: highD / inD / rounD (B3)
+  eval_uit_adrone.py        L2 real: UIT-ADrone frame-level scoring (B5)
+  render_violations.py      overlay video; --clips: evidence clips per event
   zone_tool.py              click tool for real-footage lanes/zones
-  tests/test_rules.py       L0 unit tests
+  tests/                    L0 unit tests
   configs/scenes/*.json     lane maps per scene
 simulation/carla_scripts/
-  export_lane_map.py        OpenDRIVE -> lane map JSON (+ crosswalks, stop lines)
-  record_flight.py          logs sim time + camera pose every frame (done); add traffic-light states
+  export_lane_map.py        OpenDRIVE -> lane map JSON (+ crosswalks)
+  record_flight.py          logs sim time + camera pose every frame, traffic-light states + stop lines
 simulation/violation_scenarios/
   stage_violations.py       stages all scenarios + writes the scenario log
 ```
@@ -411,7 +417,7 @@ simulation/violation_scenarios/
 | A6 | Staged scenarios (all types) | one flight per scenario group, with logs | **Yes** |
 | A7 | L1 oracle (CARLA) | F1 ≥ 0.95 per type | No |
 | A8 | L2 pipeline (CARLA) | **F1 ≥ 0.70 per type (PRD)** | No |
-| A9 | Events, evidence clips, overlay video, tracker/presentation update | demo shows flags | No |
+| A9 | Events, evidence clips, overlay video, tracker/presentation update | demo shows flags — **done (clips 2026-10-08)** | No |
 
 **Phase B — real footage**
 
@@ -419,12 +425,12 @@ simulation/violation_scenarios/
 |---|---|---|
 | B1 | PTS time base + real geometry options A/B/C | scale error checked on a known length (e.g. lane width) |
 | B2 | Zone/lane click tool | lane map for both real clips |
-| B3 | L1 oracle on highD/inD (request access) | false-alarm rates reported |
+| B3 | L1 oracle on highD/inD (request access) | false-alarm rates reported — **tool built (`levelx.py`); needs the data** |
 | B4 | Hand-label events in the real clips; L2 real | per-type results reported |
-| B5 | UIT-ADrone car events | per-type results reported |
-| B6 | Background-model cross-check | measured effect on stop-type precision |
+| B5 | UIT-ADrone car events | per-type results reported — **scorer built (`eval_uit_adrone.py`); labels are frame-level, so results are frame-level** |
+| B6 | Background-model cross-check | measured effect on stop-type precision — **built; measured on CARLA truth (Section 13)** |
 
-**Phase C — optional:** red-light (CARLA), learned flow direction, SkyScapes-style automatic marking detection.
+**Phase C — optional:** red-light (CARLA) — **built, live run pending**; learned flow direction — **built**; SkyScapes-style automatic marking detection — not started.
 
 A4/A5 and A2 can run in parallel; A3 and A6 can share one CarlaAir session.
 
@@ -506,6 +512,48 @@ A4/A5 and A2 can run in parallel; A3 and A6 can share one CarlaAir session.
 - **Calibration check:** the median car length (`real_geometry.py --check`) should be ~4–5 m.
 - **Speeds from real footage are estimates** and are tagged `estimated_speed`. Registration drift adds error the smoother can't see, so each site states it (`speed_sigma_kmh`) and the speeding rule must hold despite it. Example: on the highway clip a parked van reads ~5.5 km/h while the drone flies fast, so 6 km/h is added there.
 - No-parking from a fast-moving drone is unreliable for the same reason. Parking enforcement needs a hovering drone, as Spain's DGT operates.
+
+### v2.2 additions (2026-10-08)
+
+**Evidence clips (Layer 6/7).** `render_violations.py --clips` writes one clip per event to `<violations>/events/<event_id>.mp4`: 7 s before the flag to 3 s after, the full overlay, and a banner with the event, its status, confidence and tags. It records `evidence: {frame, clip}` in `violations.json` and `.csv`. Tested on Town05 flight `20261002_001635` (1 clip, 267 frames) and on the real highway clip (3 clips).
+- Bug found and fixed on the way: the overlay pinned event labels on gap-filled (`interp`) boxes. Those are straight lines in pixels while the camera moves, and on the Town05 zebra event they sat 600 px from the car. They are now drawn plain, and the spot ring marks the car.
+
+**Static-vehicle cross-check (B6, `static_vehicles.py`).**
+- **Method:** a 7 m ground patch around the event spot, rectified per frame from the camera pose (CARLA) or the scene map (real), sampled every 0.5 s. It's compared with background views of the same spot before and after the event window. The "after" side is needed because a lost track can end an event while the car is still there.
+- **Choices, each made after looking at failures on the real frames:**
+  - The background is the *nearest* view, not a median: the moving drone makes buildings, poles and trees lean differently from view to view.
+  - Background views where the pipeline tracked a vehicle within 3 m are dropped (queues at crossings).
+  - On flights before 2026-10-03, only exact-pose frames are used: interpolated poses shift road markings inside the patch.
+- **Effect on events:** confirmed adds +0.1 confidence; contradicted sends a flagged event to `needs_review`. Unknown changes nothing.
+- **Measured** (`--check`, Town05 flight `20261002_001635`, D_OCC 12), calibrated and tested on the same flight because it's the only one with truth:
+  - True stationary vehicles (98 usable): 85% confirmed, 8% contradicted.
+  - Empty driving-lane spots (125 usable): 80% contradicted, 14% falsely confirmed.
+  - All 3 real stop events on that flight (1 pipeline, 2 oracle) are confirmed. The pipeline zebra event's confidence goes 0.57 → 0.67; it stays `needs_review` (PRD minimum 0.85).
+  - Remaining misses: the spot always occupied (queues, parking rows), or the car hidden under a building's lean or an overpass. Both are cases where review is the right outcome.
+
+**Red light (V4, CARLA only).**
+- **Recording:** `record_flight.py` writes `traffic_lights.json` for every flight: each light's state changes per tick, and its stop lines from CARLA's `get_stop_waypoints()`, with the approach direction.
+- **Rule:** `signals.py` looks states up by frame, so there is no time base to reconcile. `RedLightMonitor` flags a vehicle whose front crosses a stop line in the approach direction while the light is red. Yellow and "already past at the change" are not flagged. Confidence is lower within the first second of red, where tick timing decides.
+- **Staging:** `stage_violations.py` stages it (red 1.5 s and 3 s before the line; negative: red 1.5 s after passing). In Town05 the OpenDRIVE signal sits on the junction's internal road, so the offline plan walks back to the junction entrance.
+- **Results:** 6 unit tests pass; the Town05 dry run is 13/13 acts as expected, with measured red time 1.6 s and 3.1 s for the planned 1.5 s and 3.0 s. A live run still needs CarlaAir.
+
+**highD / inD / rounD (B3, `levelx.py`).**
+- **What it does:** loads the levelXdata formats. For highD, lanes come from the recording's lane-marking positions: left-handed image axes, edges solid, inner lines dashed, the recording's speed limit. For inD/rounD, lanes come from the Lanelet2 `.osm` (lat/lon → UTM − recording origin), and overlapping lanelets count as junctions. The rest of the engine runs unchanged.
+- **Reports:** counted events per hour; for highD, speeding scored against the dataset's own speeds, and solid-line crossings (all should be false alarms).
+- **Tested** on synthetic recordings in both formats (6 tests). Running it needs dataset access.
+
+**UIT-ADrone (B5, `eval_uit_adrone.py`).**
+- The dataset's anomaly labels are frame-level only (one `.npy` of 0/1 per test video, no type, no vehicle). It's 51 videos, 30 fps, public on Google Drive.
+- **Scores:** frame AUC (frame score = max confidence of covering events), frame P/R/F1, event precision and segment recall.
+- Its 10 anomaly types include pedestrian, sidewalk, goods and motorbike-fall cases we don't detect, so recall has a ceiling well below 1.
+- Running it needs a site file (`zone_tool.py`) per roundabout and our pipeline on the test videos.
+
+**Learned flow direction (Phase C, `flow_map.py`, `run_violations.py --learn-flow`).**
+- **Method:** each track votes once per 4 m cell with its heading there. A cell with ≥ 5 tracks and ≥ 80% within 45° becomes a one-way lane; mixed cells become junction lanes.
+- **Measured** on Town05 `20261002_001635`: the learned direction agrees within 30° with the OpenDRIVE lane direction in **38/38** one-way cells from true positions and **6/6** from the pipeline.
+- **Coverage is the limit:** 3.5 min gives 80 cells (oracle) / 24 (pipeline), and the 30 s real highway clip from a moving drone gives 1. It needs longer hovering footage.
+- Learned lanes raised no wrong-way false alarm on that flight.
+- **Side effect:** lane-based context changes. One of the 2 oracle zebra stops became a `queue` tag. Use `--learn-flow` only where there is no lane map.
 
 ## 14. References
 

@@ -6,7 +6,7 @@ These rules are hard rules for every contributor, human or AI. If a rule blocks 
 
 ## 1. Git
 
-- **Agents never commit or push.** Prepare the change, then give the user the exact commands and a commit message:
+- **Agents never commit or push.** Prepare the change. Give the user the exact commands and a commit message only when they ask for them:
   ```powershell
   git add <specific files>
   git commit -m "<imperative summary, <= 72 chars>" -m "<what changed and why>"

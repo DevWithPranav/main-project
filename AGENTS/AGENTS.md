@@ -45,6 +45,12 @@ main-project/
 
 ---
 
+## Datasets
+
+All datasets live outside the repo, in `C:\Users\prana\Desktop\Main-Project\project data\` (UAVDT, VisDrone DET/VID/MOT, CarlaAir build) and `C:\Users\prana\Desktop\Main-Project\datasets\` (VisDrone, dota8). Use them for testing. They are read-only. See `CLAUDE.md` for the full list.
+
+---
+
 ## Environments (two, they cannot be merged)
 
 | Env | Python | Folder | Used for |
@@ -94,4 +100,4 @@ Every script has a module docstring with its exact usage. Read it before running
 2. **Make the change** and match the surrounding style (see rules.md, "Code").
 3. **Verify** it: run the unit tests, and run the script on real data if you can. Report the actual output.
 4. **Log it.** Add a row to the Change Log in `docs/main_project_tracker.md` if the change matters to the project status.
-5. **Hand off git.** Do not commit or push. Give the user the commands and a commit message (rules.md, "Git").
+5. **Leave git to the user.** Do not commit or push. Give commands and a commit message only when asked (rules.md, "Git").

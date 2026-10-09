@@ -25,6 +25,7 @@ QUEUE_NEAR_M = 8.0  # without a lane: any stopped vehicle this close
 QUEUE_SLOW_KMH = 5.0
 HISTORY_S = 10.0
 HALF_WIDTH_M = {"car": 0.9, "van": 1.0, "truck": 1.25, "bus": 1.25}  # vehicle half-width for footprint tests
+HALF_LENGTH_M = {"car": 2.3, "van": 2.5, "truck": 4.0, "bus": 6.0}  # centre to front bumper (red light)
 UNMARKED_LINES = {"none", "curb", "grass", "other", ""}
 
 
@@ -131,6 +132,25 @@ def queue_context(o: Obs, others: list[Obs]) -> bool:
         elif o.lane is None and math.hypot(p.x - o.x, p.y - o.y) <= QUEUE_NEAR_M:
             return True
     return False
+
+
+def front_point(o: Obs) -> tuple[float, float] | None:
+    """Front bumper position: centre + half the vehicle length along its motion (None when too slow
+    to have a direction)."""
+    v = math.hypot(o.vx, o.vy)
+    if v < 0.5:
+        return None
+    half = HALF_LENGTH_M.get(o.cls, 2.3)
+    return o.x + half * o.vx / v, o.y + half * o.vy / v
+
+
+def segments_cross(p, q, a, b) -> bool:
+    """Does segment p-q cross segment a-b (touching counts once: the end point q may lie on a-b)?"""
+    def orient(u, v, w):
+        return (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0])
+    d1, d2 = orient(a, b, p), orient(a, b, q)
+    d3, d4 = orient(p, q, a), orient(p, q, b)
+    return ((d1 > 0) != (d2 > 0) or d2 == 0) and d1 != 0 and (d3 > 0) != (d4 > 0)
 
 
 def speed_tolerance_kmh(limit_kmh: float, mode: str = "eu") -> float:

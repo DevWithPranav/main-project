@@ -42,6 +42,7 @@ class Event:
     tags: list[str] = field(default_factory=list)
     confidence: float = 0.0
     status: str = "flagged"
+    evidence: dict = field(default_factory=dict)  # {"frame", "clip"}: filled by render_violations.py --clips
 
     def close(self, t: float, frame: int, margin: float, quality: float, duration_score: float) -> None:
         """Set the end and the confidence: a weighted mean of how far past the threshold (margin),
@@ -67,20 +68,41 @@ class EventLog:
         return ev
 
 
+CSV_COLS = ["event_id", "type", "status", "confidence", "track_ids", "cls", "start_s", "flag_s", "end_s",
+            "start_frame", "flag_frame", "end_frame", "lane_id", "zone_id", "x", "y", "value", "tags", "evidence"]
+
+
 def write_events(events: list[Event], out_dir: Path) -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     js = out_dir / "violations.json"
     js.write_text(json.dumps([asdict(e) for e in events], indent=1))
-    cs = out_dir / "violations.csv"
-    cols = ["event_id", "type", "status", "confidence", "track_ids", "cls", "start_s", "flag_s", "end_s",
-            "start_frame", "flag_frame", "end_frame", "lane_id", "zone_id", "x", "y", "value", "tags"]
+    return js, _write_csv([asdict(e) for e in events], out_dir / "violations.csv")
+
+
+def _write_csv(events: list[dict], cs: Path) -> Path:
     with open(cs, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=cols)
+        w = csv.DictWriter(f, fieldnames=CSV_COLS)
         w.writeheader()
-        for e in events:
-            d = asdict(e)
-            d["track_ids"] = " ".join(map(str, e.track_ids))
-            d["value"] = json.dumps(e.value)
-            d["tags"] = " ".join(e.tags)
-            w.writerow({k: d[k] for k in cols})
-    return js, cs
+        for d in events:
+            d = dict(d)
+            d["track_ids"] = " ".join(map(str, d["track_ids"]))
+            d["value"] = json.dumps(d["value"])
+            d["tags"] = " ".join(d["tags"])
+            d["evidence"] = d.get("evidence", {}).get("clip", "")
+            w.writerow({k: d.get(k) for k in CSV_COLS})
+    return cs
+
+
+def rewrite_events(out_dir: Path, events: list[dict]) -> None:
+    """Write events loaded from violations.json (dicts) back to violations.json / .csv."""
+    (out_dir / "violations.json").write_text(json.dumps(events, indent=1))
+    _write_csv(events, out_dir / "violations.csv")
+
+
+def attach_evidence(out_dir: Path, evidence: dict[str, dict]) -> None:
+    """Write evidence (event_id -> {"frame", "clip"}) into an existing violations.json / .csv."""
+    events = json.loads((out_dir / "violations.json").read_text())
+    for d in events:
+        if d["event_id"] in evidence:
+            d["evidence"] = evidence[d["event_id"]]
+    rewrite_events(out_dir, events)

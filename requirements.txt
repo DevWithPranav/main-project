@@ -16,6 +16,7 @@
 torch==2.11.0+cu128
 torchvision==0.26.0+cu128
 ultralytics>=8.4          # YOLO26 + built-in TrackTrack / BoT-SORT / ByteTrack trackers
+lap>=0.5.12               # assignment solver the Ultralytics trackers need (else auto-installed at first run)
 
 # Vision / numerics
 numpy
@@ -24,6 +25,7 @@ pillow
 scipy
 shapely>=2.0
 pyyaml
+utm                       # lat/lon -> UTM for inD/rounD Lanelet2 maps (ml/violation_engine/levelx.py)
 
 # Training augmentations (ml/detection/train_retrain.py)
 albumentations

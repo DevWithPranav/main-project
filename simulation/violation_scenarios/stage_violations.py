@@ -13,6 +13,8 @@ so speed, timing and position are exactly what was planned:
   lane_violation   drive on the line between two same-direction lanes for 7 s
   zebra_crossing   stop 15 s on a crosswalk                          + negative: stop behind a queue
   highway_stop     stop 30 s in a highway lane (only where a lane has a limit >= 90 km/h)
+  red_light        through a stop line at 30 km/h, red 1.5 s and 3 s before   + negative: red 1.5 s after
+                   (optional, CARLA only; the light is switched by the script, all lights frozen meanwhile)
 
 Zones it needs (no-parking, no-U-turn) are created around the chosen spots. The scenario log
 (JSON) holds them plus every act's actor id and carla frames; pass it to the engine and the
@@ -45,6 +47,7 @@ SCRIPTED_ROLE = "violation_scenario"
 BLUEPRINT = "vehicle.tesla.model3"
 DT = 0.05  # planned trajectory resolution (s)
 GAP_S = 6.0  # pause between acts
+FRONT_M = 2.3  # Tesla Model 3 centre to front bumper (predicates.HALF_LENGTH_M["car"])
 
 
 # --- geometry ---------------------------------------------------------------------------------
@@ -168,7 +171,7 @@ def candidates(m, center, radius, length) -> list:
     return out
 
 
-def plan(m, town: str, center, radius: float, seed: int) -> dict:
+def plan(m, town: str, center, radius: float, seed: int, world=None) -> dict:
     rng = random.Random(seed)
     limit = lane_limits(town)
     runs = candidates(m, center, radius, 60.0)
@@ -295,7 +298,84 @@ def plan(m, town: str, center, radius: float, seed: int) -> dict:
         tr.move([xyz(w) for w in r[30:]], 40 / 3.6)
         acts.append({"type": "highway_stop", "expected": True, "traj": tr, "note": "30 s stop in a highway lane",
                      "truth": ("start", "end")})
+
+    # red light (optional, CARLA only): through a stop line at 30 km/h; the light turns red 1.5 s /
+    # 3 s before the front reaches the line (violations, R22's typical range), or 1.5 s after the car
+    # has passed it (negative: already past the line at the change, PRD 4 edge case 1)
+    appr = _signal_approach(m, world, center, radius)
+    if appr is not None:
+        sid, stop, back, ahead = appr
+        v = 30 / 3.6
+        for lead_s, expected in ((1.5, True), (3.0, True), (-1.5, False)):
+            tr = Trajectory().move([xyz(w) for w in back] + [xyz(stop)], v).mark("start")
+            t_front = tr.duration - FRONT_M / v  # front bumper on the line
+            tr.move([xyz(w) for w in ahead], v).mark("end")
+            note = f"red {lead_s:.1f} s before the line" if lead_s > 0 else f"red {-lead_s:.1f} s after passing"
+            acts.append({"type": "red_light", "expected": expected, "traj": tr, "note": note,
+                         "truth": ("start", "end"), "signal": {"id": sid, "red_at_s": round(t_front - lead_s, 2)},
+                         "stop_line": _stop_line(sid, stop)})
     return {"acts": acts, "zones": zones}
+
+
+def _signal_approach(m, world, center, radius):
+    """(signal id, stop waypoint, 40 m straight approach, 25 m on through the junction) for the
+    traffic-light-controlled lane nearest the centre. Live: CARLA's own stop waypoints (the ones
+    record_flight.py logs); --plan-only: the OpenDRIVE signal's position on each lane it controls."""
+    best = None
+    for lm in m.get_all_landmarks_of_type("1000001"):
+        if world is not None:
+            tl = world.get_traffic_light(lm)
+            wps = tl.get_stop_waypoints() if tl is not None else []
+        else:
+            # CARLA puts the signal on the junction's internal road; the stop line is where that
+            # lane enters the junction (as get_stop_waypoints() gives it live), so walk back out
+            wps = []
+            for a, b in lm.get_lane_validities():
+                for lane in range(a, b + 1):
+                    wp = m.get_waypoint_xodr(lm.road_id, lane, lm.s) if lane != 0 else None
+                    for _ in range(60):
+                        if wp is None or not wp.is_junction:
+                            break
+                        prev = wp.previous(0.5)
+                        wp = prev[0] if prev else None
+                    if wp is not None and not wp.is_junction and wp.lane_type == carla.LaneType.Driving:
+                        wps.append(wp)
+        for wp in wps:
+            c = xyz(wp)
+            d = math.hypot(c[0] - center[0], c[1] - center[1])
+            if d > radius or (best is not None and d >= best[0]):
+                continue
+            back, w = [], wp
+            for _ in range(40):
+                prev = [p for p in w.previous(1.0) if not p.is_junction]
+                if not prev:
+                    break
+                w = prev[0]
+                back.append(w)
+            if len(back) < 40:
+                continue
+            ahead, w = [], wp
+            for _ in range(25):  # the straightest successor, through the junction
+                nxt = w.next(1.0)
+                if not nxt:
+                    break
+                yaw = wp.transform.rotation.yaw
+                w = min(nxt, key=lambda n: abs((n.transform.rotation.yaw - yaw + 180) % 360 - 180))
+                ahead.append(w)
+            best = (d, (lm.id, wp, back[::-1], ahead))
+    return None if best is None else best[1]
+
+
+def _stop_line(sid: str, wp) -> dict:
+    """Stop line across the lane at a stop waypoint, as record_flight.py writes it (for --plan-only dry runs)."""
+    c, r, f = wp.transform.location, wp.transform.get_right_vector(), wp.transform.get_forward_vector()
+    h = wp.lane_width / 2
+    return {"id": f"tl_{sid}_plan", "signal_id": sid, "dir": [round(f.x, 4), round(f.y, 4)],
+            "line": [[round(c.x - h * r.x, 2), round(c.y - h * r.y, 2)], [round(c.x + h * r.x, 2), round(c.y + h * r.y, 2)]]}
+
+
+def _traffic_light(world, sid: str):
+    return next((tl for tl in world.get_actors().filter("traffic.traffic_light") if tl.get_opendrive_id() == sid), None)
 
 
 def _merge_boxes(a: list, b: list) -> list:
@@ -352,22 +432,40 @@ def run_act(world, bp_lib, act: dict) -> dict:
                 c.destroy()
             return {"error": f"spawn failed ({name})"}
         cars[name] = v
+    light = None
+    if "signal" in act:  # green (frozen) until red_at_s, then red; freeze() holds every light in the town
+        light = _traffic_light(world, act["signal"]["id"])
+        if light is None:
+            for c in cars.values():
+                c.destroy()
+            return {"error": f"traffic light {act['signal']['id']} not found"}
+        light.set_state(carla.TrafficLightState.Green)
+        light.freeze(True)
     snap = world.wait_for_tick()
     t0 = snap.timestamp.elapsed_seconds
     frames = {}
     duration = max(tr.duration for _, tr in trajs)
-    while True:
-        snap = world.wait_for_tick()
-        t = snap.timestamp.elapsed_seconds - t0
-        for name, tr in trajs:
-            p, yaw = tr.at(min(t, tr.duration))
-            cars[name].set_transform(carla.Transform(carla.Location(p[0], p[1], p[2] + 0.02), carla.Rotation(yaw=yaw)))
-        for m_name, m_t in act["traj"].marks.items():
-            if m_name not in frames and t >= m_t:
-                frames[m_name] = (snap.frame, round(snap.timestamp.elapsed_seconds, 3))
-        if t >= duration:
-            break
+    try:
+        while True:
+            snap = world.wait_for_tick()
+            t = snap.timestamp.elapsed_seconds - t0
+            for name, tr in trajs:
+                p, yaw = tr.at(min(t, tr.duration))
+                cars[name].set_transform(carla.Transform(carla.Location(p[0], p[1], p[2] + 0.02), carla.Rotation(yaw=yaw)))
+            for m_name, m_t in act["traj"].marks.items():
+                if m_name not in frames and t >= m_t:
+                    frames[m_name] = (snap.frame, round(snap.timestamp.elapsed_seconds, 3))
+            if light is not None and "red" not in frames and t >= act["signal"]["red_at_s"]:
+                light.set_state(carla.TrafficLightState.Red)
+                frames["red"] = (snap.frame, round(snap.timestamp.elapsed_seconds, 3))
+            if t >= duration:
+                break
+    finally:
+        if light is not None:
+            light.freeze(False)
     out = {"actor_id": cars["main"].id, "frames": frames}
+    if light is not None:
+        out["signal"] = {**act["signal"], "red_frame": frames.get("red", (None,))[0]}
     if "lead" in cars:
         out["lead_actor_id"] = cars["lead"].id
     for c in cars.values():
@@ -409,7 +507,7 @@ def main() -> None:
         else:
             center = args.center
 
-    p = plan(m, town, center, args.radius, args.seed)
+    p = plan(m, town, center, args.radius, args.seed, world)
     acts = [a for a in p["acts"] if not args.only or a["type"] in args.only]
     zones = list(p["zones"])
     print(f"[plan] {town} centre ({center[0]:.0f}, {center[1]:.0f}): {len(acts)} acts, {len(zones)} zones")
@@ -433,6 +531,10 @@ def main() -> None:
             if "lead" in a:
                 entry["lead_samples"] = [[round(float(t), 2)] + a["lead"].at(t)[0][:2].round(3).tolist()
                                          for t in np.arange(0.0, a["lead"].duration, 0.1)]
+            if "signal" in a:  # the dry run's signal schedule and stop line (live runs: record_flight.py logs both)
+                entry["signal"] = a["signal"]
+                if all(sl["id"] != a["stop_line"]["id"] for sl in log.setdefault("stop_lines", [])):
+                    log["stop_lines"].append(a["stop_line"])
             log["acts"].append(entry)
         out.write_text(json.dumps(log, indent=1))
         print(f"[plan] written (no actors) -> {out}")

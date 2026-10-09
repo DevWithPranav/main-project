@@ -17,6 +17,9 @@ Usage:
     python ml/violation_engine/run_violations.py <flight dir> --scene ml/violation_engine/configs/scenes/Town05.json
     python ml/violation_engine/run_violations.py <flight dir> --scene ... --oracle
     python ml/violation_engine/run_violations.py <flight dir> --scene ... --zones extra_zones.json
+    python ml/violation_engine/run_violations.py --site <site.json> --trajectories <clip>/trajectories_final.csv --learn-flow
+
+A flight with traffic_lights.json (record_flight.py) also gets the red-light rule (signals.py).
 """
 
 import argparse
@@ -33,6 +36,7 @@ from ground_coords import FlightCamera, add_world_columns, true_centres
 from kinematics import compute, smooth_track, write_rows
 from lane_map import SceneMap
 from rules import Engine
+from signals import SignalLog
 
 RESULTS_DIR = Path(__file__).resolve().parents[1] / "data" / "results" / "recorded_flight_validation"
 ORACLE_MEAS_SIGMA = 0.1  # true positions, but stamped with wall-clock times that jitter (~0.02-0.05 s per tick)
@@ -100,11 +104,23 @@ def oracle_rows(flight: Path, cam: FlightCamera) -> list[dict]:
     return rows
 
 
-def plan_rows(plan: dict, gap_s: float = 6.0) -> tuple[list[dict], dict[int, dict]]:
+PLAN_GAP_S = 6.0
+
+
+def plan_offsets(plan: dict, gap_s: float = PLAN_GAP_S) -> list[float]:
+    """Start time of each act in a --plan dry run (acts played one after the other)."""
+    out, t0 = [], 0.0
+    for act in plan["acts"]:
+        out.append(t0)
+        t0 += act["duration_s"] + gap_s
+    return out
+
+
+def plan_rows(plan: dict, gap_s: float = PLAN_GAP_S) -> tuple[list[dict], dict[int, dict]]:
     """Kinematics rows from a stage_violations.py --plan-only log: every act's planned path
     (10 Hz samples) played one after the other. Returns rows and track_id -> act."""
-    rows, owner, t0 = [], {}, 0.0
-    for i, act in enumerate(plan["acts"]):
+    rows, owner = [], {}
+    for i, (act, t0) in enumerate(zip(plan["acts"], plan_offsets(plan, gap_s))):
         for j, key in enumerate(("samples", "lead_samples")):
             if key not in act:
                 continue
@@ -121,7 +137,6 @@ def plan_rows(plan: dict, gap_s: float = 6.0) -> tuple[list[dict], dict[int, dic
                              "vy": round(float(k["vy"][n]), 3), "speed_kmh": round(float(k["speed_kmh"][n]), 2),
                              "speed_sigma_kmh": round(float(k["speed_sigma_kmh"][n]), 2),
                              "heading_deg": "" if math.isnan(h) else round(float(h), 1)})
-        t0 += act["duration_s"] + gap_s
     rows.sort(key=lambda r: (r["time_s"], r["track_id"]))
     return rows, owner
 
@@ -161,6 +176,8 @@ def run_site(args) -> None:
     out.mkdir(parents=True, exist_ok=True)
     write_rows(rows, out / "kinematics.csv")
     scene_data = merge_zones(site.scene(), args.zones)
+    if args.learn_flow:
+        scene_data = with_learned_flow(scene_data, rows)
     (out / "scene.json").write_text(json.dumps(scene_data))
     scene = SceneMap(scene_data)
     events = Engine(scene, json.loads(args.params.read_text()) if args.params else None, prefix=args.site.stem).run(rows)
@@ -176,6 +193,15 @@ def run_site(args) -> None:
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
     print(json.dumps(summary, indent=1))
     print(f"[violations] {len(events)} events -> {out}")
+
+
+def with_learned_flow(scene_data: dict, rows: list[dict]) -> dict:
+    """Lanes learned from the traffic itself (flow_map.py) in place of the map's lanes; zones and
+    stop lines are kept. For footage with no lane map: only the wrong-way rule gets a direction."""
+    from flow_map import flow_lanes, learn
+    lanes = flow_lanes(learn(rows))
+    print(f"[flow] {len(lanes)} learned cells, {sum(not l['junction'] for l in lanes)} one-way")
+    return {**scene_data, "lanes": lanes}
 
 
 def actor_class(a: dict) -> str:
@@ -205,6 +231,8 @@ def main() -> None:
                     help="Tracks CSV (default: recorded_flight_validation/<flight>/tracktrack_ours/trajectories_final.csv)")
     ap.add_argument("--oracle", action="store_true", help="Use CARLA's true vehicle positions instead (L1)")
     ap.add_argument("--params", type=Path, default=None, help="JSON overriding rules.DEFAULTS")
+    ap.add_argument("--learn-flow", action="store_true",
+                    help="Replace the lane map's lanes by directions learned from the traffic (flow_map.py)")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
 
@@ -212,7 +240,9 @@ def main() -> None:
         plan = json.loads(args.plan.read_text())
         rows, owner = plan_rows(plan)
         scene = SceneMap(merge_zones(json.loads(args.scene.read_text()), args.plan))
-        events = Engine(scene, json.loads(args.params.read_text()) if args.params else None, prefix="plan").run(rows)
+        signals = SignalLog.from_plan(plan, plan_offsets(plan))
+        events = Engine(scene, json.loads(args.params.read_text()) if args.params else None, prefix="plan",
+                        signals=signals).run(rows)
         out = args.out or args.plan.parent / "plan_check"
         out.mkdir(parents=True, exist_ok=True)
         write_rows(rows, out / "kinematics.csv")
@@ -243,9 +273,17 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     write_rows(rows, out / "kinematics.csv")
 
-    scene = SceneMap(merge_zones(json.loads(args.scene.read_text()), args.zones))
+    scene_data = merge_zones(json.loads(args.scene.read_text()), args.zones)
+    if args.learn_flow:
+        scene_data = with_learned_flow(scene_data, rows)
+    signals = SignalLog.from_flight(args.flight)  # red light: recorded signal states + CARLA's stop lines
+    if signals is not None:
+        signals, flight_lines = signals
+        have = {sl["id"] for sl in scene_data.get("stop_lines", [])}
+        scene_data["stop_lines"] = scene_data.get("stop_lines", []) + [sl for sl in flight_lines if sl["id"] not in have]
+    scene = SceneMap(scene_data)
     params = json.loads(args.params.read_text()) if args.params else None
-    engine = Engine(scene, params, prefix=args.flight.name)
+    engine = Engine(scene, params, prefix=args.flight.name, signals=signals)
     events = engine.run(rows)
     write_events(events, out)
 

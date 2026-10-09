@@ -9,6 +9,8 @@ docs/Violation_Engine_Architecture.md, Section 5.6. Seven PRD violation types:
     lane_violation  (PRD 6)   straddling a lane line > 3 s, or a lane change across a solid line
     zebra_crossing  (PRD 7)   in crosswalk, stopped, > 10 s, not in a queue
     highway_stop    (PRD 10)  in highway zone, < 5 km/h, > 20 s, not in a queue
+    red_light       (PRD 4)   front crosses a stop line while its signal is red (optional, CARLA
+                              only: needs a SignalLog from signals.py)
 
 PRD thresholds given in frames assume 30 fps and are stored here in seconds (5 frames =
 0.17 s, 10 frames = 0.33 s), so they hold at any frame rate.
@@ -23,8 +25,8 @@ from collections import defaultdict
 from events import Event, EventLog
 from lane_map import SOLID_LINES, SceneMap
 from predicates import (UNMARKED_LINES, Episode, Obs, TrackHistory, along_lane_mps, against_lane_angle,
-                        line_on_side, on_regular_lane, queue_context, slow, speed_tolerance_kmh, stopped,
-                        straddle_overlap)
+                        front_point, line_on_side, on_regular_lane, queue_context, segments_cross, slow,
+                        speed_tolerance_kmh, stopped, straddle_overlap)
 
 DEFAULTS = {
     "no_parking": {"min_s": 30.0, "max_kmh": 2.0, "close_gap_s": 2.0},
@@ -37,6 +39,9 @@ DEFAULTS = {
     "speeding": {"min_s": 10 / 30, "sigmas": 2.0, "tolerance": "eu", "confirm_gap_s": 0.2, "close_gap_s": 2.0},
     "lane_violation": {"straddle_s": 3.0, "min_overlap_m": 0.3, "min_kmh": 5.0, "stable_s": 0.5,
                        "exit_frac": 0.35, "confirm_gap_s": 0.5, "close_gap_s": 1.0},
+    # sure_after_s: crossings this long into red get full margin; right at the change, tick timing
+    # decides it, so the confidence is lower (R22: 95% of violations fall in the first 1.5 s)
+    "red_light": {"min_kmh": 5.0, "max_gap_s": 0.5, "sure_after_s": 1.0, "exempt_classes": []},
 }
 
 
@@ -414,9 +419,77 @@ class LaneViolationMonitor(Monitor):
         self.straddle.clear()
 
 
+# --- red light (optional, CARLA only) -----------------------------------------------------------
+
+class RedLightMonitor(Monitor):
+    """The vehicle's front crosses a stop line in the line's approach direction while the line's
+    signal is red. Crossing on yellow is legal, and a car already past the line when it turns
+    red never crosses it on red (PRD 4, edge case 1). One event per track and stop line; the
+    value says how long the light had been red. Emergency vehicles (PRD edge case 2) can be
+    exempted by class, but the detector has no such class: CARLA's oracle run only."""
+    type = "red_light"
+
+    def __init__(self, log, params, stop_lines: list[dict], signals):
+        super().__init__(log, params)
+        self.signals = signals
+        self.lines = []
+        for sl in stop_lines:
+            (ax, ay), (bx, by) = sl["line"][0], sl["line"][-1]
+            d = sl.get("dir")
+            self.lines.append({"id": str(sl["id"]), "a": (ax, ay), "b": (bx, by), "signal": str(sl["signal_id"]),
+                               "dir": (float(d[0]), float(d[1])) if d else None,
+                               "mid": ((ax + bx) / 2, (ay + by) / 2), "reach": math.hypot(bx - ax, by - ay) / 2 + 10.0})
+        self.prev: dict[int, tuple] = {}  # track -> (front point, t)
+        self.done: set = set()
+        self.frame_t: dict[int, float] = {}
+
+    def _t_of(self, frame: int, now_t: float) -> float:
+        """Time of a frame this monitor has seen (the latest seen frame at or before it)."""
+        if frame in self.frame_t:
+            return self.frame_t[frame]
+        earlier = [f for f in self.frame_t if f <= frame]
+        return self.frame_t[max(earlier)] if earlier else now_t
+
+    def step(self, t, frame, obs, hist):
+        self.frame_t[frame] = t
+        if not self.lines or self.signals is None:
+            return
+        p = self.p
+        for o in obs:
+            front = front_point(o)
+            if front is None or not o.visible or o.speed_kmh < p["min_kmh"] or o.cls in p["exempt_classes"]:
+                self.prev.pop(o.track_id, None)
+                continue
+            prev = self.prev.get(o.track_id)
+            self.prev[o.track_id] = (front, o.t)
+            if prev is None or o.t - prev[1] > p["max_gap_s"]:
+                continue
+            for ln in self.lines:
+                key = (o.track_id, ln["id"])
+                if key in self.done or math.hypot(front[0] - ln["mid"][0], front[1] - ln["mid"][1]) > ln["reach"]:
+                    continue
+                if not segments_cross(prev[0], front, ln["a"], ln["b"]):
+                    continue
+                move = (front[0] - prev[0][0], front[1] - prev[0][1])
+                if ln["dir"] is not None and move[0] * ln["dir"][0] + move[1] * ln["dir"][1] <= 0:
+                    continue  # crossing it the other way (leaving the junction)
+                self.done.add(key)
+                st = self.signals.state_at(ln["signal"], frame)
+                if st is None or st[0] != "Red":
+                    continue
+                red_for = max(0.0, o.t - self._t_of(st[1], o.t))
+                ep = Episode(o.t, o.frame, 0.0, 0.0, 0.0)
+                ep.hit(o)
+                ev = self._open(ep, o)
+                ev.value = {"signal_id": ln["signal"], "stop_line": ln["id"], "red_for_s": round(red_for, 2),
+                            "speed_kmh": round(o.speed_kmh, 1)}
+                ev.close(o.t, o.frame, margin=red_for / p["sure_after_s"], quality=ep.quality(), duration_score=1.0)
+
+
 # --- engine -----------------------------------------------------------------------------------
 
-def default_monitors(log: EventLog, params: dict | None = None) -> list[Monitor]:
+def default_monitors(log: EventLog, params: dict | None = None, stop_lines: list | None = None,
+                     signals=None) -> list[Monitor]:
     P = {k: dict(v) for k, v in DEFAULTS.items()}
     for k, v in (params or {}).items():
         P.setdefault(k, {}).update(v)
@@ -432,14 +505,16 @@ def default_monitors(log: EventLog, params: dict | None = None) -> list[Monitor]
         UTurnMonitor(log, P["illegal_u_turn"]),
         SpeedingMonitor(log, P["speeding"]),
         LaneViolationMonitor(log, P["lane_violation"]),
+        RedLightMonitor(log, P["red_light"], stop_lines or [], signals),
     ]
 
 
 class Engine:
-    def __init__(self, scene: SceneMap, params: dict | None = None, prefix: str = "ev"):
+    def __init__(self, scene: SceneMap, params: dict | None = None, prefix: str = "ev", signals=None):
+        """signals: a signals.SignalLog (CARLA only) to enable the red-light rule on the scene's stop lines."""
         self.scene = scene
         self.log = EventLog(prefix)
-        self.monitors = default_monitors(self.log, params)
+        self.monitors = default_monitors(self.log, params, scene.stop_lines, signals)
         self.hist = TrackHistory()
 
     def observe(self, r: dict) -> Obs:
