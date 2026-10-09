@@ -28,7 +28,7 @@
     "type": "object",
     "properties": {
      "enabled": {"type": "boolean"},
-     "params": {"type": "object", "additionalProperties": {"type": ["number", "string", "boolean", "array"]}}
+     "params": {"type": "object", "additionalProperties": {"type": ["number", "string", "boolean", "array", "object"]}}
     },
     "additionalProperties": false
    }

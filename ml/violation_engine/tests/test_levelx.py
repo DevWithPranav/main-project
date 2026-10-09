@@ -51,7 +51,8 @@ class HighD(unittest.TestCase):
                                                   "duration": 12, "upperLaneMarkings": "8.5;12.5;16.5",
                                                   "lowerLaneMarkings": "21.5;25.5;29.5"}])
         tracks = (highd_track(1, 10, 23.5, 40.0, 10)            # 144 km/h in 120: speeding
-                  + highd_track(2, 10, 27.5, 30.0, 10)          # 108 km/h: fine
+                  # 108 km/h: fine; 60 m ahead of car 3, so its lane change below has a safe gap (A8)
+                  + highd_track(2, 70, 27.5, 30.0, 10)
                   + highd_track(3, 10, 23.5, 30.0, 10, 27.5, 3)  # lane change across the dashed line
                   + highd_track(4, 400, 10.5, -30.0, 10)        # upper carriageway, right way
                   + highd_track(5, 10, 14.5, 25.0, 10))         # upper carriageway driven towards +x: wrong way

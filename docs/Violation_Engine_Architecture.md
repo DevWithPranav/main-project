@@ -1,12 +1,12 @@
 # Violation Engine — Architecture and Plan (Objective 1, Stage 4)
 
-**Version 2.3 — 2026-10-09.** Owner: Hussain (Stage 4). Prepared with Afif.
+**Version 2.4 — 2026-10-09.** Owner: Hussain (Stage 4). Prepared with Afif.
 **Status:**
 - **Phase A:** steps A1–A5 and A9 are done, including per-event evidence clips. A6–A8 (staged CARLA flight, F1 per type) wait for a CarlaAir session.
 - **Phase B:** B1, B2 and B6 are built and tested. The B3 (highD/inD/rounD) and B5 (UIT-ADrone) tools are built and tested on synthetic data in the datasets' formats; running them needs the data.
 - **Phase C:** red-light (V4) and learned flow direction are built. V4 still needs a live CarlaAir run.
 
-Section 13 records what implementation changed or taught us (v2.2 and v2.3 additions at its end).
+Section 13 records what implementation changed or taught us (v2.2, v2.3 and v2.4 additions at its end).
 
 **What changed from v1.0:** scope grows from 3 to **7 violation types** (plus 1 optional), and the design covers real drone footage as well as CARLA (v2.0); v2.1 adds the implementation notes.
 
@@ -567,6 +567,17 @@ A4/A5 and A2 can run in parallel; A3 and A6 can share one CarlaAir session.
 - Bridge = OpenDRIVE `<bridge>` and ≥ 2 m up, or ≥ 5 m up. Town05 tags ground-level ring stretches (z 0.0 m) as bridges.
 
 **Profiles.** `profiles.py` loads a configuration profile (`schemas/profile.schema.json`, files in `configs/profiles/`). It produces the same params dict as `--params`, plus `enabled` per type: `default_monitors` leaves out a monitor whose type is off, and `Engine(disabled_conditions=...)` drops events of turned-off conditions. Thresholds a profile leaves out keep `rules.DEFAULTS`. Red light is off in every profile unless turned on. Re-running staged flight `20261009_201727` with `--profile town05` gives the same 30 events as without it.
+
+### v2.4 additions (2026-10-09, Build Plan M2)
+
+**Conditions on road features.** Each new condition is a tag on one of the six event types; `schemas/conditions.json` maps tags to condition ids (highest priority wins when an event carries several, e.g. a stop on a bridge's shoulder is B5).
+- Lane (`LaneViolationMonitor`): A1 checks the lane graph across a junction (the track must be seen in a junction lane in between); A3 the leaving lane's `lane_change`; A5/A6 lane `restricted` / `lane_type` shoulder; A8 the nearest lead and lag in the target lane at the lane-change moment (TTC < 2 s held 0.3 s, or sideways body overlap). A move onto the next piece of the same lane is not a lane change. A2 counts in either direction.
+- Stopping: `Engine.road_zone` turns highway-class, ramp, bridge and tunnel lanes into one "highway" zone per road, so B1/B2/B4/B5 need no drawn zone; drawn highway zones still work (sites) and take precedence.
+- Wrong way: C2 if just before the episode the track was in a junction or on another road; C3/C4/C5 from the lane.
+- U-turn (`UTurnAnywhereMonitor`): ≥ 160° within 30 s ending on an opposing lane of the same road; illegal only across a solid centre line (D2), at a junction listed in `no_u_turn_junctions` (D3), or on a divided road (D4). Two turns round a block onto a parallel street are not U-turns.
+- Speeding: the effective limit is the lower of the lane / zone limit and the class limit (E4).
+
+**Road-surface projection (Layer 2).** `ground_coords.RoadSurface` rasterises lane heights (0.5 m cells, top and bottom surface where roads overlap); `FlightCamera.to_ground_on_roads` intersects each ray with height levels every 0.2 m and keeps the highest level where it lands on a road of that height (the deck hides what is below). `run_violations.py` uses it whenever the lane map has heights and writes `trajectories_world.csv` next to the events (`--flat-ground` for the old behaviour). Measured on flight 20261009_201727: raised-road boxes median error 4.91 → 0.26 m.
 
 ## 14. References
 

@@ -84,6 +84,9 @@ def engine_params(profile: dict) -> dict:
         out.setdefault(t, {}).setdefault("enabled", False)
     if "place_memory" in profile:
         out["place_memory"] = dict(profile["place_memory"])
+    cls_lim = profile.get("road", {}).get("class_speed_limits_kmh")
+    if cls_lim:  # E4: per-class limits live with the road configuration, the speeding rule applies them
+        out.setdefault("speeding", {})["class_limits_kmh"] = dict(cls_lim)
     return out
 
 

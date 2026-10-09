@@ -120,6 +120,42 @@ def line_on_side(lane_match: LaneMatch, side: str) -> str:
     return lane_match.lane.left_line if side == "left" else lane_match.lane.right_line
 
 
+def along_target(o: Obs, target) -> float | None:
+    """o's distance along lane `target` (metres from its first point), when o is in that lane or in
+    the lane piece just before / after it in the lane graph; else None. For gaps in a target lane."""
+    lane = o.lane.lane if o.lane is not None else None
+    if lane is None:
+        return None
+    if lane.id == target.id:
+        return o.lane.s
+    if lane.id in target.next:
+        return target.length + o.lane.s
+    if target.id in lane.next:
+        return o.lane.s - lane.length
+    return None
+
+
+def lane_reachable(a, b, lanes_by_id: dict, max_hops: int = 8, max_m: float = 400.0) -> bool:
+    """Can a vehicle on lane a reach lane b by following the lane graph ("next" links), within
+    max_hops lanes and max_m metres? Lanes without links (sites) count as reachable: unknown."""
+    if a.id == b.id or not a.next:
+        return True
+    frontier, seen = [(a, 0.0)], {a.id}
+    for _ in range(max_hops):
+        nf = []
+        for lane, dist in frontier:
+            for nid in lane.next:
+                if nid == b.id:
+                    return True
+                n = lanes_by_id.get(nid)
+                if n is None or nid in seen or dist + n.length > max_m:
+                    continue
+                seen.add(nid)
+                nf.append((n, dist + n.length))
+        frontier = nf
+    return False
+
+
 def queue_context(o: Obs, others: list[Obs]) -> bool:
     """Is this stop explained by traffic? True if a slow vehicle is directly ahead in the same
     lane (within QUEUE_AHEAD_M), or - without a lane - any slow vehicle within QUEUE_NEAR_M."""

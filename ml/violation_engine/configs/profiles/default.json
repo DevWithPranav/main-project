@@ -48,7 +48,11 @@
    "enabled": true,
    "params": {
     "turn_deg": 160.0,
-    "flip_deg": 90.0
+    "flip_deg": 90.0,
+    "anywhere": true,
+    "window_s": 30.0,
+    "settle_s": 5.0,
+    "no_u_turn_junctions": []
    }
   },
   "speeding": {
@@ -58,7 +62,8 @@
     "sigmas": 2.0,
     "tolerance": "eu",
     "confirm_gap_s": 0.2,
-    "close_gap_s": 2.0
+    "close_gap_s": 2.0,
+    "class_limits_kmh": {}
    }
   },
   "lane_violation": {
@@ -70,7 +75,26 @@
     "stable_s": 0.5,
     "exit_frac": 0.35,
     "confirm_gap_s": 0.5,
-    "close_gap_s": 1.0
+    "close_gap_s": 1.0,
+    "unsafe_ttc_s": 2.0,
+    "high_risk_ttc_s": 1.0,
+    "unsafe_window_s": 1.0,
+    "min_closing_mps": 0.5,
+    "unsafe_min_kmh": 15.0,
+    "min_below_s": 0.3,
+    "overlap_margin_m": 0.3,
+    "junction_min_s": 1.0,
+    "junction_max_s": 20.0,
+    "restricted_min_s": 1.0,
+    "restricted_exempt": {
+     "bus": [
+      "bus"
+     ],
+     "emergency": [],
+     "restricted": []
+    },
+    "shoulder_min_s": 3.0,
+    "shoulder_min_kmh": 10.0
    }
   },
   "red_light": {

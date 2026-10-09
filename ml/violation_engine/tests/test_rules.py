@@ -180,13 +180,26 @@ class UTurn(unittest.TestCase):
         ev = counted(run(self.sc, track(fn)), "illegal_u_turn")
         self.assertEqual(len(ev), 1)
 
-    def test_u_turn_outside_zone_ignored(self):
+    def test_u_turn_outside_zone_across_broken_line_ignored(self):
+        lanes = [dict(BASE_LANES[0], left_line="broken"), BASE_LANES[1], dict(BASE_LANES[2], left_line="broken")]
+        sc = scene(lanes, [{"id": "nou", "type": "no_u_turn", "polygon": rect(-20, 20, -2, 6)}])
         v, r = kmh(15), 1.75
         arc = math.pi * r / v
         fn = piecewise((10 / v, lambda t: (90 + v * t, 0)),
                        (arc, lambda t: (100 + r * math.sin(v * t / r), r - r * math.cos(v * t / r))),
                        (10 / v, lambda t: (100 - v * t, 3.5)))
-        self.assertEqual(counted(run(self.sc, track(fn)), "illegal_u_turn"), [])
+        self.assertEqual(counted(run(sc, track(fn)), "illegal_u_turn"), [])
+
+    def test_u_turn_outside_zone_across_double_solid_is_d2(self):
+        # since Build Plan M2: outside a no-U-turn zone, a U-turn across the double solid centre line
+        # is still illegal (D2)
+        v, r = kmh(15), 1.75
+        arc = math.pi * r / v
+        fn = piecewise((10 / v, lambda t: (90 + v * t, 0)),
+                       (arc, lambda t: (100 + r * math.sin(v * t / r), r - r * math.cos(v * t / r))),
+                       (10 / v, lambda t: (100 - v * t, 3.5)))
+        ev = counted(run(self.sc, track(fn)), "illegal_u_turn")
+        self.assertEqual([(e.condition, e.tags) for e in ev], [("D2", ["across_solid_line"])])
 
     def test_three_point_turn_not_flagged(self):
         v = kmh(8)

@@ -93,24 +93,24 @@ Six violation types are in scope. Every event carries type, vehicle (track) ID, 
 
 | # | Condition | Detection rule | Status |
 |---|---|---|---|
-| A1 | Driving in the wrong lane | Vehicle travels in a lane not permitted for its direction | ❌ |
+| A1 | Driving in the wrong lane | Vehicle travels in a lane not permitted for its direction | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
 | A2 | Crossing a solid lane line | Trajectory crosses a solid / double-solid boundary | ✅ |
-| A3 | Illegal lane change | Lane change across a boundary whose lane-change permission forbids it | 🟡 permissions available in the map, not yet used |
+| A3 | Illegal lane change | Lane change across a boundary whose lane-change permission forbids it | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
 | A4 | Driving on a lane divider | Vehicle body over a lane line beyond tolerance (0.3 m) for > 3 s | ✅ |
-| A5 | Entering a restricted lane | Vehicle enters a lane configured as bus-only / emergency / restricted | ❌ |
-| A6 | Driving on the shoulder | Vehicle travels (moving) along a shoulder lane | ❌ |
+| A5 | Entering a restricted lane | Vehicle enters a lane configured as bus-only / emergency / restricted | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
+| A6 | Driving on the shoulder | Vehicle travels (moving) along a shoulder lane | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
 | A7 | Wrong-way driving | Same as C1 (counted once, under wrong-way) | ✅ |
-| A8 | Unsafe lane change | Lane change with a conflict: gap or time-to-collision to a vehicle in the target lane below a threshold | ❌ |
+| A8 | Unsafe lane change | Lane change with a conflict: gap or time-to-collision to a vehicle in the target lane below a threshold | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
 
 **B. Illegal stopping on highway / flyover** (road features; zone only for B3)
 
 | # | Condition | Detection rule | Status |
 |---|---|---|---|
-| B1 | Stopping on the main carriageway | Stationary in an active traffic lane of a highway-class road (by speed limit / road class), not in a queue | 🟡 works on zones today; move to lane properties |
-| B2 | Stopping on a highway shoulder | Stops on a shoulder lane where stopping is prohibited (alone on the shoulder: "possible breakdown") | 🟡 tagged, not a separate violation yet |
+| B1 | Stopping on the main carriageway | Stationary in an active traffic lane of a highway-class road (by speed limit / road class), not in a queue | ✅ from lane properties (highway class), no zone needed (M2) |
+| B2 | Stopping on a highway shoulder | Stops on a shoulder lane where stopping is prohibited (alone on the shoulder: "possible breakdown") | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
 | B3 | Stopping in a no-stopping zone | Stops inside a configured no-stopping zone (zone) | ✅ (no-parking / no-stopping zone rule) |
-| B4 | Stopping near an entrance or exit | Stops within a ramp or merge area | ❌ |
-| B5 | Stopping on a bridge or tunnel | Stops on a road section flagged bridge / tunnel | ❌ |
+| B4 | Stopping near an entrance or exit | Stops within a ramp or merge area | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
+| B5 | Stopping on a bridge or tunnel | Stops on a road section flagged bridge / tunnel | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
 | B6 | Extended stop | Any prohibited-location stop beyond its time threshold (PRD: 20 s highway, 30 s no-parking) | ✅ timing in place |
 
 Traffic-jam stops are not violations (PRD edge case). They're tagged `queue` and kept for audit.
@@ -120,9 +120,9 @@ Traffic-jam stops are not violations (PRD edge case). They're tagged `queue` and
 | # | Condition | Detection rule | Status |
 |---|---|---|---|
 | C1 | Driving against traffic | Motion > 150° from the lane direction, ≥ 0.17 s and ≥ 5 m (PRD) | ✅ |
-| C2 | Wrong-way entry | Enters a one-way road or carriageway from the prohibited end | 🟡 covered where the lane map has the road |
+| C2 | Wrong-way entry | Enters a one-way road or carriageway from the prohibited end | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
 | C3 | Against traffic on a divided highway | C1 on highway-class lanes | ✅ |
-| C4 | Wrong way on a ramp | C1 on ramp lanes | 🟡 needs the ramp flag |
+| C4 | Wrong way on a ramp | C1 on ramp lanes | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
 | C5 | Wrong way in a one-way lane | C1 on one-way lanes | ✅ |
 
 Not checked inside junctions: legal turns look like anything there (PRD edge case 2).
@@ -132,10 +132,10 @@ Not checked inside junctions: legal turns look like anything there (PRD edge cas
 | # | Condition | Detection rule | Status |
 |---|---|---|---|
 | D1 | U-turn in a prohibited zone | Heading change > 160° inside a no-U-turn zone, smooth arc (three-point turns tagged) | ✅ |
-| D2 | U-turn across a solid line | The reversal crosses a solid / double-solid line | ❌ |
-| D3 | U-turn at a prohibited junction | U-turn inside a junction marked "no U-turn" | ❌ |
-| D4 | U-turn through a median barrier | The path crosses a median / non-traversable separator | ❌ |
-| D5 | U-turn at a restricted opening | U-turn at a median opening configured as restricted (zone) | 🟡 same as D1 with an opening zone |
+| D2 | U-turn across a solid line | The reversal crosses a solid / double-solid line | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
+| D3 | U-turn at a prohibited junction | U-turn inside a junction marked "no U-turn" | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending (junctions listed in the profile) |
+| D4 | U-turn through a median barrier | The path crosses a median / non-traversable separator | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
+| D5 | U-turn at a restricted opening | U-turn at a median opening configured as restricted (zone) | ✅ same as D1 with a zone over the opening |
 
 **E. Speeding** (road features; zones only for special-limit areas)
 
@@ -144,7 +144,7 @@ Not checked inside junctions: legal turns look like anything there (PRD edge cas
 | E1 | Speed exceeds the limit | Speed minus 2σ above lane limit plus tolerance (EU: 5 km/h below 100, 5 % above) | ✅ |
 | E2 | Sustained speeding | Above the limit ≥ 0.33 s (PRD 10 frames) | ✅ |
 | E3 | Speeding in a restricted zone | A zone with a lower limit overrides the lane limit | ✅ |
-| E4 | Speeding by vehicle category | Limit looked up per class (car / bus / truck) where limits differ | ❌ |
+| E4 | Speeding by vehicle category | Limit looked up per class (car / bus / truck) where limits differ | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending (limits per class in the profile) |
 | E5 | Repeated speeding | One event per continuous episode; episodes per vehicle counted | ✅ |
 
 **F. Zebra-crossing violations** (crosswalk from the map or site file)

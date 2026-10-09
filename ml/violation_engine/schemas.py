@@ -65,20 +65,21 @@ def conditions() -> list[dict]:
 
 
 def condition_of(event: dict) -> str | None:
-    """The Section 4.2 condition id an engine event stands for: the first condition of its type whose
-    tag / value match holds, else the type's default condition, else None (e.g. red_light, out of scope)."""
-    default = None
+    """The Section 4.2 condition id an engine event stands for: of the conditions of its type whose
+    tag / value match holds, the highest priority (then the first listed); else the type's default
+    condition; else None (e.g. red_light, out of scope)."""
+    default, best = None, None
     for c in conditions():
         if c.get("engine_type") != event.get("type"):
             continue
         m = c.get("match", {})
-        if "tag" in m and m["tag"] in event.get("tags", []):
-            return c["id"]
-        if "value" in m and all(event.get("value", {}).get(k) == v for k, v in m["value"].items()):
-            return c["id"]
+        hit = ("tag" in m and m["tag"] in event.get("tags", [])) or \
+            ("value" in m and all(event.get("value", {}).get(k) == v for k, v in m["value"].items()))
+        if hit and (best is None or c.get("priority", 0) > best.get("priority", 0)):
+            best = c
         if m.get("default"):
             default = c["id"]
-    return default
+    return best["id"] if best else default
 
 
 def main() -> None:

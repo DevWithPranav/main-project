@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 
 from events import COUNTED_STATUS, write_events
-from ground_coords import FlightCamera, add_world_columns, true_centres
+from ground_coords import FlightCamera, RoadSurface, add_world_columns, true_centres
 from kinematics import compute, smooth_track, write_rows
 from lane_map import SceneMap
 from profiles import REPO, disabled_conditions, engine_params, load_profile
@@ -48,9 +48,20 @@ VIEW_MARGIN_PX = 20
 DEFAULT_SITE_SPEED_SIGMA_KMH = 3.0  # real footage, unless the site file measured its own
 
 
-def pipeline_rows(flight: Path, traj: Path, cam: FlightCamera) -> list[dict]:
+def pipeline_rows(flight: Path, traj: Path, cam: FlightCamera, scene_data: dict | None = None,
+                  out: Path | None = None) -> list[dict]:
     with open(traj, newline="") as f:
         header = next(csv.reader(f))
+    surface = RoadSurface.from_scene(scene_data) if scene_data is not None else None
+    if surface is not None and out is not None:
+        # boxes onto the road itself (raised roads: flyovers, ramps); written next to the events, the
+        # tracker's own CSV is left as it is
+        if "time_wall_s" not in header and use_sim_time(flight, traj):
+            print("[time] time_s = simulator time (frame_times.csv sim_time); wall clock kept as time_wall_s")
+        world = out / "trajectories_world.csv"
+        n, missing = add_world_columns(traj, cam, surface, out_path=world)
+        print(f"[ground] road-surface positions for {n} rows ({missing} without a camera pose) -> {world}")
+        return compute(world, cam.W, cam.H)
     if "wx" not in header or "pose_exact" not in header:
         n, missing = add_world_columns(traj, cam)
         print(f"[ground] wx, wy added to {n} rows ({missing} without a camera pose)")
@@ -302,6 +313,8 @@ def main() -> None:
                     help="Also run the optional red-light rule (CARLA flights with traffic_lights.json; off by default)")
     ap.add_argument("--learn-flow", action="store_true",
                     help="Replace the lane map's lanes by directions learned from the traffic (flow_map.py)")
+    ap.add_argument("--flat-ground", action="store_true",
+                    help="Project boxes onto a flat plane even when the lane map has road heights (the pre-M2 behaviour)")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
     params, disabled = engine_config(args)
@@ -330,19 +343,20 @@ def main() -> None:
         ap.error("give a flight folder (or --plan / --site)")
 
     cam = FlightCamera(args.flight)
+    scene_data = road_scene(merge_zones(json.loads(args.scene.read_text()), args.zones), args)
     if args.oracle:
-        rows = oracle_rows(args.flight, cam)
         out = args.out or args.flight / "violations_oracle"
+        out.mkdir(parents=True, exist_ok=True)
+        rows = oracle_rows(args.flight, cam)
         source = "oracle (vehicle_poses.csv)"
     else:
         traj = args.trajectories or RESULTS_DIR / args.flight.name / "tracktrack_ours" / "trajectories_final.csv"
-        rows = pipeline_rows(args.flight, traj, cam)
         out = args.out or traj.parent / "violations"
+        out.mkdir(parents=True, exist_ok=True)
+        rows = pipeline_rows(args.flight, traj, cam, None if args.flat_ground else scene_data, out)
         source = str(traj)
-    out.mkdir(parents=True, exist_ok=True)
     write_rows(rows, out / "kinematics.csv")
 
-    scene_data = road_scene(merge_zones(json.loads(args.scene.read_text()), args.zones), args)
     if args.learn_flow:
         scene_data = with_learned_flow(scene_data, rows)
     # red light (optional, off unless --red-light): recorded signal states + CARLA's stop lines

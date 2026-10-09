@@ -12,6 +12,11 @@ docs/Violation_Engine_Architecture.md, Section 5.6. Seven PRD violation types:
     red_light       (PRD 4)   front crosses a stop line while its signal is red (optional, CARLA
                               only: needs a SignalLog from signals.py)
 
+Build Plan M2 adds the conditions that read road features (lane_map.py, road_features.py) as tags
+on these types: lane A1/A3/A5/A6/A8, stopping B1/B2/B4/B5 from lane properties (Engine.road_zone),
+wrong-way C2-C5, U-turns outside zones D2-D4 (UTurnAnywhereMonitor), speeding by class E4.
+schemas/conditions.json maps each tag to its condition id (Expected_Output Section 4.2).
+
 PRD thresholds given in frames assume 30 fps and are stored here in seconds (5 frames =
 0.17 s, 10 frames = 0.33 s), so they hold at any frame rate.
 
@@ -19,14 +24,15 @@ The engine is frame-by-frame (step(t, frame, observations)) so the same monitors
 live later; run_violations.py feeds it a recorded flight in time order.
 """
 
+import fnmatch
 import math
-from collections import defaultdict
+from collections import defaultdict, deque
 
 from events import Event, EventLog
-from lane_map import SOLID_LINES, SceneMap
-from predicates import (UNMARKED_LINES, Episode, Obs, TrackHistory, along_lane_mps, against_lane_angle,
-                        front_point, line_on_side, on_regular_lane, queue_context, segments_cross, slow,
-                        speed_tolerance_kmh, stopped, straddle_overlap)
+from lane_map import SOLID_LINES, Lane, LaneMatch, SceneMap, Zone, angle_diff_deg
+from predicates import (HALF_LENGTH_M, HALF_WIDTH_M, UNMARKED_LINES, Episode, Obs, TrackHistory, along_lane_mps, along_target,
+                        against_lane_angle, front_point, lane_reachable, line_on_side, on_regular_lane,
+                        queue_context, segments_cross, slow, speed_tolerance_kmh, stopped, straddle_overlap)
 from schemas import condition_of
 
 DEFAULTS = {
@@ -36,10 +42,30 @@ DEFAULTS = {
     "place_memory": {"radius_m": 1.5, "keep_s": 10.0},
     "wrong_way": {"angle_deg": 150.0, "min_s": 5 / 30, "min_back_m": 5.0, "min_kmh": 5.0,
                   "confirm_gap_s": 0.3, "close_gap_s": 2.0},
-    "illegal_u_turn": {"turn_deg": 160.0, "flip_deg": 90.0},
-    "speeding": {"min_s": 10 / 30, "sigmas": 2.0, "tolerance": "eu", "confirm_gap_s": 0.2, "close_gap_s": 2.0},
+    # anywhere: also U-turns outside no_u_turn zones (D2-D4), judged by what the path crossed;
+    # window_s: the turn must complete within it; no_u_turn_junctions: lane-id globs of junctions
+    # where U-turns are prohibited (D3), e.g. ["*"] for all
+    "illegal_u_turn": {"turn_deg": 160.0, "flip_deg": 90.0, "anywhere": True, "window_s": 30.0,
+                       "settle_s": 5.0, "no_u_turn_junctions": []},
+    # class_limits_kmh: per-class limit cap (E4), from the profile's road.class_speed_limits_kmh
+    "speeding": {"min_s": 10 / 30, "sigmas": 2.0, "tolerance": "eu", "confirm_gap_s": 0.2, "close_gap_s": 2.0,
+                 "class_limits_kmh": {}},
+    # unsafe_*: A8, TTC to the lead / lag vehicle in the target lane; 2 s is the common risky/safe
+    # threshold, 1 s high risk; closing speed > 0.5 m/s as SinD 2.0 (docs/Research_Notes.md, M2).
+    # Judged in the unsafe_window_s after the centre crosses (the lane-change moment, as highD does):
+    # over 3 s, natural CARLA traffic braking for a queue ahead read as unsafe (staged flight
+    # 20261009_201727, oracle). Not below unsafe_min_kmh: zipper merging in a crawling queue.
+    # min_below_s: the TTC must stay low that long (SinD 2.0: >= 3 frames; 0.1 s at 30 fps let
+    # drone-position noise near zero gap through on that flight); overlap_margin_m: sideways body
+    # overlap needed before "alongside" counts as a conflict
+    # junction_*: A1, time between leaving one lane and entering the next one through a junction
     "lane_violation": {"straddle_s": 3.0, "min_overlap_m": 0.3, "min_kmh": 5.0, "stable_s": 0.5,
-                       "exit_frac": 0.35, "confirm_gap_s": 0.5, "close_gap_s": 1.0},
+                       "exit_frac": 0.35, "confirm_gap_s": 0.5, "close_gap_s": 1.0,
+                       "unsafe_ttc_s": 2.0, "high_risk_ttc_s": 1.0, "unsafe_window_s": 1.0, "min_closing_mps": 0.5,
+                       "unsafe_min_kmh": 15.0, "min_below_s": 0.3, "overlap_margin_m": 0.3,
+                       "junction_min_s": 1.0, "junction_max_s": 20.0,
+                       "restricted_min_s": 1.0, "restricted_exempt": {"bus": ["bus"], "emergency": [], "restricted": []},
+                       "shoulder_min_s": 3.0, "shoulder_min_kmh": 10.0},
     # sure_after_s: crossings this long into red get full margin; right at the change, tick timing
     # decides it, so the confidence is lower (R22: 95% of violations fall in the first 1.5 s)
     # enter_m / stop_kmh: CARLA's stop waypoints sit a few metres before where its traffic halts; on
@@ -133,6 +159,9 @@ class StopInZoneMonitor(Monitor):
                 ep.hit(o)
                 ep.data["queue"] = ep.data.get("queue", 0) + int(queue_context(o, obs))
                 ep.data["shoulder"] = ep.data.get("shoulder", 0) + int(o.lane is not None and o.lane.lane.lane_type == "shoulder")
+                if o.lane is not None:  # where on the road it stopped: ramp / merge area (B4), bridge or tunnel (B5)
+                    ep.data["ramp"] = ep.data.get("ramp", 0) + int(o.lane.lane.ramp is not None)
+                    ep.data["bridge"] = ep.data.get("bridge", 0) + int(o.lane.lane.bridge or o.lane.lane.tunnel)
                 if ep.ready():
                     ev = self._open(ep, o, zone_id=z.id)
                     ev.track_ids = list(s["tracks"])
@@ -159,6 +188,11 @@ class StopInZoneMonitor(Monitor):
         elif self.shoulder_breakdown and ep.data.get("shoulder", 0) / n >= 0.5:
             ev.tags.append("possible_breakdown")
             ev.status = "possible_breakdown"
+        if self.type == "highway_stop":
+            if ep.data.get("bridge", 0) / n >= 0.5:
+                ev.tags.append("on_bridge")
+            if ep.data.get("ramp", 0) / n >= 0.5:
+                ev.tags.append("ramp_area")
         if at_end:
             ev.tags.append("ongoing_at_end")
         ev.value = {"dwell_s": round(ep.duration, 2), "grace_s": ep.min_s}
@@ -197,11 +231,28 @@ class WrongWayMonitor(Monitor):
             ep.data["ang_sum"] += ang
             ep.hit(o)
             if ep.ready() and ep.data["back_m"] >= p["min_back_m"]:
-                self._open(ep, o)
+                self._open(ep, o).tags.extend(self.road_tags(o, ep, hist))
         for tid, ep in list(self.active.items()):
             if ep.expired(t):
                 del self.active[tid]
                 self._close(ep)
+
+    @staticmethod
+    def road_tags(o: Obs, ep: Episode, hist: TrackHistory) -> list[str]:
+        """Which wrong-way condition (Expected_Output 4.2 C): wrong_way_entry (C2) if, just before
+        going against the lane, the vehicle was in a junction or on another road (it entered from
+        the prohibited end); divided_highway (C3), on_ramp (C4), one_way (C5) from the lane."""
+        lane, tags = o.lane.lane, []
+        before = [h for h in hist.obs.get(o.track_id, ()) if ep.start_t - 3.0 <= h.t < ep.start_t - 1e-6 and h.lane is not None]
+        if before and (before[-1].lane.lane.junction or (lane.road_id is not None and before[-1].lane.lane.road_id != lane.road_id)):
+            tags.append("wrong_way_entry")
+        if lane.road_class == "highway":
+            tags.append("divided_highway")
+        if lane.ramp:
+            tags.append("on_ramp")
+        if lane.one_way:
+            tags.append("one_way")
+        return tags
 
     def _close(self, ep: Episode, at_end: bool = False) -> None:
         ev = ep.event
@@ -229,16 +280,25 @@ class SpeedingMonitor(Monitor):
         super().__init__(log, params)
         self.active: dict[int, Episode] = {}
 
-    def limit(self, o: Obs) -> float | None:
-        for z in o.zones_of("speed"):  # a speed zone overrides the lane's own limit
+    def limit(self, o: Obs) -> tuple[float | None, str]:
+        """The limit that applies and where it comes from: a speed zone overrides the lane's own limit
+        (E3); a lower limit for the vehicle's class caps either (E4)."""
+        lim, src = None, "lane"
+        for z in o.zones_of("speed"):
             if "limit_kmh" in z.params:
-                return float(z.params["limit_kmh"])
-        return float(o.lane.lane.speed_limit_kmh) if o.lane is not None and o.lane.lane.speed_limit_kmh else None
+                lim, src = float(z.params["limit_kmh"]), "zone"
+                break
+        if lim is None and o.lane is not None and o.lane.lane.speed_limit_kmh:
+            lim = float(o.lane.lane.speed_limit_kmh)
+        cls_lim = self.p.get("class_limits_kmh", {}).get(o.cls)
+        if lim is not None and cls_lim is not None and float(cls_lim) < lim:
+            lim, src = float(cls_lim), "class"
+        return lim, src
 
     def step(self, t, frame, obs, hist):
         p = self.p
         for o in obs:
-            lim = self.limit(o)
+            lim, src = self.limit(o)
             if lim is None or not o.visible or o.lane is None:
                 continue
             thr = lim + speed_tolerance_kmh(lim, p["tolerance"])
@@ -248,7 +308,6 @@ class SpeedingMonitor(Monitor):
             ep = self.active.get(o.track_id)
             if ep is None:
                 ep = self.active[o.track_id] = Episode(o.t, o.frame, p["min_s"], p["confirm_gap_s"], p["close_gap_s"])
-                src = "zone" if any("limit_kmh" in z.params for z in o.zones_of("speed")) else "lane"
                 ep.data.update(max_kmh=0.0, sigma=0.0, limit=lim, limit_source=src, thr=thr, max_lower=0.0)
             ep.hit(o)
             if o.speed_kmh > ep.data["max_kmh"]:
@@ -343,24 +402,140 @@ class UTurnMonitor(Monitor):
         self.state.clear()
 
 
-# --- lane violation ---------------------------------------------------------------------------
-
-class LaneViolationMonitor(Monitor):
-    """(a) straddling: the body reaches >= min_overlap_m over a marked lane line for > straddle_s;
-    (b) a completed lane change across a solid / double-solid line. Junction lanes are ignored."""
-    type = "lane_violation"
+class UTurnAnywhereMonitor(Monitor):
+    """U-turns outside no_u_turn zones (Expected_Output 4.2 D2-D4). A U-turn: heading turns by
+    >= turn_deg within window_s and the vehicle ends on a lane of the same road (or within
+    SAME_PLACE_M without road ids) running opposite to the lane it started in. Legal unless:
+      across_solid_line (D2)      mid-block, and the centre line it crossed is solid / double solid
+      through_median (D4)         mid-block on a divided road (the start or end lane has median_left)
+      at_prohibited_junction (D3) inside a junction whose lanes match params no_u_turn_junctions
+    Turns in a no_u_turn zone are left to UTurnMonitor (D1); three-point turns are kept, suppressed."""
+    type = "illegal_u_turn"
+    SAME_PLACE_M = 40.0
 
     def __init__(self, log, params):
         super().__init__(log, params)
+        self.samples: dict[int, deque] = {}  # track -> (t, dh, flipped, obs) over window_s
+        self.last_h: dict[int, float] = {}
+        self.pending: dict[int, dict] = {}  # turned; waiting to settle in the opposing lane
+        self.quiet_until: dict[int, float] = {}
+
+    def step(self, t, frame, obs, hist):
+        p = self.p
+        if not p.get("anywhere", True):
+            return
+        for o in obs:
+            tid = o.track_id
+            q = self.samples.setdefault(tid, deque())
+            dh, flipped = 0.0, False
+            if o.visible and not math.isnan(o.heading_deg):
+                lh = self.last_h.get(tid)
+                if lh is not None:
+                    d = (o.heading_deg - lh + 180.0) % 360.0 - 180.0
+                    flipped, dh = abs(d) > p["flip_deg"], (0.0 if abs(d) > p["flip_deg"] else d)
+                self.last_h[tid] = o.heading_deg
+            q.append((o.t, dh, flipped, o))
+            while q and q[0][0] < o.t - p["window_s"]:
+                q.popleft()
+            if tid in self.pending:
+                self._settle(tid, o)
+            elif o.t >= self.quiet_until.get(tid, -1e9) and abs(sum(s[1] for s in q)) >= p["turn_deg"]:
+                self._turned(tid, o, list(q))
+
+    def _turned(self, tid: int, o: Obs, q: list) -> None:
+        """Heading has turned round: find the lane it started in (the last regular-lane sample facing
+        the other way) and wait for it to settle in the opposing lane."""
+        start = next((s[3] for s in reversed(q) if on_regular_lane(s[3]) and not math.isnan(s[3].heading_deg)
+                      and angle_diff_deg(s[3].heading_deg, o.heading_deg) > 150.0), None)
+        self.quiet_until[tid] = o.t + self.p["window_s"]
+        self.samples[tid].clear()
+        if start is None:
+            return
+        turn = [s for s in q if s[0] >= start.t]
+        if any(s[3].zones_of("no_u_turn") for s in turn):
+            return  # UTurnMonitor's (D1)
+        self.pending[tid] = {"start": start, "turn": turn, "until": o.t + self.p["settle_s"]}
+
+    def _settle(self, tid: int, o: Obs) -> None:
+        w = self.pending[tid]
+        if o.t > w["until"]:
+            del self.pending[tid]
+            return
+        w["turn"].append((o.t, 0.0, False, o))
+        s = w["start"]
+        if not on_regular_lane(o) or angle_diff_deg(s.lane.dir_deg, o.lane.dir_deg) <= 150.0:
+            return
+        del self.pending[tid]
+        a, b = s.lane.lane, o.lane.lane
+        same_road = (a.road_id == b.road_id) if a.road_id is not None and b.road_id is not None \
+            else math.hypot(o.x - s.x, o.y - s.y) <= self.SAME_PLACE_M
+        if not same_road:
+            return  # e.g. two turns round a block onto a parallel street
+        inside = [x[3] for x in w["turn"] if x[3].lane is not None]
+        junction_lanes = {x.lane.lane.id for x in inside if x.lane.lane.junction}
+        if inside and len([x for x in inside if x.lane.lane.junction]) / len(inside) >= 0.5:
+            globs = self.p.get("no_u_turn_junctions", [])
+            tag = "at_prohibited_junction" if any(fnmatch.fnmatchcase(j, g) for j in junction_lanes for g in globs) else None
+        elif a.median_left or b.median_left:
+            tag = "through_median"
+        elif a.left_line in SOLID_LINES or b.left_line in SOLID_LINES:
+            tag = "across_solid_line"
+        else:
+            tag = None
+        if tag is None:
+            return  # a legal U-turn
+        ep = Episode(s.t, s.frame, 0.0, 0.0, 0.0)
+        for x in w["turn"]:
+            ep.hit(x[3])
+        ev = self._open(ep, o)
+        ev.lane_id = a.id
+        ev.tags.append(tag)
+        flips = sum(x[2] for x in w["turn"])
+        if flips:
+            ev.tags.append("three_point_turn")
+            ev.status = "suppressed"
+        ev.value = {"turn_deg": round(sum(x[1] for x in w["turn"]), 1), "from_lane": a.id, "to_lane": b.id,
+                    "reversals": flips, "junction_lanes": sorted(junction_lanes)}
+        ev.close(o.t, o.frame, margin=1.0, quality=ep.quality(), duration_score=1.0)
+
+    def finish(self, t, frame):
+        self.pending.clear()
+
+
+# --- lane violation ---------------------------------------------------------------------------
+
+class LaneViolationMonitor(Monitor):
+    """Lane conditions (Expected_Output 4.2 A), each a tag on a lane_violation event:
+      straddling (A4)             body >= min_overlap_m over a marked lane line for > straddle_s
+      solid_line_crossing (A2)    a completed lane change across a solid / double-solid line
+      lane_change_prohibited (A3) a completed lane change to a side the lane's lane_change forbids
+      unsafe_lane_change (A8)     after a lane change, TTC < unsafe_ttc_s (or overlap) to the lead or
+                                  lag vehicle in the target lane, closing > min_closing_mps
+      wrong_lane_for_direction (A1) the lane after a junction can't be reached from the lane before
+                                  it in the lane graph ("next" links): it turned from the wrong lane
+      restricted_lane (A5)        in a lane configured bus / emergency / restricted, class not exempt
+      shoulder_driving (A6)       moving along a shoulder lane for > shoulder_min_s
+    Junction lanes are ignored except as the way between two lanes (A1)."""
+    type = "lane_violation"
+
+    def __init__(self, log, params, lane_index: dict | None = None):
+        super().__init__(log, params)
+        self.lane_index = lane_index or {}  # lane id -> Lane, for the lane graph (A1)
         self.straddle: dict[int, Episode] = {}
         self.lane_state: dict[int, dict] = {}  # track -> {lane, since, last_match, cand, cand_since, cand_first}
+        self.use: dict[tuple, Episode] = {}  # (track, "restricted" | "shoulder") -> episode
+        self.pending: list[dict] = []  # lane changes whose lead / lag gaps are still being watched (A8)
 
     def step(self, t, frame, obs, hist):
         p = self.p
         for o in obs:
+            self._lane_use(o)
+            if o.lane is not None and o.lane.lane.junction and o.track_id in self.lane_state:
+                self.lane_state[o.track_id]["junction_t"] = o.t  # seen inside a junction (A1)
+        for o in obs:
             if not o.visible or not on_regular_lane(o) or o.speed_kmh < p["min_kmh"]:
                 continue
-            self._lane_change(o)
+            self._lane_change(o, hist)
             over, side = straddle_overlap(o)
             line = line_on_side(o.lane, side)
             if over < p["min_overlap_m"] or line in UNMARKED_LINES:
@@ -377,37 +552,185 @@ class LaneViolationMonitor(Monitor):
             if ep.expired(t):
                 del self.straddle[tid]
                 self._close_straddle(ep)
+        for key, ep in list(self.use.items()):
+            if ep.expired(t):
+                del self.use[key]
+                self._close_use(ep)
+        self._watch_gaps(t, obs)
 
-    def _lane_change(self, o: Obs) -> None:
+    def _instant(self, o: Obs, tag: str, value: dict, margin: float = 1.0) -> None:
+        """A lane_violation event at one moment (a lane change)."""
+        ep = Episode(o.t, o.frame, 0.0, 0.0, 0.0)
+        ep.hit(o)
+        ev = self._open(ep, o)
+        ev.tags.append(tag)
+        ev.value = value
+        ev.close(o.t, o.frame, margin=margin, quality=ep.quality(), duration_score=1.0)
+
+    def _lane_change(self, o: Obs, hist: TrackHistory) -> None:
         p = self.p
         st = self.lane_state.get(o.track_id)
         if st is None:
-            self.lane_state[o.track_id] = {"lane": o.lane.lane.id, "since": o.t, "last": o.lane, "cand": None}
+            self.lane_state[o.track_id] = {"lane": o.lane.lane.id, "since": o.t, "last": o.lane, "last_t": o.t, "cand": None}
             return
-        if o.lane.lane.id == st["lane"]:
-            st["cand"] = None
-            st["last"] = o.lane
+        if o.lane.lane.id == st["lane"] or o.lane.lane.id in st["last"].lane.next or st["lane"] in o.lane.lane.next:
+            # same lane, or the next / previous piece of it (lanes are split at speed signs and where
+            # they become a bridge): not a lane change
+            st.update(lane=o.lane.lane.id, cand=None, last=o.lane, last_t=o.t)
             return
         if st["cand"] is None or st["cand"] != o.lane.lane.id:
-            st.update(cand=o.lane.lane.id, cand_since=o.t, cand_obs=o, prev=st["last"], prev_since=st["since"])
+            st.update(cand=o.lane.lane.id, cand_since=o.t, cand_obs=o, prev=st["last"], prev_since=st["since"],
+                      prev_t=st["last_t"])
             return
         if o.t - st["cand_since"] < p["stable_s"]:
             return
-        prev = st["prev"]
+        prev, co = st["prev"], st["cand_obs"]
         stable_before = st["cand_since"] - st["prev_since"] >= p["stable_s"]
         lateral = abs(prev.d) >= p["exit_frac"] * prev.lane.width
+        # A3 / A8 are about changing between lanes of one direction; crossing a solid line (A2) counts
+        # either way, e.g. over the double solid centre line into the opposing lane
+        same_dir = angle_diff_deg(prev.dir_deg, o.lane.dir_deg) < 60.0
         if stable_before and lateral:
             side = "left" if prev.d > 0 else "right"
             line = line_on_side(prev, side)
+            base = {"from_lane": prev.lane.id, "to_lane": o.lane.lane.id, "line": line, "side": side}
             if line in SOLID_LINES:
-                co = st["cand_obs"]
-                ep = Episode(co.t, co.frame, 0.0, 0.0, 0.0)
-                ep.hit(co)
-                ev = self._open(ep, co)
-                ev.tags.append("solid_line_crossing")
-                ev.value = {"from_lane": prev.lane.id, "to_lane": o.lane.lane.id, "line": line, "side": side}
-                ev.close(co.t, co.frame, margin=1.0, quality=ep.quality(), duration_score=1.0)
-        st.update(lane=o.lane.lane.id, since=st["cand_since"], last=o.lane, cand=None)
+                self._instant(co, "solid_line_crossing", base)
+            elif same_dir and not prev.lane.may_change(side):
+                self._instant(co, "lane_change_prohibited", {**base, "lane_change": prev.lane.lane_change})
+            if same_dir and co.speed_kmh >= p["unsafe_min_kmh"]:
+                self._start_gap_watch(co, prev, o.lane.lane, hist)
+        elif (not lateral and prev.lane.next and st.get("junction_t", -1e9) > st["prev_t"]
+              and p["junction_min_s"] <= st["cand_since"] - st["prev_t"] <= p["junction_max_s"]):
+            # left one lane through a junction and came out on another (A1)
+            if not lane_reachable(prev.lane, o.lane.lane, self.lane_index):
+                self._instant(co, "wrong_lane_for_direction",
+                              {"from_lane": prev.lane.id, "to_lane": o.lane.lane.id,
+                               "from_lane_leads_to": list(prev.lane.next)}, margin=0.8)
+        st.update(lane=o.lane.lane.id, since=st["cand_since"], last=o.lane, last_t=o.t, cand=None)
+
+    # --- A5 restricted lane, A6 shoulder driving ----------------------------------------------
+
+    def _lane_use(self, o: Obs) -> None:
+        p = self.p
+        if not o.visible or o.lane is None or o.lane.lane.junction:
+            return
+        lane = o.lane.lane
+        conds = []
+        if lane.restricted and o.cls not in p["restricted_exempt"].get(lane.restricted, []):
+            conds.append(("restricted", p["restricted_min_s"]))
+        # the centre inside the shoulder, not a car on its lane's edge matched to the shoulder
+        if lane.lane_type == "shoulder" and o.speed_kmh >= p["shoulder_min_kmh"] and abs(o.lane.d) <= lane.width / 2:
+            conds.append(("shoulder", p["shoulder_min_s"]))
+        for kind, min_s in conds:
+            ep = self.use.get((o.track_id, kind))
+            if ep is None:
+                ep = self.use[(o.track_id, kind)] = Episode(o.t, o.frame, min_s, p["confirm_gap_s"], p["close_gap_s"])
+                ep.data.update(kind=kind, lane=lane.id, restricted=lane.restricted, max_kmh=0.0)
+            ep.hit(o)
+            ep.data["max_kmh"] = max(ep.data["max_kmh"], o.speed_kmh)
+            if ep.ready():
+                self._open(ep, o).tags.append("restricted_lane" if kind == "restricted" else "shoulder_driving")
+
+    def _close_use(self, ep: Episode, at_end: bool = False) -> None:
+        ev = ep.event
+        if ev is None:
+            return
+        d = ep.data
+        ev.value = {"lane": d["lane"], "duration_s": round(ep.duration, 2), "max_speed_kmh": round(d["max_kmh"], 1)}
+        if d["kind"] == "restricted":
+            ev.value["restricted"] = d["restricted"]
+        if at_end:
+            ev.tags.append("ongoing_at_end")
+        ev.close(ep.last_true_t, ep.last_true_frame, margin=1.0, quality=ep.quality(),
+                 duration_score=ep.duration / max(2 * ep.min_s, 1.0))
+
+    # --- A8 unsafe lane change -----------------------------------------------------------------
+
+    def _start_gap_watch(self, co: Obs, prev: LaneMatch, target: Lane, hist: TrackHistory) -> None:
+        w = {"track": co.track_id, "target": target, "from_lane": prev.lane.id, "t0": co.t,
+             "until": co.t + self.p["unsafe_window_s"], "first": co, "worst": None, "runs": {}}
+        # backfill: the frames since the changer entered the target lane are already in the history
+        frames = defaultdict(list)
+        for q in hist.obs.values():
+            for h in q:
+                if h.t >= co.t - 1e-9:
+                    frames[h.frame].append(h)
+        for f in sorted(frames):
+            self._gap_frame(w, frames[f])
+        self.pending.append(w)
+
+    def _watch_gaps(self, t: float, obs: list[Obs]) -> None:
+        for w in list(self.pending):
+            if obs and obs[0].t > w["first"].t + 1e-9 and t <= w["until"]:
+                self._gap_frame(w, obs)
+            if t > w["until"]:
+                self.pending.remove(w)
+                self._close_gap_watch(w)
+
+    def _gap_frame(self, w: dict, frame_obs: list[Obs]) -> None:
+        ch = next((o for o in frame_obs if o.track_id == w["track"]), None)
+        if ch is None or ch.lane is None or ch.frame == w.get("last_frame"):
+            return
+        w["last_frame"] = ch.frame
+        s_ch = along_target(ch, w["target"])
+        if s_ch is None:
+            return
+        v_ch = along_lane_mps(ch)
+        nearest = {}  # role -> (|ds|, other): only the vehicle directly ahead / behind in the target lane
+        for o in frame_obs:
+            if o.track_id == w["track"] or o.lane is None:
+                continue
+            s_o = along_target(o, w["target"])
+            if s_o is None:
+                continue
+            ds = s_o - s_ch
+            role = "lead" if ds > 0 else "lag"
+            if role not in nearest or abs(ds) < nearest[role][0]:
+                nearest[role] = (abs(ds), o)
+        below = set()
+        for role, (dist, o) in nearest.items():
+            gap = dist - HALF_LENGTH_M.get(ch.cls, 2.3) - HALF_LENGTH_M.get(o.cls, 2.3)
+            closing = (v_ch - along_lane_mps(o)) if role == "lead" else (along_lane_mps(o) - v_ch)
+            if gap <= 0:
+                # alongside: only a conflict if the bodies overlap sideways too, by more than position noise
+                # (else side by side in two lanes, or edges just touching as the changer crosses the line)
+                reach = HALF_WIDTH_M.get(ch.cls, 0.9) + HALF_WIDTH_M.get(o.cls, 0.9) - self.p["overlap_margin_m"]
+                if abs(o.lane.d - ch.lane.d) >= reach:
+                    continue
+                ttc = 0.0
+            elif closing > self.p["min_closing_mps"]:
+                ttc = gap / closing
+            else:
+                continue
+            if ttc >= self.p["unsafe_ttc_s"]:
+                continue
+            key = (role, o.track_id)
+            below.add(key)
+            since = w["runs"].setdefault(key, ch.t)
+            # a TTC must stay below the threshold for min_below_s in a row (SinD 2.0 asks >= 3 frames)
+            if ch.t - since >= self.p["min_below_s"] - 1e-9 and (w["worst"] is None or ttc < w["worst"]["ttc"]):
+                w["worst"] = {"ttc": ttc, "gap": gap, "closing": closing, "role": role, "partner": o.track_id, "obs": ch}
+        for key in [k for k in w["runs"] if k not in below]:
+            del w["runs"][key]
+
+    def _close_gap_watch(self, w: dict) -> None:
+        worst = w["worst"]
+        if worst is None or worst["ttc"] >= self.p["unsafe_ttc_s"]:
+            return
+        o = worst["obs"]
+        ep = Episode(w["t0"], w["first"].frame, 0.0, 0.0, 0.0)
+        ep.hit(w["first"])
+        ep.hit(o)
+        ev = self._open(ep, o)
+        ev.tags.append("unsafe_lane_change")
+        if worst["ttc"] < self.p["high_risk_ttc_s"]:
+            ev.tags.append("high_risk")
+        ev.value = {"from_lane": w["from_lane"], "to_lane": w["target"].id, "partner_track": worst["partner"],
+                    "partner_role": worst["role"], "min_ttc_s": round(worst["ttc"], 2), "gap_m": round(worst["gap"], 2),
+                    "closing_mps": round(worst["closing"], 2)}
+        ev.close(o.t, o.frame, margin=(self.p["unsafe_ttc_s"] - worst["ttc"]) / self.p["unsafe_ttc_s"] + 0.5,
+                 quality=ep.quality(), duration_score=1.0)
 
     def _close_straddle(self, ep: Episode, at_end: bool = False) -> None:
         ev = ep.event
@@ -424,6 +747,12 @@ class LaneViolationMonitor(Monitor):
         for ep in self.straddle.values():
             self._close_straddle(ep, at_end=True)
         self.straddle.clear()
+        for ep in self.use.values():
+            self._close_use(ep, at_end=True)
+        self.use.clear()
+        for w in self.pending:
+            self._close_gap_watch(w)
+        self.pending.clear()
 
 
 # --- red light (optional, CARLA only) -----------------------------------------------------------
@@ -524,7 +853,7 @@ class RedLightMonitor(Monitor):
 # --- engine -----------------------------------------------------------------------------------
 
 def default_monitors(log: EventLog, params: dict | None = None, stop_lines: list | None = None,
-                     signals=None) -> list[Monitor]:
+                     signals=None, lane_index: dict | None = None) -> list[Monitor]:
     P = {k: dict(v) for k, v in DEFAULTS.items()}
     for k, v in (params or {}).items():
         P.setdefault(k, {}).update(v)
@@ -538,8 +867,9 @@ def default_monitors(log: EventLog, params: dict | None = None, stop_lines: list
                           queue_exempt=True, shoulder_breakdown=True),
         WrongWayMonitor(log, P["wrong_way"]),
         UTurnMonitor(log, P["illegal_u_turn"]),
+        UTurnAnywhereMonitor(log, P["illegal_u_turn"]),
         SpeedingMonitor(log, P["speeding"]),
-        LaneViolationMonitor(log, P["lane_violation"]),
+        LaneViolationMonitor(log, P["lane_violation"], lane_index),
         RedLightMonitor(log, P["red_light"], stop_lines or [], signals),
     ]
     return [m for m in monitors if P[m.type].get("enabled", True)]  # "enabled": false from a profile
@@ -552,9 +882,10 @@ class Engine:
         disabled_conditions: condition ids (schemas/conditions.json) whose events run() drops."""
         self.scene = scene
         self.log = EventLog(prefix)
-        self.monitors = default_monitors(self.log, params, scene.stop_lines, signals)
+        self.monitors = default_monitors(self.log, params, scene.stop_lines, signals, scene.lane_by_id)
         self.hist = TrackHistory()
         self.disabled_conditions = set(disabled_conditions or ())
+        self._road_zones: dict[str, Zone] = {}
 
     def observe(self, r: dict) -> Obs:
         """A kinematics row (kinematics.py) -> Obs with its lane match and zones."""
@@ -566,7 +897,24 @@ class Engine:
                 heading_deg=float(h) if h not in ("", None) and not (isinstance(h, float) and math.isnan(h)) else math.nan)
         o.lane = self.scene.match(o.x, o.y)
         o.zones = self.scene.zones_at(o.x, o.y)
+        rz = self.road_zone(o)
+        if rz is not None:
+            o.zones.append(rz)
         return o
+
+    def road_zone(self, o: Obs) -> Zone | None:
+        """Illegal stopping (B1/B2/B4/B5) reads the road, not a drawn zone (Expected_Output 4.1): a lane
+        of a highway-class road, a ramp or merge lane, or a bridge / tunnel acts as one "highway" zone
+        per road. A drawn highway zone (site files, older maps) still works and takes precedence."""
+        lane = o.lane.lane if o.lane is not None else None
+        if lane is None or o.zones_of("highway"):
+            return None
+        if not ((lane.road_class == "highway" and not lane.junction) or lane.ramp or lane.bridge or lane.tunnel):
+            return None
+        zid = f"road_{lane.road_id if lane.road_id is not None else lane.id}"
+        if zid not in self._road_zones:
+            self._road_zones[zid] = Zone(zid, "highway", None, {"source": "lane_properties"})
+        return self._road_zones[zid]
 
     def step(self, t: float, frame: int, obs: list[Obs]) -> None:
         for o in obs:
