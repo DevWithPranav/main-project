@@ -26,6 +26,7 @@ scipy
 shapely>=2.0
 pyyaml
 utm                       # lat/lon -> UTM for inD/rounD Lanelet2 maps (ml/violation_engine/levelx.py)
+jsonschema>=4.18          # event / profile schemas (schemas/, ml/violation_engine/schemas.py)
 
 # Training augmentations (ml/detection/train_retrain.py)
 albumentations

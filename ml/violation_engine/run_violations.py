@@ -17,9 +17,11 @@ Usage:
     python ml/violation_engine/run_violations.py <flight dir> --scene ml/violation_engine/configs/scenes/Town05.json
     python ml/violation_engine/run_violations.py <flight dir> --scene ... --oracle
     python ml/violation_engine/run_violations.py <flight dir> --scene ... --zones extra_zones.json
+    python ml/violation_engine/run_violations.py <flight dir> --profile town05   # configs/profiles/town05.json
     python ml/violation_engine/run_violations.py --site <site.json> --trajectories <clip>/trajectories_final.csv --learn-flow
 
-A flight with traffic_lights.json (record_flight.py) also gets the red-light rule (signals.py).
+The optional red-light rule (signals.py) runs only with --red-light, on flights with traffic_lights.json
+(record_flight.py). It is off by default: left out of scope for now (2026-10-09).
 """
 
 import argparse
@@ -35,6 +37,8 @@ from events import COUNTED_STATUS, write_events
 from ground_coords import FlightCamera, add_world_columns, true_centres
 from kinematics import compute, smooth_track, write_rows
 from lane_map import SceneMap
+from profiles import REPO, disabled_conditions, engine_params, load_profile
+from road_features import HIGHWAY_KMH, apply_overrides, derive
 from rules import Engine
 from signals import SignalLog
 
@@ -50,7 +54,33 @@ def pipeline_rows(flight: Path, traj: Path, cam: FlightCamera) -> list[dict]:
     if "wx" not in header or "pose_exact" not in header:
         n, missing = add_world_columns(traj, cam)
         print(f"[ground] wx, wy added to {n} rows ({missing} without a camera pose)")
+    if "time_wall_s" not in header and use_sim_time(flight, traj):
+        print("[time] time_s = simulator time (frame_times.csv sim_time); wall clock kept as time_wall_s")
     return compute(traj, cam.W, cam.H)
+
+
+def use_sim_time(flight: Path, traj: Path) -> bool:
+    """Flights from 2026-10-03 on log each frame's simulator time. Use it as time_s, like the oracle
+    and the scenario log do (Architecture R2): wall-clock stamps of the frames jitter (frame-to-frame
+    sim/wall ratio 0.6-1.7 on flight 20261009_201727), which is noise on every speed, and their
+    origin differs, so pipeline and oracle events could not be compared in time. In place."""
+    with open(flight / "frame_times.csv", newline="") as f:
+        ft = list(csv.DictReader(f))
+    if not ft or "sim_time" not in ft[0]:
+        return False
+    sim = {int(r["frame"]): r["sim_time"] for r in ft}
+    with open(traj, newline="") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return False
+    for r in rows:
+        r["time_wall_s"] = r["time_s"]
+        r["time_s"] = sim.get(int(r["frame"]), r["time_s"])
+    with open(traj, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+    return True
 
 
 def oracle_rows(flight: Path, cam: FlightCamera) -> list[dict]:
@@ -157,7 +187,7 @@ def plan_report(events, owner: dict) -> list[dict]:
     return out
 
 
-def run_site(args) -> None:
+def run_site(args, params: dict | None, disabled: set[str]) -> None:
     """Real footage: real_geometry.py (scene map + site calibration + frame timestamps) -> same engine."""
     from real_geometry import RealCamera, Site, add_columns, frame_times
     if args.trajectories is None:
@@ -175,12 +205,12 @@ def run_site(args) -> None:
     out = args.out or args.trajectories.parent / "violations"
     out.mkdir(parents=True, exist_ok=True)
     write_rows(rows, out / "kinematics.csv")
-    scene_data = merge_zones(site.scene(), args.zones)
+    scene_data = road_scene(merge_zones(site.scene(), args.zones), args, derive_features=True)
     if args.learn_flow:
         scene_data = with_learned_flow(scene_data, rows)
     (out / "scene.json").write_text(json.dumps(scene_data))
     scene = SceneMap(scene_data)
-    events = Engine(scene, json.loads(args.params.read_text()) if args.params else None, prefix=args.site.stem).run(rows)
+    events = Engine(scene, params, prefix=args.site.stem, disabled_conditions=disabled).run(rows)
     for e in events:  # no telemetry: every speed here rests on the site calibration
         if e.type == "speeding" and site.data["calibration"]["method"] != "srt":
             e.tags.append("estimated_speed")
@@ -209,6 +239,41 @@ def actor_class(a: dict) -> str:
     return {"truck": "truck", "bus": "bus"}.get(base, "car")
 
 
+def engine_config(args) -> tuple[dict | None, set[str]]:
+    """--profile (types and conditions on/off, thresholds, modules, road files), then --params on top.
+    The CLI wins: --scene / --zones / --red-light / --learn-flow given on the command line are kept."""
+    params, disabled = {}, set()
+    args.road = {}
+    if args.profile:
+        prof = load_profile(args.profile)
+        params, disabled = engine_params(prof), disabled_conditions(prof)
+        mods, road = prof.get("modules", {}), prof.get("road", {})
+        args.road = road
+        args.red_light = args.red_light or mods.get("red_light", False)
+        args.learn_flow = args.learn_flow or mods.get("learn_flow", False)
+        for k in ("scene", "zones"):  # not road.site: that would switch a flight run into site mode
+            if getattr(args, k) is None and road.get(k):
+                setattr(args, k, REPO / road[k])
+        print(f"[profile] {prof['name']}: off = "
+              f"{sorted([t for t, v in params.items() if v.get('enabled') is False] + sorted(disabled)) or 'none'}")
+    for t, v in (json.loads(args.params.read_text()) if args.params else {}).items():
+        params.setdefault(t, {}).update(v)
+    if args.red_light:
+        params.setdefault("red_light", {})["enabled"] = True
+    return params or None, disabled
+
+
+def road_scene(scene: dict, args, derive_features: bool = False) -> dict:
+    """The profile's lane overrides (restricted lanes, limits) on the scene; with derive_features
+    (site files) also the road features a CARLA export already carries (road_features.py)."""
+    if derive_features:
+        derive(scene, args.road.get("highway_min_limit_kmh", HIGHWAY_KMH))
+    n = apply_overrides(scene, args.road.get("lane_overrides", []))
+    if n:
+        print(f"[profile] lane overrides applied to {n} lanes")
+    return scene
+
+
 def merge_zones(scene: dict, extra: Path | None) -> dict:
     if extra:
         add = json.loads(extra.read_text())
@@ -230,19 +295,23 @@ def main() -> None:
     ap.add_argument("--trajectories", type=Path, default=None,
                     help="Tracks CSV (default: recorded_flight_validation/<flight>/tracktrack_ours/trajectories_final.csv)")
     ap.add_argument("--oracle", action="store_true", help="Use CARLA's true vehicle positions instead (L1)")
-    ap.add_argument("--params", type=Path, default=None, help="JSON overriding rules.DEFAULTS")
+    ap.add_argument("--params", type=Path, default=None, help="JSON overriding rules.DEFAULTS (applied after --profile)")
+    ap.add_argument("--profile", type=Path, default=None,
+                    help="Configuration profile (profiles.py): a file, or a name in configs/profiles/")
+    ap.add_argument("--red-light", action="store_true",
+                    help="Also run the optional red-light rule (CARLA flights with traffic_lights.json; off by default)")
     ap.add_argument("--learn-flow", action="store_true",
                     help="Replace the lane map's lanes by directions learned from the traffic (flow_map.py)")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
+    params, disabled = engine_config(args)
 
     if args.plan:
         plan = json.loads(args.plan.read_text())
         rows, owner = plan_rows(plan)
-        scene = SceneMap(merge_zones(json.loads(args.scene.read_text()), args.plan))
-        signals = SignalLog.from_plan(plan, plan_offsets(plan))
-        events = Engine(scene, json.loads(args.params.read_text()) if args.params else None, prefix="plan",
-                        signals=signals).run(rows)
+        scene = SceneMap(road_scene(merge_zones(json.loads(args.scene.read_text()), args.plan), args))
+        signals = SignalLog.from_plan(plan, plan_offsets(plan)) if args.red_light else None
+        events = Engine(scene, params, prefix="plan", signals=signals, disabled_conditions=disabled).run(rows)
         out = args.out or args.plan.parent / "plan_check"
         out.mkdir(parents=True, exist_ok=True)
         write_rows(rows, out / "kinematics.csv")
@@ -255,7 +324,7 @@ def main() -> None:
         print(f"[plan check] {sum(r['ok'] for r in report)}/{len(report)} acts as expected -> {out}")
         return
     if args.site:
-        run_site(args)
+        run_site(args, params, disabled)
         return
     if args.flight is None:
         ap.error("give a flight folder (or --plan / --site)")
@@ -273,17 +342,17 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     write_rows(rows, out / "kinematics.csv")
 
-    scene_data = merge_zones(json.loads(args.scene.read_text()), args.zones)
+    scene_data = road_scene(merge_zones(json.loads(args.scene.read_text()), args.zones), args)
     if args.learn_flow:
         scene_data = with_learned_flow(scene_data, rows)
-    signals = SignalLog.from_flight(args.flight)  # red light: recorded signal states + CARLA's stop lines
+    # red light (optional, off unless --red-light): recorded signal states + CARLA's stop lines
+    signals = SignalLog.from_flight(args.flight) if args.red_light else None
     if signals is not None:
         signals, flight_lines = signals
         have = {sl["id"] for sl in scene_data.get("stop_lines", [])}
         scene_data["stop_lines"] = scene_data.get("stop_lines", []) + [sl for sl in flight_lines if sl["id"] not in have]
     scene = SceneMap(scene_data)
-    params = json.loads(args.params.read_text()) if args.params else None
-    engine = Engine(scene, params, prefix=args.flight.name, signals=signals)
+    engine = Engine(scene, params, prefix=args.flight.name, signals=signals, disabled_conditions=disabled)
     events = engine.run(rows)
     write_events(events, out)
 

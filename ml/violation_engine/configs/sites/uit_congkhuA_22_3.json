@@ -1,0 +1,11 @@
+{
+  "video": "C:\\Users\\prana\\Desktop\\Main-Project\\project data\\UIT-ADrone\\videos\\50m_90d_morning_congkhuA_22_3.MP4",
+  "note": "UIT-ADrone roundabout congkhuA, 50 m altitude, camera looking straight down and almost still (about 28 px drift at 1920 wide over 6.5 min, scene map not used). Scale from the tracked cars: median car box max(w,h) = 117 px taken as 4.5 m, so 0.0385 m/px (1000 px = 38.5 m). No lanes drawn: the traffic direction is learned (run_violations.py --learn-flow). No speed limit known, so speeding is not judged. Speeds are estimates (speed_sigma_kmh 6).",
+  "reference_frame": 0,
+  "frame_size": [1920, 1080],
+  "ref_point": 0.5,
+  "calibration": {"method": "scale", "image_points": [[100, 500], [1100, 500]], "length_m": 38.5},
+  "lanes": [],
+  "zones": [],
+  "speed_sigma_kmh": 6.0
+}

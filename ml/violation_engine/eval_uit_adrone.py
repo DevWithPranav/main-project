@@ -21,6 +21,11 @@ Per video, from run_violations.py --site output (events on the video's own frame
 Layout: <gt dir>/<video>.npy and <results root>/<video>/**/violations/violations.json (the first
 match). Videos without results are listed and skipped.
 
+Label i covers video frame i * --stride: the test labels hold every 5th frame (checked on two
+videos: 11762 and 15693 frames -> 2353 and 3139 labels = ceil(frames / 5)). Some videos are
+named differently from their label file (50m_90d_morning_17_3.MP4 has the labels of
+50m_90d_morning_ngatuanninh_17_3.npy): --alias maps them.
+
 Usage:
     python ml/violation_engine/eval_uit_adrone.py <gt dir> <results root>
     python ml/violation_engine/eval_uit_adrone.py <gt dir> <results root> --types wrong_way no_parking illegal_u_turn
@@ -37,13 +42,14 @@ from events import COUNTED_STATUS
 IN_SCOPE = ("wrong_way", "illegal_u_turn", "no_parking", "highway_stop", "lane_violation")
 
 
-def frame_scores(events: list[dict], n: int, types) -> np.ndarray:
+def frame_scores(events: list[dict], n: int, types, stride: int = 1) -> np.ndarray:
+    """Per label index: label i covers video frame i * stride (UIT-ADrone: every 5th frame)."""
     s = np.zeros(n)
     for e in events:
         if e["status"] not in COUNTED_STATUS or e["type"] not in types:
             continue
         a, b = e["start_frame"], e["end_frame"] if e["end_frame"] is not None else e["flag_frame"]
-        a, b = max(0, int(a)), min(n - 1, int(b))
+        a, b = max(0, -(-int(a) // stride)), min(n - 1, int(b) // stride)
         if a <= b:
             s[a:b + 1] = np.maximum(s[a:b + 1], max(float(e["confidence"]), 1e-3))
     return s
@@ -73,15 +79,16 @@ def segments(labels: np.ndarray) -> list[tuple[int, int]]:
     return list(zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1) - 1))
 
 
-def score_video(labels: np.ndarray, events: list[dict], types) -> dict:
+def score_video(labels: np.ndarray, events: list[dict], types, stride: int = 1) -> dict:
     labels = (np.asarray(labels).ravel() > 0).astype(int)
     n = len(labels)
-    s = frame_scores(events, n, types)
+    s = frame_scores(events, n, types, stride)
     pred = s > 0
     tp, fp, fn = int((pred & (labels == 1)).sum()), int((pred & (labels == 0)).sum()), int((~pred & (labels == 1)).sum())
     ours = [e for e in events if e["status"] in COUNTED_STATUS and e["type"] in types]
     segs = segments(labels)
-    hit_ev = sum(1 for e in ours if labels[max(0, e["start_frame"]):min(n, (e["end_frame"] or e["flag_frame"]) + 1)].any())
+    hit_ev = sum(1 for e in ours if labels[max(0, -(-e["start_frame"] // stride)):
+                                          min(n, (e["end_frame"] or e["flag_frame"]) // stride + 1)].any())
     hit_seg = sum(1 for a, b in segs if s[a:b + 1].any())
     return {"frames": n, "abnormal_frames": int(labels.sum()), "abnormal_segments": len(segs), "events": len(ours),
             "frame_auc": None if (a := auc(s, labels)) is None else round(a, 3),
@@ -98,17 +105,25 @@ def main() -> None:
     ap.add_argument("gt", type=Path, help="Folder of <video>.npy frame labels (UIT-ADrone test set)")
     ap.add_argument("results", type=Path, help="Folder with one sub-folder per video holding run_violations.py output")
     ap.add_argument("--types", nargs="*", default=list(IN_SCOPE), help="Event types that count as anomaly flags")
+    ap.add_argument("--stride", type=int, default=5,
+                    help="Video frames per label (UIT-ADrone test labels: every 5th frame, len = ceil(frames / 5))")
+    ap.add_argument("--alias", nargs="*", default=[], metavar="LABEL=FOLDER",
+                    help="Result folder for a label whose video has another name, e.g. "
+                         "50m_90d_morning_ngatuanninh_17_3=50m_90d_morning_17_3")
+    ap.add_argument("--only-with-results", action="store_true", help="Don't list label files without results")
     ap.add_argument("--out", type=Path, default=None, help="Result JSON (default: <results>/uit_adrone_eval.json)")
     args = ap.parse_args()
+    alias = dict(a.split("=", 1) for a in args.alias)
 
     per, missing = {}, []
     tot = np.zeros(7, int)
     for npy in sorted(args.gt.glob("*.npy")):
-        found = sorted((args.results / npy.stem).glob("**/violations/violations.json"))
+        found = sorted((args.results / alias.get(npy.stem, npy.stem)).glob("**/violations/violations.json"))
         if not found:
-            missing.append(npy.stem)
+            if not args.only_with_results:
+                missing.append(npy.stem)
             continue
-        r = score_video(np.load(npy), json.loads(found[0].read_text()), set(args.types))
+        r = score_video(np.load(npy), json.loads(found[0].read_text()), set(args.types), args.stride)
         tot += np.array(r.pop("_counts"))
         per[npy.stem] = {**r, "source": str(found[0])}
     tp, fp, fn, hit_ev, n_ev, hit_seg, n_seg = (int(v) for v in tot)

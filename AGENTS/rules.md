@@ -14,7 +14,7 @@ These rules are hard rules for every contributor, human or AI. If a rule blocks 
   ```
 - Stage **specific files**, not `git add -A`, unless the user asked for everything.
 - Branches: `dev` is the main branch. Personal branches are `pranav` and `afif`. Never force-push. When branches diverge, merge; don't overwrite.
-- Commit messages are imperative and describe the change ("Add lane-map exporter", "Fix ...").
+- Commit messages are imperative and describe the change ("Add lane-map exporter", "Fix ..."). No `Co-Authored-By` trailers and no AI attribution lines: commits show only the person who makes them.
 - Before handing over commands, check that `git status` contains no large or generated files (see section 3).
 
 ## 2. Environments
@@ -58,7 +58,14 @@ Never delete or overwrite results or recordings. New runs go into a **new** time
 - A new rule or predicate gets a synthetic-track test in `ml/violation_engine/tests/`.
 - If something cannot be verified (simulator needed, no GT), say that clearly in the reply. Don't present it as done.
 
-## 7. Documentation
+## 7. Research
+
+- Before designing a milestone or a major component, search for the current best approach: recent papers, standards, maintained open-source tools, official docs. The goal is the most advanced and best-built result in every aspect (accuracy, robustness, UI, performance, evaluation).
+- Log findings with links in `docs/Research_Notes.md`: what was found, what was adopted, what was rejected and why.
+- A paper's numbers are its claims. Adopt an idea only after measuring it on our data (section 4).
+- Prefer maintained, openly licensed tools; check that a dependency is still published before relying on it (MinIO images stopped, 2026-10-09).
+
+## 8. Documentation
 
 - Project status lives in `docs/main_project_tracker.md`. A change that moves a stage or produces a result gets a dated row in its **Change Log** (section 6) and, if needed, an updated stage row.
 - Design changes to the violation engine go into `docs/Violation_Engine_Architecture.md` (bump the version line).

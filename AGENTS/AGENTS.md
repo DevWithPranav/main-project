@@ -24,11 +24,16 @@ Branches: `dev` is the main branch. Each person also has their own branch: `pran
 main-project/
 ├── AGENTS/                  agent guides (this folder)
 ├── docs/                    PRD, phase plans, tracker, architecture docs, paper
+├── schemas/                 shared JSON schemas: events, config profiles, the 34 conditions
+├── backend/                 FastAPI service (Build Plan M5, not built yet)
+├── frontend/                Configuration Dashboard + 3D twin (M6, M7, not built yet)
+├── services/                live pipeline (M4, not built yet)
+├── infra/                   docker init files (PostGIS); root docker-compose.yml runs the services
 ├── ml/
 │   ├── detection/           detector training / retraining / comparison
 │   ├── tracking/            tracking demo
 │   ├── violation_engine/    tracking pipeline + violation engine (main active code)
-│   │   ├── configs/         scene lane maps (CARLA) and real-site configs
+│   │   ├── configs/         scene lane maps (CARLA), real-site configs, profiles/
 │   │   ├── tests/           unittest suite
 │   │   └── *.yaml           tracker configs (tracktrack_ours.yaml = default)
 │   ├── pothole/             road-surface anomaly track

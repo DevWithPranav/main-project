@@ -39,6 +39,13 @@ class Score(unittest.TestCase):
         self.assertEqual(r["events"], 0)
         self.assertEqual(r["frame_auc"], 0.5)
 
+    def test_stride_maps_video_frames_to_labels(self):
+        # labels every 5th frame: video frames 550-695 are label indices 110-139
+        r = ev.score_video(self.labels, [event(550, 695)], set(ev.IN_SCOPE), stride=5)
+        self.assertEqual(r["segment_recall"], 0.5)
+        self.assertEqual(r["frame_precision"], 1.0)
+        self.assertAlmostEqual(r["frame_recall"], 30 / 100)
+
     def test_higher_confidence_ranks_higher(self):
         evs = [event(110, 139, conf=0.95), event(10, 19, conf=0.3)]
         self.assertGreater(ev.score_video(self.labels, evs, set(ev.IN_SCOPE))["frame_auc"], 0.6)

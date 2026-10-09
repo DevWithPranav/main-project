@@ -284,6 +284,11 @@ class RedLight(unittest.TestCase):
     def test_already_past_when_red_not_flagged(self):  # PRD 4, edge case 1
         self.assertEqual(self.run_red([(0, "Green"), (self.cross_t + 0.5, "Red")]), [])
 
+    def test_stopping_just_over_the_line_not_flagged(self):
+        # waiting at red with the nose 3 m over the line (CARLA traffic does this): not running it
+        rows = track(drive_stop_leave(0.7, 0, 20, x_start=-40.0))
+        self.assertEqual(self.run_red([(0, "Red")], rows), [])
+
     def test_crossing_against_the_line_direction_ignored(self):
         westbound = track((lambda t: (40 - kmh(30) * t, 0), 10.0))
         self.assertEqual(self.run_red([(0, "Red")], westbound), [])

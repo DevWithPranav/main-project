@@ -1,0 +1,109 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "aerial-surveillance/profile.schema.json",
+ "title": "Configuration profile",
+ "description": "A saved system configuration for one map / site / scenario (Build Plan M0, Expected_Output Section 6). violations.<type>.params override rules.DEFAULTS; anything left out keeps its default. Unknown parameter names are rejected by ml/violation_engine/profiles.py, not here, so the schema need not repeat every threshold.",
+ "version": "1.0",
+ "type": "object",
+ "required": ["profile_version", "name"],
+ "properties": {
+  "profile_version": {"const": 1},
+  "name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+  "description": {"type": "string"},
+  "applies_to": {
+   "type": "object",
+   "properties": {
+    "map": {"type": ["string", "null"], "description": "CARLA town, e.g. Town05"},
+    "site": {"type": ["string", "null"], "description": "Real-video site file stem"},
+    "road_type": {"enum": ["urban", "highway", "mixed", null]},
+    "scenario": {"type": ["string", "null"]}
+   },
+   "additionalProperties": false
+  },
+  "violations": {
+   "type": "object",
+   "propertyNames": {"enum": ["no_parking", "wrong_way", "illegal_u_turn", "speeding", "lane_violation",
+                              "zebra_crossing", "highway_stop", "red_light"]},
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "enabled": {"type": "boolean"},
+     "params": {"type": "object", "additionalProperties": {"type": ["number", "string", "boolean", "array"]}}
+    },
+    "additionalProperties": false
+   }
+  },
+  "conditions": {
+   "type": "object",
+   "description": "Per-condition on/off (schemas/conditions.json ids); a condition left out is on",
+   "propertyNames": {"pattern": "^[A-F][1-8]$"},
+   "additionalProperties": {"type": "boolean"}
+  },
+  "place_memory": {
+   "type": "object",
+   "properties": {"radius_m": {"type": "number", "exclusiveMinimum": 0}, "keep_s": {"type": "number", "minimum": 0}},
+   "additionalProperties": false
+  },
+  "model": {
+   "type": "object",
+   "properties": {
+    "detector_weights": {"type": "string"},
+    "imgsz": {"type": "integer", "minimum": 32},
+    "conf": {"type": "number", "minimum": 0, "maximum": 1},
+    "device": {"type": "string"},
+    "tracker": {"type": "string"},
+    "tracker_config": {"type": "string"},
+    "stitching": {"type": "boolean"},
+    "pedestrian_detector": {
+     "type": "object",
+     "properties": {"enabled": {"type": "boolean"}, "weights": {"type": "string"}, "classes": {"type": "array", "items": {"type": "string"}}},
+     "additionalProperties": false
+    }
+   },
+   "additionalProperties": false
+  },
+  "modules": {
+   "type": "object",
+   "description": "Optional pipeline stages",
+   "properties": {
+    "static_check": {"type": "boolean"},
+    "evidence_clips": {"type": "boolean"},
+    "learn_flow": {"type": "boolean"},
+    "red_light": {"type": "boolean"},
+    "pedestrians": {"type": "boolean"},
+    "surface_anomalies": {"type": "boolean"}
+   },
+   "additionalProperties": false
+  },
+  "road": {
+   "type": "object",
+   "properties": {
+    "scene": {"type": "string", "description": "Lane map JSON, repo-relative (export_lane_map.py)"},
+    "site": {"type": "string", "description": "Site file, repo-relative (zone_tool.py)"},
+    "zones": {"type": "string", "description": "Extra zones JSON, repo-relative"},
+    "highway_min_limit_kmh": {"type": "number", "minimum": 0,
+                              "description": "Lanes with at least this limit count as highway class (M1)"},
+    "class_speed_limits_kmh": {
+     "type": "object", "description": "Per-class limit cap (condition E4, M2)",
+     "propertyNames": {"enum": ["car", "bus", "truck"]},
+     "additionalProperties": {"type": "number", "exclusiveMinimum": 0}
+    },
+    "lane_overrides": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "required": ["lane_id"],
+      "properties": {
+       "lane_id": {"type": "string"},
+       "speed_limit_kmh": {"type": "number", "exclusiveMinimum": 0},
+       "restricted": {"enum": ["bus", "emergency", "restricted", null]}
+      },
+      "additionalProperties": false
+     }
+    }
+   },
+   "additionalProperties": false
+  }
+ },
+ "additionalProperties": false
+}

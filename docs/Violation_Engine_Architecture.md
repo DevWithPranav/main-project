@@ -1,12 +1,12 @@
 # Violation Engine — Architecture and Plan (Objective 1, Stage 4)
 
-**Version 2.2 — 2026-10-08.** Owner: Hussain (Stage 4). Prepared with Afif.
+**Version 2.3 — 2026-10-09.** Owner: Hussain (Stage 4). Prepared with Afif.
 **Status:**
 - **Phase A:** steps A1–A5 and A9 are done, including per-event evidence clips. A6–A8 (staged CARLA flight, F1 per type) wait for a CarlaAir session.
 - **Phase B:** B1, B2 and B6 are built and tested. The B3 (highD/inD/rounD) and B5 (UIT-ADrone) tools are built and tested on synthetic data in the datasets' formats; running them needs the data.
 - **Phase C:** red-light (V4) and learned flow direction are built. V4 still needs a live CarlaAir run.
 
-Section 13 records what implementation changed or taught us (v2.2 additions at its end).
+Section 13 records what implementation changed or taught us (v2.2 and v2.3 additions at its end).
 
 **What changed from v1.0:** scope grows from 3 to **7 violation types** (plus 1 optional), and the design covers real drone footage as well as CARLA (v2.0); v2.1 adds the implementation notes.
 
@@ -554,6 +554,19 @@ A4/A5 and A2 can run in parallel; A3 and A6 can share one CarlaAir session.
 - **Coverage is the limit:** 3.5 min gives 80 cells (oracle) / 24 (pipeline), and the 30 s real highway clip from a moving drone gives 1. It needs longer hovering footage.
 - Learned lanes raised no wrong-way false alarm on that flight.
 - **Side effect:** lane-based context changes. One of the 2 oracle zebra stops became a `queue` tag. Use `--learn-flow` only where there is no lane map.
+
+### v2.3 additions (2026-10-09, Build Plan M0 and M1)
+
+**Event schema.** `schemas/event.schema.json` is the contract between the engine, the backend and the dashboards. Every event now carries:
+- `kind`: `violation`, or `anomaly` for road-surface events (M9).
+- `condition`: the Expected_Output §4.2 condition it stands for, from `schemas/conditions.json`. `Engine.run` sets it after all monitors have finished, because some tags (`possible_breakdown`) are only final when the event closes. Today: lane `straddling` → A4, `solid_line_crossing` → A2; highway stop → B1, or B2 with `possible_breakdown`; no-parking → B3; wrong-way → C1; U-turn → D1; speeding → E1, or E3 when the limit came from a speed zone (new `value.limit_source`); zebra → F1; red light → none (out of scope).
+
+**Road features (Build Plan M1).** Lanes now carry the road properties the rules will read (Expected_Output §4.1): `road_id`, `next`, `lane_change`, `z`, `bridge`, `tunnel`, `ramp`, `road_class`, `one_way`, `median_left` / `median_gap_m`, `restricted` (`lane_map.py` docstring, `schemas/scene.schema.json`). CARLA values come from `export_lane_map.py`; derived ones from `road_features.py`, which never overwrites a value already set (site file, OpenDRIVE, profile override). Choices made on the data:
+- Road class is a property of the road: a lane is highway if any non-junction lane of its OpenDRIVE road has the highway limit, since Town04's motorway loop carries 60 and 30 km/h signs.
+- A ramp must reach a highway lane of another road through at least one junction lane. Without that, the 60 km/h stretch before a 90 sign on the highway road itself read as an on-ramp.
+- Bridge = OpenDRIVE `<bridge>` and ≥ 2 m up, or ≥ 5 m up. Town05 tags ground-level ring stretches (z 0.0 m) as bridges.
+
+**Profiles.** `profiles.py` loads a configuration profile (`schemas/profile.schema.json`, files in `configs/profiles/`). It produces the same params dict as `--params`, plus `enabled` per type: `default_monitors` leaves out a monitor whose type is off, and `Engine(disabled_conditions=...)` drops events of turned-off conditions. Thresholds a profile leaves out keep `rules.DEFAULTS`. Red light is off in every profile unless turned on. Re-running staged flight `20261009_201727` with `--profile town05` gives the same 30 events as without it.
 
 ## 14. References
 

@@ -43,6 +43,8 @@ class Event:
     confidence: float = 0.0
     status: str = "flagged"
     evidence: dict = field(default_factory=dict)  # {"frame", "clip"}: filled by render_violations.py --clips
+    condition: str | None = None  # Expected_Output 4.2 id (schemas/conditions.json), set by Engine.run
+    kind: str = "violation"  # schemas/event.schema.json: "violation" or "anomaly"
 
     def close(self, t: float, frame: int, margin: float, quality: float, duration_score: float) -> None:
         """Set the end and the confidence: a weighted mean of how far past the threshold (margin),
@@ -68,7 +70,7 @@ class EventLog:
         return ev
 
 
-CSV_COLS = ["event_id", "type", "status", "confidence", "track_ids", "cls", "start_s", "flag_s", "end_s",
+CSV_COLS = ["event_id", "type", "condition", "status", "confidence", "track_ids", "cls", "start_s", "flag_s", "end_s",
             "start_frame", "flag_frame", "end_frame", "lane_id", "zone_id", "x", "y", "value", "tags", "evidence"]
 
 

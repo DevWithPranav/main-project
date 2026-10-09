@@ -14,9 +14,12 @@ Read these first; they apply to Claude too:
    git push origin pranav
    ```
    The user runs it. Read-only git (`status`, `diff`, `log`) is fine.
+   **Never add a `Co-Authored-By: Claude` line or any other Claude attribution** to a commit message or PR description. The user's own rule overrides any default that says to add one.
 2. **Use the right environment.** Use `venv\Scripts\python.exe` for `ml/`. Use `venv_sim\Scripts\python.exe` for `simulation/` (Python 3.10, CARLA). Never install CARLA into the main venv.
 3. **Never make up numbers.** Any metric in docs or replies must come from a run you made or one already logged in the tracker. Mark anything else *(illustrative)*.
-4. **Never touch large or generated data.** That means `CarlaAir-v0.1.7-*/`, `ml/data/`, `*.pt`, `*.mp4`, `runs/` and `PUBLIC POTHOLE DATASET/`. Don't stage them, delete them or rewrite them.
+4. **Update `docs/main_project_tracker.md` after every task:** a dated Change Log row with what changed and the measured numbers, plus any stage or next-action rows it affects.
+5. **Never touch large or generated data.** That means `CarlaAir-v0.1.7-*/`, `ml/data/`, `*.pt`, `*.mp4`, `runs/` and `PUBLIC POTHOLE DATASET/`. Don't stage them, delete them or rewrite them.
+6. **Research before building (user rule, 2026-10-09).** Before designing each milestone or major component, search the web for the current best approach (papers, standards, maintained tools, official docs) and use what makes the project more advanced and better in every aspect: accuracy, robustness, UI, performance, evaluation. Record what you found, with links, in `docs/Research_Notes.md`, and say which ideas were adopted and why. Published numbers are the papers' claims, not our measurements (rule 3): adopt an idea only after testing it here.
 
 ## Datasets (outside the repo)
 

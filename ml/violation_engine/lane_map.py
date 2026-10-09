@@ -16,6 +16,12 @@ seen in that driving direction, by a driver. CARLA's world axes are left-handed,
 (solid, broken, solidsolid, solidbroken, brokensolid, brokenbroken, bottsdots, grass,
 curb, other, none). Zone types: no_parking, crosswalk, no_u_turn, highway, speed.
 
+Road features (Build Plan M1, road_features.py), all optional: road_id, next (successor lane
+ids), lane_change (none / left / right / both: may a vehicle leave the lane to that side),
+z (road height per centreline point), bridge, tunnel, ramp (on / off / link), road_class
+(highway / urban), one_way, median_left (+ median_gap_m), restricted (bus / emergency /
+restricted). A lane without them reads as an ordinary urban lane.
+
 Map matching is by **position only**, never by heading: a wrong-way car must be matched
 to the lane it is physically in, not to the opposite lane it agrees with.
 """
@@ -43,12 +49,32 @@ class Lane:
     junction: bool = False
     left_line: str = "none"
     right_line: str = "none"
+    road_id: str | None = None
+    next: tuple[str, ...] = ()
+    lane_change: str = "both"
+    z: np.ndarray | None = None  # (N,) road height at each centreline point
+    bridge: bool = False
+    tunnel: bool = False
+    ramp: str | None = None
+    road_class: str = "urban"
+    one_way: bool | None = None
+    median_left: bool = False
+    median_gap_m: float | None = None
+    restricted: str | None = None
 
     def __post_init__(self):
         seg = np.diff(self.centreline, axis=0)
         self.seg_len = np.hypot(seg[:, 0], seg[:, 1])
         self.cum = np.r_[0.0, np.cumsum(self.seg_len)]
         self.length = float(self.cum[-1])
+
+    def height_at(self, s: float) -> float | None:
+        """Road height s metres along the lane (None without z)."""
+        return None if self.z is None else float(np.interp(s, self.cum, self.z))
+
+    def may_change(self, side: str) -> bool:
+        """May a vehicle leave this lane to its "left" / "right"? (CARLA waypoint lane_change)"""
+        return self.lane_change in ("both", side)
 
 
 @dataclass
@@ -79,12 +105,8 @@ class SceneMap:
         # CARLA/Unreal world axes are left-handed (seen from above, +y is to the right of +x), so
         # "left of the driving direction" is the negative side of the usual cross product there
         self.left_handed = bool(data.get("left_handed", self.coords.startswith("carla")))
-        self.lanes = [Lane(id=str(l["id"]), centreline=np.asarray(l["centreline"], float), width=float(l.get("width_m", 3.5)),
-                           lane_type=str(l.get("lane_type", "driving")).lower(),
-                           speed_limit_kmh=l.get("speed_limit_kmh"), junction=bool(l.get("junction", False)),
-                           left_line=str(l.get("left_line", "none")).lower(),
-                           right_line=str(l.get("right_line", "none")).lower())
-                      for l in data.get("lanes", []) if len(l["centreline"]) >= 2]
+        self.lanes = [self._lane(l) for l in data.get("lanes", []) if len(l["centreline"]) >= 2]
+        self.lane_by_id = {l.id: l for l in self.lanes}
         self.zones = []
         for z in data.get("zones", []):
             params = {k: v for k, v in z.items() if k not in ("id", "type", "polygon")}
@@ -107,6 +129,23 @@ class SceneMap:
         self._tree = cKDTree((self._a + self._b) / 2) if len(a) else None
         self._max_half_seg = float(np.max(np.hypot(*(self._b - self._a).T)) / 2) if len(a) else 0.0
         self._max_half_width = max((l.width / 2 for l in self.lanes), default=0.0)
+
+    @staticmethod
+    def _lane(l: dict) -> Lane:
+        z = l.get("z")
+        return Lane(id=str(l["id"]), centreline=np.asarray(l["centreline"], float), width=float(l.get("width_m", 3.5)),
+                    lane_type=str(l.get("lane_type", "driving")).lower(),
+                    speed_limit_kmh=l.get("speed_limit_kmh"), junction=bool(l.get("junction", False)),
+                    left_line=str(l.get("left_line", "none")).lower(),
+                    right_line=str(l.get("right_line", "none")).lower(),
+                    road_id=None if l.get("road_id") is None else str(l["road_id"]),
+                    next=tuple(str(n) for n in l.get("next", [])),
+                    lane_change=str(l.get("lane_change") or "both").lower(),
+                    z=np.asarray(z, float) if z is not None and len(z) == len(l["centreline"]) else None,
+                    bridge=bool(l.get("bridge", False)), tunnel=bool(l.get("tunnel", False)), ramp=l.get("ramp"),
+                    road_class=str(l.get("road_class") or "urban"), one_way=l.get("one_way"),
+                    median_left=bool(l.get("median_left", False)), median_gap_m=l.get("median_gap_m"),
+                    restricted=l.get("restricted"))
 
     @classmethod
     def load(cls, path: Path) -> "SceneMap":
