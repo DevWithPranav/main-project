@@ -32,6 +32,7 @@ import time
 import carla
 
 BUS_BLUEPRINTS = {"vehicle.mitsubishi.fusorosa"}
+SCRIPTED_ROLE = "violation_scenario"  # role_name of stage_violations.py's cars
 STOPPED_MPS = 0.3
 RED_OR_YELLOW = (carla.TrafficLightState.Red, carla.TrafficLightState.Yellow)
 
@@ -128,7 +129,10 @@ def main() -> None:
     try:
         while True:
             t0 = time.time()
-            vs = list(world.get_actors().filter("vehicle.*"))
+            # cars staged by simulation/violation_scenarios/stage_violations.py are scripted: never
+            # adopt (autopilot) or remove them, even when they stand still on purpose
+            vs = [v for v in world.get_actors().filter("vehicle.*")
+                  if v.attributes.get("role_name") != SCRIPTED_ROLE]
             for v in vs:
                 if v.id not in known:
                     adopt(v)

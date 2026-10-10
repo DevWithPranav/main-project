@@ -39,12 +39,14 @@ def main() -> None:
     ap.add_argument("--size-filter", action="store_true", help="A4: drop boxes far outside the median vehicle size")
     ap.add_argument("--max-frames", type=int, default=None, help="Stop after this many frames (smoke tests)")
     ap.add_argument("--no-video", action="store_true", help="Skip writing annotated videos")
+    ap.add_argument("--weights", type=Path, default=None, help="Detector weights (default: our full_train best.pt)")
     ap.add_argument("--out-name", default=None,
                     help="Output subfolder name (default: the tracker name) — use one per experiment")
     args = ap.parse_args()
 
-    if not BEST_PT.exists():
-        raise SystemExit(f"{BEST_PT} not found — run ml/detection/train_full.py first.")
+    weights = args.weights or BEST_PT
+    if not weights.exists():
+        raise SystemExit(f"{weights} not found.")
     if not args.video.exists():
         raise SystemExit(f"{args.video} not found.")
 
@@ -58,7 +60,7 @@ def main() -> None:
     out_dir = RESULTS_DIR / args.video.stem / (args.out_name or args.tracker)
     csv_path, n_rows, n_frames, n_ids = run_tracking(args.video, out_dir, args.tracker, fps, imgsz=args.imgsz,
                                                      class_gates=args.class_gates, size_filter=args.size_filter,
-                                                     max_frames=args.max_frames, video=not args.no_video)
+                                                     max_frames=args.max_frames, video=not args.no_video, weights=weights)
     print(f"[tracker] {args.tracker}, imgsz {args.imgsz}")
     print(f"[trajectories] {n_rows} rows across {n_frames} frames -> {csv_path}")
     print(f"[tracking] unique vehicle track IDs: {n_ids}")

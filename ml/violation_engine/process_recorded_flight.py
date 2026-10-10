@@ -199,10 +199,12 @@ def main() -> None:
     ap.add_argument("--imgsz", type=int, default=None, help="Detector input size (default: the model's own)")
     ap.add_argument("--class-gates", action="store_true", help="A4: require bus/truck conf >= 0.4")
     ap.add_argument("--size-filter", action="store_true", help="A4: drop boxes far outside the median vehicle size")
+    ap.add_argument("--weights", type=Path, default=None, help="Detector weights (default: our full_train best.pt)")
     args = ap.parse_args()
 
-    if not BEST_PT.exists():
-        raise SystemExit(f"{BEST_PT} not found — run ml/detection/train_full.py first.")
+    weights = args.weights or BEST_PT
+    if not weights.exists():
+        raise SystemExit(f"{weights} not found.")
 
     run_id = args.run_id or latest_run_id()
     run_dir = RECORDED_FLIGHTS_DIR / run_id
@@ -221,7 +223,7 @@ def main() -> None:
     out_dir = RESULTS_DIR / run_id / args.tracker
     csv_path, n_rows, n_frames, n_ids = run_tracking(frames_dir, out_dir, args.tracker, output_fps, frame_times,
                                                      imgsz=args.imgsz, class_gates=args.class_gates,
-                                                     size_filter=args.size_filter)
+                                                     size_filter=args.size_filter, weights=weights)
 
     print(f"[tracker] {args.tracker} ({TRACKER_CONFIGS[args.tracker]})")
     print(f"[trajectories] wrote {n_rows} rows across {n_frames} frames -> {csv_path}")

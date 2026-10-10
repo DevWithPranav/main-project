@@ -1,0 +1,61 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "aerial-surveillance/scene.schema.json",
+ "title": "Scene (lane map)",
+ "description": "A lane map as ml/violation_engine/lane_map.py loads it: CARLA exports (export_lane_map.py) and real sites in metres (real_geometry.Site.scene). Road-feature fields are Build Plan M1 (road_features.py); all are optional, and a lane without them reads as an ordinary urban lane.",
+ "version": "1.1",
+ "type": "object",
+ "required": ["lanes"],
+ "properties": {
+  "scene": {"type": "string"},
+  "coords": {"type": "string"},
+  "left_handed": {"type": "boolean"},
+  "source": {"type": "string"},
+  "note": {"type": "string"},
+  "lanes": {"type": "array", "items": {"$ref": "#/$defs/lane"}},
+  "zones": {"type": "array", "items": {"$ref": "#/$defs/zone"}},
+  "stop_lines": {"type": "array"}
+ },
+ "$defs": {
+  "point": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+  "line": {"enum": ["solid", "broken", "solidsolid", "solidbroken", "brokensolid", "brokenbroken",
+                    "bottsdots", "grass", "curb", "other", "none"]},
+  "lane": {
+   "type": "object",
+   "required": ["id", "centreline"],
+   "properties": {
+    "id": {"type": "string"},
+    "centreline": {"type": "array", "items": {"$ref": "#/$defs/point"}, "minItems": 2},
+    "width_m": {"type": "number", "exclusiveMinimum": 0},
+    "lane_type": {"enum": ["driving", "shoulder", "parking"]},
+    "junction": {"type": "boolean"},
+    "left_line": {"$ref": "#/$defs/line"},
+    "right_line": {"$ref": "#/$defs/line"},
+    "speed_limit_kmh": {"type": ["number", "null"]},
+    "road_id": {"type": ["string", "null"]},
+    "next": {"type": "array", "items": {"type": "string"}},
+    "lane_change": {"enum": ["none", "left", "right", "both"]},
+    "z": {"type": "array", "items": {"type": "number"}},
+    "bridge": {"type": "boolean"},
+    "tunnel": {"type": "boolean"},
+    "ramp": {"enum": ["on", "off", "link", null]},
+    "road_class": {"enum": ["highway", "urban"]},
+    "one_way": {"type": ["boolean", "null"]},
+    "median_left": {"type": "boolean"},
+    "median_gap_m": {"type": ["number", "null"], "minimum": 0},
+    "restricted": {"enum": ["bus", "emergency", "restricted", null]}
+   },
+   "additionalProperties": true
+  },
+  "zone": {
+   "type": "object",
+   "required": ["id", "type", "polygon"],
+   "properties": {
+    "id": {"type": "string"},
+    "type": {"enum": ["no_parking", "crosswalk", "no_u_turn", "highway", "speed"]},
+    "polygon": {"type": "array", "items": {"$ref": "#/$defs/point"}, "minItems": 3}
+   },
+   "additionalProperties": true
+  }
+ }
+}

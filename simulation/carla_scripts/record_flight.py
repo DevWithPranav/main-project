@@ -15,6 +15,10 @@ stall permanently once the drone is airborne under this CarlaAir build (see
 live_fly_and_track.py's CarlaCameraGrabber docstring for the full history).
 AirSim is still used for flight control only.
 
+Every recording also writes traffic_lights.json: each traffic light's state changes (per
+simulator tick) and its stop lines, for the violation engine's red-light rule
+(ml/violation_engine/signals.py).
+
 Run in the CarlaAir distribution's own Python 3.10 conda env (needs `carla`
 and `airsim`, not `torch`/`ultralytics` — this script never touches those).
 
@@ -317,18 +321,24 @@ class CarlaCameraGrabber:
         self.lock = threading.Lock()
         self.saved_count = 0
         self._times_file = open(frame_times_path, "w", newline="")
-        self._times_file.write("frame,time_s,carla_frame\n")  # carla_frame pairs each frame with its seg/ image
+        # carla_frame pairs each frame with its seg/ image; sim_time and the camera's world pose on
+        # every frame let ml/violation_engine/ground_coords.py project pixels to metres without
+        # interpolating between the sparser seg-tick poses in camera_poses.csv
+        self._times_file.write("frame,time_s,carla_frame,sim_time,x,y,z,pitch,yaw,roll\n")
         self.camera.listen(self._on_image)
 
     def _on_image(self, image) -> None:
         arr = np.frombuffer(image.raw_data, dtype=np.uint8).reshape(image.height, image.width, 4)
         bgr = np.ascontiguousarray(arr[:, :, :3])  # CARLA raw_data is BGRA — drop alpha, already BGR
+        tf = image.transform
+        pose = ",".join(f"{v:.4f}" for v in (tf.location.x, tf.location.y, tf.location.z,
+                                              tf.rotation.pitch, tf.rotation.yaw, tf.rotation.roll))
 
         with self.lock:
             idx = self.saved_count
             self.saved_count += 1
             t = round(time.perf_counter() - self.start_time, 4)
-            self._times_file.write(f"{idx},{t},{image.frame}\n")
+            self._times_file.write(f"{idx},{t},{image.frame},{image.timestamp:.4f},{pose}\n")
         cv2.imwrite(str(self.frames_dir / f"{idx:05d}.jpg"), bgr, JPEG_SAVE_PARAMS)
 
     def stop(self) -> None:
@@ -448,6 +458,43 @@ class VehiclePoseLogger:
                     f.write(f"{fr},{vid}," + ",".join(f"{v:.4f}" for v in p) + "\n")
 
 
+class TrafficLightLogger:
+    """Every traffic light's state change (world.on_tick) and its stop lines, for the violation
+    engine's red-light rule (ml/violation_engine/signals.py). Stop lines are CARLA's own
+    TrafficLight.get_stop_waypoints(): one per controlled lane, drawn across the lane, with the
+    lane's driving direction as the approach direction. Lights are static, so the list is read once."""
+
+    def __init__(self, world):
+        self.world = world
+        self.lights = list(world.get_actors().filter("traffic.traffic_light"))
+        self.last: dict[int, str] = {}
+        self.changes: list = []
+        self._cb = world.on_tick(self._on_tick)
+
+    def _on_tick(self, snapshot) -> None:
+        for tl in self.lights:
+            st = str(tl.get_state())
+            if self.last.get(tl.id) != st:
+                self.last[tl.id] = st
+                self.changes.append([snapshot.frame, round(snapshot.timestamp.elapsed_seconds, 4),
+                                     tl.get_opendrive_id(), st])
+
+    def stop_and_write(self, path: Path) -> None:
+        self.world.remove_on_tick(self._cb)
+        lights = []
+        for tl in self.lights:
+            sid = tl.get_opendrive_id()
+            lines = []
+            for k, wp in enumerate(tl.get_stop_waypoints()):
+                c, r, f = wp.transform.location, wp.transform.get_right_vector(), wp.transform.get_forward_vector()
+                h = wp.lane_width / 2
+                lines.append({"id": f"tl_{sid}_{k}", "signal_id": sid, "dir": [round(f.x, 4), round(f.y, 4)],
+                              "line": [[round(c.x - h * r.x, 2), round(c.y - h * r.y, 2)],
+                                       [round(c.x + h * r.x, 2), round(c.y + h * r.y, 2)]]})
+            lights.append({"id": sid, "actor_id": tl.id, "stop_lines": lines})
+        path.write_text(json.dumps({"lights": lights, "changes": self.changes}))
+
+
 def _bbox_dict(bb) -> dict:
     return {"loc": [bb.location.x, bb.location.y, bb.location.z],
             "ext": [bb.extent.x, bb.extent.y, bb.extent.z],
@@ -562,6 +609,8 @@ def main() -> None:
     start_time = time.perf_counter()
     grabber = CarlaCameraGrabber(world, drone_actor, frames_dir, out_dir / "frame_times.csv", start_time,
                                  pitch=args.pitch)
+    light_logger = TrafficLightLogger(world)
+    print(f"[signals] logging {len(light_logger.lights)} traffic lights (red-light rule)")
     seg_grabber = None
     depth_grabber = None
     pose_logger = None
@@ -621,6 +670,8 @@ def main() -> None:
             print("\n[recording] stopped — drone left as it is (fly_drone.py still has control)")
         kbd.stop()
         grabber.stop()
+        light_logger.stop_and_write(out_dir / "traffic_lights.json")
+        print(f"[signals] {len(light_logger.changes)} state changes -> traffic_lights.json")
         if seg_grabber is not None:
             seg_grabber.stop()
             depth_grabber.stop()

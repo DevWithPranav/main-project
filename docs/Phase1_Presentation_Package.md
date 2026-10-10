@@ -1,90 +1,122 @@
-# Phase 1 Presentation Package — Aerial Vehicle Detection & Tracking
+# Phase 1 Presentation Package — Aerial Vehicle Detection, Tracking & Violations
 
-Stage 5 deliverable of `docs/First_Phase_Plan.md`: demo assets, benchmark numbers that justify the model and tracker choices, and the limitations stated up front.
+Stage 5 deliverable of `docs/First_Phase_Plan.md`: demo assets, the benchmark numbers that justify each model / tracker / rule choice, and the limitations stated up front.
 
-Status: **detection + tracking demo complete; violation-flag overlay pending Stage 4** (no-parking / wrong-way / speeding rules are not implemented yet — see Section 5).
+**Status (2026-10-04):**
+- **Detection and tracking:** done, with ground-truth scores.
+- **Violation engine:** built for 7 PRD violation types and validated offline, with the overlay video working.
+- **Still missing:** F1 per violation type on a staged CARLA flight (Section 5).
 
 ---
 
 ## 1. Pipeline
 
 ```
-Drone footage (CARLA recorded flight / VisDrone)
-   -> YOLO26l detector, fine-tuned on VisDrone2019-DET   (car / van / truck / bus)
-   -> BoT-SORT-ReID tracker (appearance + camera-motion compensation)
-   -> Offline tracklet stitching (re-links IDs broken by sudden camera moves)
-   -> Per-vehicle trajectories CSV (frame, time, id, class, cx, cy, w, h, conf)
-   -> [Stage 4, pending] violation rules: no-parking, wrong-way, speeding
+Drone footage (CARLA recorded flight / real video)
+   -> YOLO26l detector, retrained on VisDrone + UAVDT + CARLA      (car / bus / truck)
+   -> TrackTrack tracker + offline tracklet stitching + post-processing
+   -> trajectories_final.csv (pixels)
+   -> ground positions in metres (camera pose)          ground_coords.py
+   -> Kalman + RTS smoothing: speed, heading            kinematics.py
+   -> lane map (directions, limits, lines, crossings)   lane_map.py
+   -> 7 violation rules -> events                       rules.py
+   -> overlay video                                     render_violations.py
 ```
 
-Run: `python ml/violation_engine/process_recorded_flight.py <run_id>` (tracking + stitching), then `python ml/violation_engine/make_demo_videos.py <run_id>` (demo videos; needs a `--tracker bytetrack` run too for the comparison).
+Run on a recorded CARLA flight:
+
+```
+python ml/violation_engine/process_recorded_flight.py <run_id> --weights ml/data/results/retrain_v1/train/weights/best.pt --imgsz 960
+python ml/violation_engine/run_violations.py simulation/data_export/recorded_flights/<run_id> --scene ml/violation_engine/configs/scenes/Town05.json
+python ml/violation_engine/render_violations.py simulation/data_export/recorded_flights/<run_id> --scene ml/violation_engine/configs/scenes/Town05.json --events-only
+```
 
 ## 2. Demo assets
 
-Local only (`ml/data/results/` is gitignored); regenerate with the commands above. Flight `20260920_194932` (CARLA Town10HD, manually flown, 15.4 fps, 1920×1080).
+Local only (`ml/data/results/` is gitignored); regenerate with the commands above.
 
 | File | Shows |
 |---|---|
-| `ml/data/results/presentation/20260920_194932/demo.mp4` | Final pipeline: boxes + stable vehicle IDs, HUD with vehicles in view and unique vehicles so far (1280×720, 572 frames, blank frames removed) |
-| `ml/data/results/presentation/20260920_194932/comparison.mp4` | ByteTrack baseline (left) vs final pipeline (right) on identical frames; the unique-ID counters end at **147 vs 43** |
-| `ml/data/results/tracking_demo/tracked/` | Tracking on real VisDrone2019-MOT footage (`uav0000137_00458_v`) |
-
-Good moments to show: **~t = 22 s** (busy intersection, six cars tracked with steady IDs after a fast turn onto the scene); **~t = 24–26 s** (grey van, left side, keeps its ID through a detection gap that the tracker alone had split into two IDs).
+| `ml/data/results/recorded_flight_validation/20261002_001635/tracktrack_ours/violations/violations_events.mp4` | **Violation overlay**, Town05 test flight: crosswalk outlines projected from the map, every car with ID and speed, an amber "checking" phase, then a red **ON ZEBRA CROSSING 11 s** flag (~t = 31–43 s) |
+| `ml/data/results/recorded_flight_validation/20261002_001635/tracktrack_ours/annotated_final.mp4` | Final tracking on the same flight (5,611 frames) |
+| `ml/data/results/experiments/gt_1080p/20261003_070721_tracktrack_ours/annotated_final.mp4` | Tracking on the hand-labelled GT clip with the retrained detector |
+| `ml/data/results/presentation/20260920_194932/comparison.mp4` | ByteTrack (left) vs BoT-SORT + stitching (right), unique-ID counters ending at 147 vs 43: why the tracker changed |
 
 ## 3. Benchmarks
 
-### 3.1 Detection — why YOLO26l fine-tuned on VisDrone
+### 3.1 Detection
 
 | Model | mAP50 | Note |
 |---|---|---|
-| COCO-pretrained YOLO26l, zero-shot | 0.034 | Not a real signal: COCO and VisDrone number their classes differently, so correct boxes score as wrong classes |
-| Fine-tune smoke test (25 images) | 0.121 | Confirmed the model learns before committing ~7 h of GPU time |
-| **Fine-tuned on full VisDrone2019-DET, all 10 classes** | **0.457** | mAP50-95 0.273 |
-| **Same model, the 4 in-scope classes (car/van/truck/bus)** | **0.585** | mAP50-95 0.413 — the relevant number for this project |
+| COCO-pretrained YOLO26l, zero-shot | 0.034 | Not a real signal: COCO and VisDrone number their classes differently |
+| Fine-tuned on VisDrone2019-DET, all 10 classes | 0.457 | First model |
+| Same model, in-scope classes only | 0.585 | The relevant number at the time |
+| **Retrained, 3 classes, VisDrone + UAVDT + CARLA (2026-10-03)** | see below | Current model |
 
-Per in-scope class (mAP50): car 0.832 · bus 0.600 · van 0.481 · truck 0.426.
+Retrained vs old model, both scored on the same 3 classes (`ml/detection/compare_detectors.py`):
 
-Speed: **11.8 ms/image (~85 FPS)** on an RTX 4060 Laptop GPU (8 GB) — comfortably real-time.
-
-Why the in-scope number: VisDrone has 10 classes, but pedestrians, bicycles, tricycles and motorcycles play no part in the three Phase 1 violations. Averaging over them understates the model on the task it's used for.
-
-### 3.2 Tracking — why BoT-SORT-ReID + stitching
-
-Same recorded flight, same detector, only the tracking changes. Fewer unique IDs for the same traffic = fewer ID switches (one vehicle wrongly split into several IDs).
-
-| Tracker | Unique vehicle IDs | Ultralytics-reported time/frame |
+| Test set | Old | Retrained |
 |---|---|---|
-| ByteTrack (tuned for sim footage) | 147 | 22.0 ms |
-| BoT-SORT-ReID (stock thresholds) | 54 | 26.9 ms |
-| BoT-SORT-ReID, tuned (`proximity_thresh` 0.2, `track_buffer` 90) | 48 | not timed separately (same components) |
-| **+ offline tracklet stitching** | **43** | + one offline pass |
+| VisDrone-DET val | 0.672 | **0.696** |
+| VisDrone test-dev | 0.666 | 0.674 |
+| UAVDT val (night / fog) | 0.366 | 0.426 |
+| CARLA Town05 test (never trained on) | 0.655 | **0.844** |
+| Hand-labelled GT clip | 0.506 | **0.702** (truck 0.116 → 0.536) |
 
-- **ByteTrack → BoT-SORT (−63% IDs):** the drone camera is always moving; ByteTrack matches on box overlap only, BoT-SORT adds an appearance model and cancels camera motion. Confirmed by the team visually reviewing both annotated videos.
-- **Stitching (−10% more):** during sudden camera moves the detector briefly loses vehicles, and BoT-SORT only consults appearance when the returning box already overlaps its prediction. Stitching re-links those fragments using camera-corrected position, size, class and colour. All 5 links on this flight were checked by eye; a stricter cut-off was added after one link couldn't be confirmed, because merging two vehicles is worse than leaving one split.
-- **What's left is mostly correct:** most remaining new IDs appear when a fast turn brings new road into view — genuinely new vehicles (checked at frames 330 vs 346).
-- Real footage: on VisDrone2019-MOT sequence `uav0000137_00458_v` (233 frames, busy intersection), the vehicles present from the first frame keep the same IDs to the last frame.
+Speed: about 85 FPS for the first model on an RTX 4060 Laptop GPU (11.8 ms/image at 640). The retrain uses the same architecture.
 
-Approaches tried and rejected (evidence in `docs/main_project_tracker.md`, Section 2.3): loosening ByteTrack thresholds (no gain), ORB camera-motion compensation (crashes on low-texture frames), SIFT (~18× slower, no real gain).
+### 3.2 Tracking (hand-labelled GT clip, 40 vehicles)
+
+| Pipeline | IDF1 | MOTA | ID switches | False tracks | IDs (GT 40) |
+|---|---|---|---|---|---|
+| BoT-SORT baseline (old detector) | 0.852 | 0.804 | 3 | 7 | 48 |
+| TrackTrack, tuned (old detector) | 0.874 | 0.816 | 2 | 0 | 39 |
+| **TrackTrack + retrained detector** | **0.881** | **0.826** | **2** | 1 | **40** |
+
+The earlier move from ByteTrack to BoT-SORT cut unique IDs on a moving-camera flight from 147 to 43 (comparison video). TrackTrack then beat BoT-SORT on the ground-truth metrics. Evidence for every step is in `docs/main_project_tracker.md`.
+
+### 3.3 Violation engine
+
+Seven PRD violation types: no-parking, wrong-way, illegal U-turn, speeding, lane violation, zebra crossing, highway stopping. The rules follow PRD Section 9.1 thresholds. Design and research: `docs/Violation_Engine_Architecture.md`.
+
+| Check | Result |
+|---|---|
+| Pixel → ground position vs CARLA truth (3 flights, 20,683 boxes) | median 0.11 m, 95% within 0.8 m |
+| Speed error, full pipeline, Town05 test flight | median 1.4 km/h, 95% within 5.8 km/h |
+| Heading error above 10 km/h | median 0.5°, 95% within 6.4° |
+| Parked cars' measured speed | median 0.2 km/h (they must read "stopped") |
+| Lane matching vs CARLA's own lane | 99.1% correct outside junctions |
+| Unit tests (one per PRD case and edge case) | 23 / 23 pass |
+| Staged-scenario dry run on the real Town05 map | 10 / 10 acts as expected (7 violations caught, 3 negatives left alone) |
+| **Normal traffic, 3.5 min, full pipeline** | **0 false events**; 1 of 2 real crosswalk stops caught |
+
+The rules were checked against CARLA's true vehicle positions, which separates rule bugs from perception errors. Five bugs found that way were fixed:
+- a run-away smoother
+- mirrored left/right in CARLA's world axes
+- gap-filled rows treated as measurements
+- ID switches read as speeding
+- duplicate tracks splitting a parking timer
+
+Together they took the false events on normal traffic **from 784 to 0**.
 
 ## 4. Limitations
 
 **Detection**
-- In-scope mAP50 is **0.585, below the PRD target of 0.75**. Truck (0.426) and van (0.481) are weakest; a 4-class retrain is planned (the last run also stopped before its own stop conditions triggered).
-- Trained on real VisDrone imagery, demoed on CARLA renders. It transfers well in practice, but no mAP has been measured on CARLA footage.
-- Motorcycles are excluded from tracking (severe ID churn on small, flickering detections); none of the Phase 1 violations need them.
+- VisDrone mAP50 is **0.696 on 3 classes, below the PRD target of 0.75**.
+- Recall on some vehicles is still low. The one crosswalk stop the engine missed was a car the tracker covered in only 40% of its visible frames.
 
 **Tracking**
-- Quality is judged by **unique-ID counts and visual review, not a ground-truth metric**. `ml/violation_engine/eval_tracking.py` (MOTA / IDF1 / ID switches) exists but has no hand-labelled clip to score against yet. Fewer IDs is consistent with fewer switches but cannot by itself rule out a wrong merge.
-- Stitching thresholds were calibrated on **one flight**; they need confirming on a second recording.
-- The demo flight is a manually flown CARLA recording; 327 of 899 frames were blank (before takeoff and after the drone descended through the road) and are cut from the demo.
+- GT scores come from **one** hand-labelled clip; a second clip with sudden camera moves is expected from the team.
 
-**Scope / not yet built**
-- **No violation detection yet** — Stage 4 rules are pending, so the demo shows detection and tracking only.
-- **Speeding needs real scale.** Speed = pixel displacement × ground sampling distance × frame rate, and the public datasets carry no drone telemetry (altitude, focal length, gimbal angle). Speeding will rely on CARLA's known camera setup or a manually calibrated clip, stated as an assumption.
-- Phase 1 covers 3 of the PRD's 10 violation types.
+**Violations**
+- **F1 per violation type is not measured yet.** It needs the staged CARLA flight (planned and dry-run, not yet recorded). The PRD target is F1 ≥ 0.70 per type.
+- Highway stopping has unit tests, but no staged act yet (needs a flight over a highway).
+- Speeds are exact on CARLA, because the camera pose is known. **Real footage has no telemetry yet**, so real-video speeds will be estimates (scale from DJI telemetry, an orthophoto, or a known length) until Phase B.
+- Red-light jumping is optional and CARLA-only. Helmet-less riding and overloading are out of scope: rider heads are a few pixels wide from 50–100 m, and motorcycles are not tracked.
 
 ## 5. What completes this package
 
-- [ ] Stage 4 rules write per-frame violation flags; overlay them in `make_demo_videos.py` (`draw_tracks()`), e.g. red box + label for a flagged vehicle.
-- [ ] One violation example per type in the demo (CARLA can stage them with known ground truth).
-- [ ] Optional before presenting: 4-class detector retrain (update Section 3.1), and a hand-labelled clip so Section 3.2 can quote MOTA/IDF1 instead of ID counts.
+- [x] Violation overlay video (`render_violations.py`).
+- [ ] Staged CARLA flight with one or more of each violation type, and F1 per type (Architecture Phase A, steps A6–A8).
+- [ ] Highway-stop flight.
+- [ ] Real-footage demo with estimated speeds and hand-checked events (Phase B).
