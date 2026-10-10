@@ -44,3 +44,18 @@ Web research done before building each milestone (rule: `AGENTS/rules.md` §7). 
 ### Reproducible CARLA runs (M8)
 - Traffic Manager deterministic mode since 0.9.11: world and TM both synchronous, fixed `fixed_delta_seconds` (tutorial: 0.05), `traffic_manager.set_random_device_seed(seed)`, and seed Python's `random` too; send commands in batches ([CARLA 0.9.11 release](https://carla.org/2020/12/22/release-0.9.11/), [TM tutorial](https://carla.readthedocs.io/en/latest/tuto_G_traffic_manager/), [TM docs 0.9.12](https://carla.readthedocs.io/en/0.9.12/adv_traffic_manager/)).
   - **Adopted for M8:** `traffic_flow.py` gets `--seed` with exactly that setup. Hybrid physics is **not** used in validation runs: no source confirms it keeps determinism.
+
+## 2026-10-10: M5 backend, M9 road-surface model
+
+### Backend (M5)
+- FastAPI + async SQLAlchemy 2.0 (asyncpg) + GeoAlchemy2; sessions per request via `Depends`, keep the whole path async ([oneuptime: async DB in FastAPI](https://oneuptime.com/blog/post/2026-02-02-fastapi-async-database/view)). **Adopted.**
+- WebSocket fan-out: per-process connection set + Redis pub/sub listener started in the lifespan, `redis.asyncio` (aioredis is deprecated); pub/sub is fire-and-forget, fine for live UI ([oneuptime: FastAPI WebSocket + Redis](https://oneuptime.com/blog/post/2026-03-31-redis-build-fastapi-websocket-chat-with-redis/markdown)). **Adopted.**
+- PDF: ReportLab for table-heavy reports, fpdf2 simpler, WeasyPrint slowest ([templated.io comparison](https://templated.io/blog/generate-pdfs-in-python-with-libraries/)). **Adopted ReportLab**; measured 10 000 events in 6.97 s after splitting the table.
+
+### Road-surface anomalies (M9), written up for Afif in `docs/Pothole_Model_Training_Guide.md`
+- Aerial distress data: HighRPD 2025 (11,696 high-altitude drone images; cracks + potholes) ([PMC11872502](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11872502/)); UAV-PDD2023 (2,440 images, 6 classes, boxes) ([PMC10630617](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10630617/)); PaveCrack1300 (UAV crack masks) ([Mendeley](https://data.mendeley.com/datasets/8b27pdcxv7/1)). **Adopted** as the aerial fine-tune / test sources; box sets get SAM masks from box prompts.
+- Waterlogging: FloodNet (UAV, 10 classes incl. *road flooded*, masks) ([GitHub](https://github.com/BinaLab/FloodNet-Supervised_v1.0), [paper](https://arxiv.org/abs/2012.02951)). **Adopted** (road-flooded class only).
+- Debris: no adequate public aerial dataset found (WildRoadBench: 48 debris images) ([arXiv 2605.20306](https://arxiv.org/pdf/2605.20306)). **Gap**, reported as no_data unless we annotate/synthesise.
+- RGB-D as a 4th input channel: no study found showing it helps YOLO segmentation; PothRGBD uses depth only for measurement ([arXiv 2505.04207](https://arxiv.org/abs/2505.04207)). **Not adopted** (the drone has no depth either).
+- SAHI tiled inference for small objects in large aerial frames ([Ultralytics guide](https://docs.ultralytics.com/guides/sahi-tiled-inference)). **To test** on the aerial test set vs whole-frame.
+- Copy-paste augmentation, higher imgsz, cosine LR: standard Ultralytics options; **to test** against E1/E2 (`train_m9.py --set`).

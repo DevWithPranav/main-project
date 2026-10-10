@@ -13,6 +13,7 @@ Usage:
     python ml/pothole/train_m9.py --variant modified --time 4.5 --name m9_modified
     python ml/pothole/train_m9.py --variant baseline --time 3 --name m9_baseline
     python ml/pothole/train_m9.py --variant modified --epochs 1 --fraction 0.05 --name m9_smoke --exist-ok   # smoke
+    python ml/pothole/train_m9.py --variant modified --time 4 --name m9_mod_cp --set copy_paste=0.3 --seed 1
 """
 
 import argparse
@@ -53,6 +54,9 @@ def main() -> None:
     ap.add_argument("--no-gelu", action="store_true", help="modified variant without GELU (ablation)")
     ap.add_argument("--device", default="0")
     ap.add_argument("--exist-ok", action="store_true")
+    ap.add_argument("--seed", type=int, default=RECIPE["seed"], help="repeat a run with seeds 0/1/2 to see the spread")
+    ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
+                    help="extra ultralytics train args, e.g. copy_paste=0.3 cos_lr=True imgsz=1024")
     a = ap.parse_args()
 
     if not Path(a.data).exists():
@@ -62,7 +66,13 @@ def main() -> None:
 
     args = {**RECIPE, "data": a.data, "epochs": a.epochs, "imgsz": a.imgsz, "batch": a.batch,
             "fraction": a.fraction, "workers": a.workers, "device": a.device, "project": str(RUNS),
-            "name": a.name, "exist_ok": a.exist_ok}
+            "name": a.name, "exist_ok": a.exist_ok, "seed": a.seed}
+    for kv in a.set:
+        k, _, v = kv.partition("=")
+        try:
+            args[k] = json.loads(v.lower() if v.lower() in ("true", "false") else v)
+        except json.JSONDecodeError:
+            args[k] = v
     if a.time:
         args["time"] = a.time
     model = YOLO(a.weights)
