@@ -479,6 +479,8 @@ class UTurnAnywhereMonitor(Monitor):
             else math.hypot(o.x - s.x, o.y - s.y) <= self.SAME_PLACE_M
         if not same_road:
             return  # e.g. two turns round a block onto a parallel street
+        if a.id.split("_p")[0] == b.id.split("_p")[0]:
+            return  # the same lane (or a piece of it) bends round: a hairpin (Town03 road 60), not a U-turn
         inside = [x[3] for x in w["turn"] if x[3].lane is not None]
         junction_lanes = {x.lane.lane.id for x in inside if x.lane.lane.junction}
         if inside and len([x for x in inside if x.lane.lane.junction]) / len(inside) >= 0.5:
@@ -596,7 +598,10 @@ class LaneViolationMonitor(Monitor):
             return
         prev, co = st["prev"], st["cand_obs"]
         stable_before = st["cand_since"] - st["prev_since"] >= p["stable_s"]
-        lateral = abs(prev.d) >= p["exit_frac"] * prev.lane.width
+        # seen inside a junction in between: it crossed the junction, not changed lanes, however far
+        # it had drifted on the way in (Town03 dry run: 1.6 m off-centre at the junction entry)
+        crossed_junction = st.get("junction_t", -1e9) > st["prev_t"]
+        lateral = abs(prev.d) >= p["exit_frac"] * prev.lane.width and not crossed_junction
         # A3 / A8 are about changing between lanes of one direction; crossing a solid line (A2) counts
         # either way, e.g. over the double solid centre line into the opposing lane
         same_dir = angle_diff_deg(prev.dir_deg, o.lane.dir_deg) < 60.0
@@ -617,11 +622,11 @@ class LaneViolationMonitor(Monitor):
                 self._instant(co, "lane_change_prohibited", {**base, "lane_change": prev.lane.lane_change})
             if same_dir and co.speed_kmh >= p["unsafe_min_kmh"]:
                 self._start_gap_watch(co, prev, o.lane.lane, hist)
-        elif (not lateral and prev.lane.next and st.get("junction_t", -1e9) > st["prev_t"]
+        elif (crossed_junction and prev.lane.next
               and p["junction_min_s"] <= st["cand_since"] - st["prev_t"] <= p["junction_max_s"]
               and angle_diff_deg(prev.dir_deg, o.lane.dir_deg) < 150.0):  # turned round: the U-turn rules' case
             # left one lane through a junction and came out on another (A1)
-            if not lane_reachable(prev.lane, o.lane.lane, self.lane_index):
+            if not lane_reachable(prev.lane, o.lane.lane, self.lane_index, junction_only=True):
                 self._instant(co, "wrong_lane_for_direction",
                               {"from_lane": prev.lane.id, "to_lane": o.lane.lane.id,
                                "from_lane_leads_to": list(prev.lane.next)}, margin=0.8)

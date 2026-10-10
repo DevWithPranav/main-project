@@ -22,6 +22,7 @@ STOP_RADIUS_M = 1.0  # ... within 1 m of their centre
 STOP_MIN_AGE_S = 1.0  # a younger track is tested over its whole life (>= 1 s)
 QUEUE_AHEAD_M = 10.0  # a stopped vehicle this far ahead in the same lane = queue
 QUEUE_NEAR_M = 8.0  # without a lane: any stopped vehicle this close
+QUEUE_SIDE_M = 2.0  # straight ahead: within this sideways offset (about half a lane plus position noise)
 QUEUE_SLOW_KMH = 5.0
 HISTORY_S = 10.0
 HALF_WIDTH_M = {"car": 0.9, "van": 1.0, "truck": 1.25, "bus": 1.25}  # vehicle half-width for footprint tests
@@ -136,11 +137,15 @@ def along_target(o: Obs, target) -> float | None:
     return None
 
 
-def lane_reachable(a, b, lanes_by_id: dict, max_hops: int = 8, max_m: float = 400.0) -> bool:
+def lane_reachable(a, b, lanes_by_id: dict, max_hops: int = 8, max_m: float = 400.0,
+                   junction_only: bool = False) -> bool:
     """Can a vehicle on lane a reach lane b by following the lane graph ("next" links), within
-    max_hops lanes and max_m metres? Lanes without links (sites) count as reachable: unknown."""
+    max_hops lanes and max_m metres? With junction_only, only through junction lanes (and a's own
+    next pieces): the movements of the junction ahead, not a route round the block (in a town grid
+    almost any lane is reachable within 400 m, Town03). Lanes without links (sites): reachable, unknown."""
     if a.id == b.id or not a.next:
         return True
+    stem = a.id.split("_p")[0]
     frontier, seen = [(a, 0.0)], {a.id}
     for _ in range(max_hops):
         nf = []
@@ -151,6 +156,8 @@ def lane_reachable(a, b, lanes_by_id: dict, max_hops: int = 8, max_m: float = 40
                 n = lanes_by_id.get(nid)
                 if n is None or nid in seen or dist + n.length > max_m:
                     continue
+                if junction_only and not n.junction and n.id.split("_p")[0] != stem:
+                    continue  # out of the junction onto another road: that's where the movement ends
                 seen.add(nid)
                 nf.append((n, dist + n.length))
         frontier = nf
@@ -169,6 +176,15 @@ def queue_context(o: Obs, others: list[Obs]) -> bool:
             ahead = along_target(p, o.lane.lane)
             if ahead is not None and 0.0 < ahead - o.lane.s <= QUEUE_AHEAD_M:
                 return True
+            # straight ahead along its lane's direction, on a lane running the same way, whatever lane it
+            # matched: inside a junction connector lanes overlap (Town03: a car 7 m ahead on another
+            # connector). Not across opposing lanes: two cars on a centre line would each see the
+            # other "ahead" and the front car of a jam would read as queued (flight 20261009_201727)
+            if angle_diff_deg(o.lane.dir_deg, p.lane.dir_deg) < 60.0:
+                dx, dy = p.x - o.x, p.y - o.y
+                along = dx * o.lane.dir[0] + dy * o.lane.dir[1]
+                if 0.0 < along <= QUEUE_AHEAD_M and abs(dx * o.lane.dir[1] - dy * o.lane.dir[0]) <= QUEUE_SIDE_M:
+                    return True
         elif o.lane is None and math.hypot(p.x - o.x, p.y - o.y) <= QUEUE_NEAR_M:
             return True
     return False

@@ -681,9 +681,12 @@ def plan_road_feature_acts(m, view: View, runs: list, take, props, limit, used_r
     def clear_of_zones(run):  # well away from any no-U-turn zone (that U-turn would be D1)
         c = xyz(run[25])[:2]
         return all(np.min(np.hypot(*(np.array(z["polygon"]) - c).T)) > 30.0 for z in zones if z["type"] == "no_u_turn")
+    # a U-turn needs ~26 m of straight lane, not the 60 m runs: solid centre lines sit on the short
+    # blocks between junctions (Town05: 572 solid-centre waypoints, none on a 60 m run in view)
+    short_runs = candidates(m, view, 30.0, in_view_m=30)
     for cond, centre, expected, note in (("D2", ("solid", "solidsolid"), True, "U-turn across the solid centre line"),
                                          ("D2", ("broken", "brokenbroken"), False, "U-turn across a broken centre line (legal)")):
-        r = next((run for run in runs if run[0].road_id not in used_roads and opposite(run) is not None
+        r = next((run for run in short_runs if run[0].road_id not in used_roads and opposite(run) is not None
                   and _mark(run[25].left_lane_marking) in centre and not p(run[25]).get("median_left")
                   and clear_of_zones(run)), None)
         if r is not None:

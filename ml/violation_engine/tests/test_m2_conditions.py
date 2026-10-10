@@ -10,6 +10,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from events import COUNTED_STATUS  # noqa: E402
@@ -122,6 +124,13 @@ class WrongLaneForDirection(unittest.TestCase):
         ev = run(sc(self.LANES), track(straight(-80, -3.5, kmh(30), 14.0)))
         self.assertEqual(conds(ev, "lane_violation"), ["A1"])
 
+    def test_a1_with_a_drift_at_the_junction_entry(self):
+        # from the turn lane B, drifting 1.6 m left just before the junction, then straight on into SB
+        fn = piecewise((9.0, lambda t: (-80 + kmh(30) * t, -3.5)),
+                       (1.0, lambda t: (-5 + kmh(30) * t, -3.5 + 1.6 * t)),
+                       (5.0, lambda t: (3.3 + kmh(30) * t, -1.9 - 1.6 * min(t, 1.0))))
+        self.assertEqual(conds(run(sc(self.LANES), track(fn)), "lane_violation"), ["A1"])
+
     def test_a1_straight_on_from_the_through_lane(self):
         ev = run(sc(self.LANES), track(piecewise((10, lambda t: (-80 + kmh(30) * t, 0)),
                                                  (6, lambda t: (3.3 + kmh(30) * t, -3.5 * min(t / 2, 1))))))
@@ -222,6 +231,30 @@ class UTurnKinds(unittest.TestCase):
         self.assertEqual(conds(ev), ["D3"])  # turned round: the U-turn rule's case, not A1 too
 
 
+class CurvesAndRoutes(unittest.TestCase):
+    def test_a_hairpin_is_not_a_u_turn(self):
+        # one lane bending 180 deg round a 20 m radius (Town03 road 60), next to an opposing lane
+        r = 20.0
+        bend = [[r * math.sin(a), r - r * math.cos(a)] for a in np.linspace(0, math.pi, 30)]
+        lane = {"id": "H", "centreline": [[-60, 0]] + bend + [[-60, 2 * r]], "width_m": 3.5, "road_id": "1",
+                "left_line": "solid", "next": []}
+        v = kmh(20)
+        path = np.array(lane["centreline"], float)
+        seg = np.hypot(*np.diff(path, axis=0).T)
+        cum = np.r_[0, np.cumsum(seg)]
+        fn = (lambda t: (np.interp(v * t, cum, path[:, 0]), np.interp(v * t, cum, path[:, 1])), cum[-1] / v)
+        self.assertEqual(conds(run(sc([lane]), track(fn)), "illegal_u_turn"), [])
+
+    def test_a1_ignores_routes_round_the_block(self):
+        # B's junction lane leads to RB only, but RB loops back onto SB within 400 m: still the wrong lane
+        lanes = [dict(l) for l in WrongLaneForDirection.LANES]
+        for l in lanes:
+            if l["id"] == "RB":
+                l["next"] = ["SB"]
+        ev = run(sc(lanes), track(straight(-80, -3.5, kmh(30), 14.0)))
+        self.assertEqual(conds(ev, "lane_violation"), ["A1"])
+
+
 class QueueAcrossLanePieces(unittest.TestCase):
     def test_queue_on_the_next_piece_suppresses_a_zebra_stop(self):
         # the crossing sits at the end of piece P1; the car ahead waits on P2, just past it
@@ -231,6 +264,21 @@ class QueueAcrossLanePieces(unittest.TestCase):
         car = track(drive_stop_leave(101, 0, 15), tid=1)
         ahead = track(drive_stop_leave(108, 0, 18, x_start=-30), tid=2)
         self.assertEqual(conds(run(sc(lanes, zones), car, ahead), "zebra_crossing"), [])
+
+    def test_queue_on_an_overlapping_junction_lane(self):
+        # a crossing inside a junction: the car ahead is matched to another, overlapping connector
+        lanes = [{"id": "J1", "centreline": [[-300, 0], [300, 0]], "width_m": 3.5, "junction": True, "next": []},
+                 {"id": "J2", "centreline": [[100, -6], [120, 1.2], [140, 6]], "width_m": 3.5, "junction": True, "next": []}]
+        zones = [{"id": "z", "type": "crosswalk", "polygon": rect(98, 103, -1.75, 1.75)}]
+        car = track(drive_stop_leave(101, 0, 15), tid=1)
+        ahead = track(drive_stop_leave(108, 0.8, 18, x_start=-30), tid=2)
+        self.assertEqual(conds(run(sc(lanes, zones), car, ahead), "zebra_crossing"), [])
+
+    def test_a_stopped_car_in_the_next_lane_is_not_a_queue(self):
+        zones = [{"id": "z", "type": "crosswalk", "polygon": rect(98, 103, -1.75, 1.75)}]
+        car = track(drive_stop_leave(101, 0, 15), tid=1)
+        beside = track(drive_stop_leave(106, -3.5, 18, x_start=-30), tid=2)  # stopped, but one lane over
+        self.assertEqual(conds(run(sc(BASE_LANES, zones), car, beside), "zebra_crossing"), ["F1"])
 
 
 class SpeedLimitOfTheDrivingLane(unittest.TestCase):

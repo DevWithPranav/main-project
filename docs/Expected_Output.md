@@ -95,7 +95,7 @@ Six violation types are in scope. Every event carries type, vehicle (track) ID, 
 |---|---|---|---|
 | A1 | Driving in the wrong lane | Vehicle travels in a lane not permitted for its direction | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
 | A2 | Crossing a solid lane line | Trajectory crosses a solid / double-solid boundary | ✅ |
-| A3 | Illegal lane change | Lane change across a boundary whose lane-change permission forbids it | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
+| A3 | Illegal lane change | Lane change across a boundary whose lane-change permission forbids it | 🟡 built + unit-tested (M2, 2026-10-09). Not stageable in CARLA: in all 8 towns a forbidden change is always across a solid line, i.e. A2 (checked 2026-10-10); applies to real sites, where the site file sets the permission |
 | A4 | Driving on a lane divider | Vehicle body over a lane line beyond tolerance (0.3 m) for > 3 s | ✅ |
 | A5 | Entering a restricted lane | Vehicle enters a lane configured as bus-only / emergency / restricted | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
 | A6 | Driving on the shoulder | Vehicle travels (moving) along a shoulder lane | 🟡 built + unit-tested (M2, 2026-10-09); staged act pending |
