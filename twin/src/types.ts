@@ -95,3 +95,11 @@ export interface LaneOverride {
   speed_limit_kmh?: number;
   restricted?: "bus" | "emergency" | "restricted" | null;
 }
+
+/** export_town_objects.py: c = box centre, e = half extents (CARLA metres), r = [pitch, yaw, roll] deg. */
+export interface TownObjects {
+  scene: string;
+  labels: string[];
+  counts?: Record<string, number>;
+  objects: { l: number; c: [number, number, number]; e: [number, number, number]; r: [number, number, number] }[];
+}

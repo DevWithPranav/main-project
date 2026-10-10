@@ -4,7 +4,7 @@
  * "/mock-api", a read-only dev middleware (dev/mockApi.ts) that serves the lane maps and a recorded
  * flight's trajectories/events from the repo in the same shapes, so the twin runs without a backend.
  */
-import type { Scene, Session, Trajectories, TwinEvent } from "./types";
+import type { Scene, Session, TownObjects, Trajectories, TwinEvent } from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -60,6 +60,8 @@ export class Api {
   health = () => this.req<Record<string, string>>("GET", "/health");
   scenes = () => this.req<unknown>("GET", "/scenes");
   scene = (town: string) => this.req<Scene>("GET", `/scenes/${encodeURIComponent(town)}`);
+  /** Static town objects as oriented boxes (export_town_objects.py); 404 when not exported. */
+  objects = (town: string) => this.req<TownObjects>("GET", `/scenes/${encodeURIComponent(town)}/objects`);
   sessions = () => this.req<Session[]>("GET", "/sessions");
   session = (id: string) => this.req<Session>("GET", `/sessions/${encodeURIComponent(id)}`);
   trajectories = (id: string) => this.req<Trajectories>("GET", `/sessions/${encodeURIComponent(id)}/trajectories`);

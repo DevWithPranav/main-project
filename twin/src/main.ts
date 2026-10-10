@@ -28,6 +28,10 @@ import {
   ScreenSpaceEventType,
   Viewer,
   Material,
+  BoxGeometry,
+  EllipsoidGeometry,
+  Matrix3,
+  Matrix4,
 } from "cesium";
 import { Api, profileSummaries, unwrapProfile } from "./api";
 import { Frame, parseAnchor, DEFAULT_ANCHOR } from "./coords";
@@ -196,6 +200,50 @@ function applyLaneColors() {
   }
 }
 
+// ------------------------------------------------------------------ town objects (buildings, trees, ...)
+
+const OBJECT_COLOR: Record<string, string> = {
+  Buildings: "#c9ccd1", Vegetation: "#2f9e44", Poles: "#868e96", Walls: "#b8bcc2", Fences: "#9aa0a6",
+  GuardRail: "#dee2e6", Bridge: "#9775fa", RailTrack: "#845ef7", TrafficLight: "#fab005", TrafficSigns: "#fa5252",
+  Static: "#8d8f94", Dynamic: "#e8590c",
+};
+let objectPrim: Primitive | null = null;
+
+async function buildObjects(town: string) {
+  if (objectPrim) viewer.scene.primitives.remove(objectPrim);
+  objectPrim = null;
+  let doc;
+  try {
+    doc = await api.objects(town);
+  } catch {
+    return; // not exported for this town: roads only
+  }
+  const instances: GeometryInstance[] = [];
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  for (const o of doc.objects) {
+    const label = doc.labels[o.l];
+    // CARLA reports negative extents for mirrored meshes (seen: -12.1 m in Town03)
+    const [ex, ey, ez] = o.e.map((v) => Math.max(Math.abs(v), 0.05));
+    // a curved linear structure (the Town03 rail loop, long walls) is one mesh whose box spans
+    // everything it encloses: drawn as a box it becomes a slab over the town, so leave it out
+    if (label !== "Buildings" && ex > 30 && ey > 30) continue;
+    const [e, n, u] = [o.c[0], -o.c[1], o.c[2]]; // CARLA -> ENU (north = -y)
+    // CARLA yaw is clockwise seen from above (left-handed); ENU rotation is counter-clockwise
+    const rot = Matrix3.fromRotationZ((-o.r[1] * Math.PI) / 180);
+    const model = Matrix4.multiply(frame.toWorld, Matrix4.fromRotationTranslation(rot, new Cartesian3(e, n, u)), new Matrix4());
+    const geometry =
+      label === "Vegetation"
+        ? new EllipsoidGeometry({ radii: new Cartesian3(Math.max(ex, 0.3), Math.max(ey, 0.3), Math.max(ez, 0.3)), vertexFormat: PerInstanceColorAppearance.VERTEX_FORMAT, stackPartitions: 8, slicePartitions: 8 })
+        : BoxGeometry.fromDimensions({ dimensions: new Cartesian3(2 * ex, 2 * ey, 2 * ez), vertexFormat: PerInstanceColorAppearance.VERTEX_FORMAT });
+    let c = Color.fromCssColorString(OBJECT_COLOR[label] ?? "#868e96");
+    if (dark && label === "Buildings") c = Color.fromCssColorString("#7d828a");
+    instances.push(new GeometryInstance({ geometry, modelMatrix: model, id: { kind: "object", label, o }, attributes: { color: ColorGeometryInstanceAttribute.fromColor(c) } }));
+  }
+  const p: Primitive = viewer.scene.primitives.add(new Primitive({ geometryInstances: instances, appearance: new PerInstanceColorAppearance({ translucent: false }) }));
+  p.show = ($("objects") as HTMLInputElement).checked;
+  objectPrim = p;
+}
+
 // ------------------------------------------------------------------ vehicles, trails, pins
 
 let lastDrawn = 0;
@@ -265,6 +313,7 @@ function setPlaying(p: boolean) {
 async function loadTown(town: string) {
   scene = await api.scene(town);
   buildRoads(scene);
+  buildObjects(town); // in the background: roads show first
 }
 
 async function loadSession(id: string) {
@@ -328,6 +377,10 @@ function select(picked: unknown) {
     ($("restricted") as HTMLSelectElement).value = l.restricted ?? "";
   } else if (id && typeof id === "object" && id.kind === "vehicle" && id.v) {
     box.innerHTML = kv({ track: id.v.track_id, state: id.v.state, speed_kmh: id.v.speed_kmh?.toFixed(1), heading: id.v.heading_deg?.toFixed(0) });
+  } else if (id && typeof id === "object" && id.kind === "object") {
+    const ob = id as unknown as { label: string; o: { c: number[]; e: number[]; r: number[] } };
+    box.innerHTML = kv({ object: ob.label, centre: ob.o.c.map((v) => v.toFixed(1)).join(", "),
+      size_m: ob.o.e.map((v) => (2 * v).toFixed(1)).join(" × "), top_m: (ob.o.c[2] + ob.o.e[2]).toFixed(1), yaw: ob.o.r[1] });
   } else if (id && typeof id === "object" && id.kind === "event" && id.e) {
     const e = id.e;
     box.innerHTML = kv({ type: e.type, condition: e.condition, tracks: e.track_ids, time_s: eventTime(e).toFixed(1), lane: e.lane_id, status: e.status, value: JSON.stringify(e.value ?? {}) });
@@ -443,6 +496,9 @@ $("time").oninput = (e) => {
   render();
 };
 $("heat").onchange = applyLaneColors;
+$("objects").onchange = () => {
+  if (objectPrim) objectPrim.show = ($("objects") as HTMLInputElement).checked;
+};
 $("session").onchange = (e) => loadSession((e.target as HTMLSelectElement).value);
 $("town").onchange = (e) => loadTown((e.target as HTMLSelectElement).value);
 document.querySelectorAll<HTMLInputElement>("input[name=mode]").forEach((r) =>
