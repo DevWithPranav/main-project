@@ -28,6 +28,9 @@ HISTORY_S = 10.0
 HALF_WIDTH_M = {"car": 0.9, "van": 1.0, "truck": 1.25, "bus": 1.25}  # vehicle half-width for footprint tests
 HALF_LENGTH_M = {"car": 2.3, "van": 2.5, "truck": 4.0, "bus": 6.0}  # centre to front bumper (red light)
 UNMARKED_LINES = {"none", "curb", "grass", "other", ""}
+# people classes (VisDrone "pedestrian" / "people", CARLA walkers): rules.Engine keeps these rows away
+# from the vehicle rules and gives them only to monitors with sees_people (zebra_pedestrians.py, M3)
+PEOPLE_CLASSES = {"pedestrian", "people", "person", "walker"}
 
 
 @dataclass

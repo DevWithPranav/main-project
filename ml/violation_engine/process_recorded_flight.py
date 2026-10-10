@@ -12,6 +12,11 @@ Usage:
     python ml/violation_engine/process_recorded_flight.py 20260920_190022
     python ml/violation_engine/process_recorded_flight.py 20260920_190022 --tracker botsort
     python ml/violation_engine/process_recorded_flight.py 20260920_190022 --no-stitch
+    python ml/violation_engine/process_recorded_flight.py 20261010_153012 --weights ml/data/results/retrain_v1/train/weights/best.pt --people
+
+--people (Build Plan M3) also runs the 10-class full_train model as a second detector with its own
+tracker instance, keeping only pedestrian / people (pedestrians.py), and writes
+people_trajectories.csv (+ people_run_config.json) into the same folder; run_violations.py picks it up.
 
 After tracking, stitch_tracklets.py re-links tracks the tracker split into several
 IDs and writes trajectories_stitched.csv + annotated_stitched.mp4 alongside the raw
@@ -81,7 +86,7 @@ def vehicle_class_ids(model) -> list[int]:
     return sorted(i for i, n in model.names.items() if n.lower() in VEHICLE_NAMES)
 
 
-def write_run_config(out_dir: Path, **fields) -> Path:
+def write_run_config(out_dir: Path, config_name: str = "run_config.json", **fields) -> Path:
     """run_config.json next to a run's outputs, so every result can be traced back to
     exactly what produced it (shared rule in the Improvement Plan, Section 4)."""
     tracker_path = Path(fields["tracker_config"])
@@ -93,7 +98,7 @@ def write_run_config(out_dir: Path, **fields) -> Path:
         **fields,
         "tracker_yaml": yaml.safe_load(tracker_path.read_text()),
     }
-    path = out_dir / "run_config.json"
+    path = out_dir / config_name
     path.write_text(json.dumps(cfg, indent=1, default=str))
     return path
 
@@ -101,28 +106,32 @@ def write_run_config(out_dir: Path, **fields) -> Path:
 def run_tracking(source: Path, out_dir: Path, tracker: str, fps: float, frame_times: dict[int, float] | None = None,
                  imgsz: int | None = None, conf: float = DETECT_CONF, class_gates: bool = False,
                  size_filter: bool = False, max_frames: int | None = None,
-                 video: bool = True, weights: Path | None = None) -> tuple[Path, int, int, int]:
+                 video: bool = True, weights: Path | None = None, class_names: set[str] | None = None,
+                 out_name: str = "trajectories.csv", config_name: str = "run_config.json") -> tuple[Path, int, int, int]:
     """Detect + track every frame of `source` (frame directory or video file), writing
     trajectories.csv, run_config.json and the tracker's own annotated.mp4 into out_dir.
     class_gates / size_filter: optional A4 detection filters (detection_filters.py).
     max_frames: stop early (smoke tests). weights: detector weights (default: our BEST_PT); vehicle
-    classes are picked by name, so another model's class numbering works too.
+    classes are picked by name, so another model's class numbering works too. class_names: which
+    classes to track (default VEHICLE_NAMES; pedestrians.PEOPLE_NAMES for --people); out_name /
+    config_name: output file names (the people pass writes next to the vehicles').
     Returns (csv_path, n_rows, n_frames, n_unique_ids)."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = out_dir / "trajectories.csv"
-    video_path = out_dir / "annotated.mp4"
+    csv_path = out_dir / out_name
+    video_path = out_dir / out_name.replace("trajectories.csv", "annotated.mp4")
     frame_times = frame_times or {}
 
     weights = Path(weights or BEST_PT)
     model = YOLO(str(weights))
-    classes = vehicle_class_ids(model)
+    names = class_names or VEHICLE_NAMES
+    classes = sorted(i for i, n in model.names.items() if n.lower() in names)
     # callbacks must be added before track() registers the tracker; filters run before dedupe (see detection_filters.py)
     det_filter = DetectionFilter(class_gates, size_filter)
     if class_gates or size_filter:
         model.add_callback("on_predict_postprocess_end", det_filter)
     model.add_callback("on_predict_postprocess_end", dedupe_boxes)
     run_config = write_run_config(
-        out_dir, detector_weights=str(weights), source=str(source), tracker=tracker, tracker_config=TRACKER_CONFIGS[tracker], fps=fps,
+        out_dir, config_name, detector_weights=str(weights), source=str(source), tracker=tracker, tracker_config=TRACKER_CONFIGS[tracker], fps=fps,
         imgsz=imgsz or "model default", conf=conf, dedupe_iou=DEDUPE_IOU, classes=classes,
         max_frames=max_frames, **det_filter.config(),
     )
@@ -200,6 +209,9 @@ def main() -> None:
     ap.add_argument("--class-gates", action="store_true", help="A4: require bus/truck conf >= 0.4")
     ap.add_argument("--size-filter", action="store_true", help="A4: drop boxes far outside the median vehicle size")
     ap.add_argument("--weights", type=Path, default=None, help="Detector weights (default: our full_train best.pt)")
+    ap.add_argument("--people", action="store_true",
+                    help="M3: also detect + track pedestrians with the 10-class model (pedestrians.py) -> people_trajectories.csv")
+    ap.add_argument("--people-imgsz", type=int, default=None, help="People detector input size (default: pedestrians.PEOPLE_IMGSZ)")
     args = ap.parse_args()
 
     weights = args.weights or BEST_PT
@@ -229,6 +241,14 @@ def main() -> None:
     print(f"[trajectories] wrote {n_rows} rows across {n_frames} frames -> {csv_path}")
     print(f"[tracking] unique vehicle track IDs across flight: {n_ids}")
     print(f"[video] annotated video ({n_frames} frames, every frame processed) -> {out_dir / 'annotated.mp4'}")
+
+    if args.people:
+        from pedestrians import PEOPLE_IMGSZ, PEOPLE_NAMES, PEOPLE_TRACK_CONF, PEOPLE_WEIGHTS
+        p_csv, p_rows, _, p_ids = run_tracking(frames_dir, out_dir, args.tracker, output_fps, frame_times,
+                                               imgsz=args.people_imgsz or PEOPLE_IMGSZ, conf=PEOPLE_TRACK_CONF,
+                                               video=False, weights=PEOPLE_WEIGHTS, class_names=PEOPLE_NAMES,
+                                               out_name="people_trajectories.csv", config_name="people_run_config.json")
+        print(f"[people] {p_rows} rows, {p_ids} track IDs -> {p_csv}")
 
     if not args.no_stitch and n_rows:
         print_stats(stitch(frames_dir, csv_path, output_fps, postprocess=not args.no_postprocess))

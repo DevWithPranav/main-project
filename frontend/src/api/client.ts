@@ -15,6 +15,7 @@ import type {
   Scene,
   SceneListEntry,
   Session,
+  SessionVideo,
   Stats,
   TrafficEvent,
   Trajectories,
@@ -111,6 +112,8 @@ export function createApiClient(opts: ClientOptions) {
     importSession: (body: { flight: string; violations_dir?: string; scene?: string; profile?: string }) =>
       post<Session>('/api/sessions/import', body),
     trajectories: (id: string) => json<Trajectories>(`/api/sessions/${encodeURIComponent(id)}/trajectories`),
+    sessionVideo: (id: string) => json<SessionVideo>(`/api/sessions/${encodeURIComponent(id)}/video`),
+    makeSessionVideo: (id: string) => post<SessionVideo>(`/api/sessions/${encodeURIComponent(id)}/video`, {}),
 
     events: (f: EventFilters, page: PageOpts = {}) =>
       json<Page<TrafficEvent>>(`/api/events${qs(filtersToParams(f, page))}`),

@@ -103,6 +103,18 @@ export interface Session {
   scene?: string | null;
 }
 
+/** GET /api/sessions/{id}/video: the overlay video as WebM; frame_t[i] = session time of frame i. */
+export interface SessionVideo {
+  status: 'none' | 'encoding' | 'ready' | 'failed';
+  progress?: number;
+  error?: string;
+  url?: string;
+  fps?: number;
+  frames?: number;
+  frame_t?: number[];
+  source?: string;
+}
+
 export interface VehicleState {
   session_id: string;
   track_id: number;

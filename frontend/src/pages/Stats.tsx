@@ -35,7 +35,7 @@ export default function StatsPage() {
   const total = byType.reduce((s, b) => s + b.count, 0);
   const sameTown = !!filters.session_id || (sessions.data?.length ?? 0) <= 1;
   const heat = useMemo(
-    () => binPoints(points.data?.items ?? [], 10).map((c) => ({ x: c.x, y: c.y, size: 10, n: c.n })),
+    () => binPoints(points.data?.items ?? [], 25).map((c) => ({ x: c.x, y: c.y, size: 25, n: c.n })),
     [points.data],
   );
 
@@ -55,28 +55,31 @@ export default function StatsPage() {
           <Grid>
             <Grid.Col span={{ base: 12, md: 6 }}>
               <Card withBorder><Text fw={600} mb="sm">By type</Text>
-                <BarChart h={260} data={byType} dataKey="name" series={[{ name: 'count', color: 'indigo.6' }]} />
+                <BarChart h={260} data={byType} dataKey="name" series={[{ name: 'count', color: 'indigo.6' }]} yAxisProps={{ allowDecimals: false }} />
               </Card>
             </Grid.Col>
             <Grid.Col span={{ base: 12, md: 6 }}>
               <Card withBorder><Text fw={600} mb="sm">By condition</Text>
-                <BarChart h={260} data={byCond} dataKey="name" series={[{ name: 'count', color: 'grape.6' }]} />
+                <BarChart h={260} data={byCond} dataKey="name" series={[{ name: 'count', color: 'grape.6' }]} yAxisProps={{ allowDecimals: false }} />
               </Card>
             </Grid.Col>
             <Grid.Col span={{ base: 12, md: 6 }}>
               <Card withBorder><Text fw={600} mb="sm">By hour</Text>
-                {hourly.length ? <LineChart h={240} data={hourly} dataKey="hour" series={[{ name: 'count', color: 'teal.6' }]} curveType="monotone" />
+                {hourly.length ? <LineChart h={240} data={hourly} dataKey="hour" series={[{ name: 'count', color: 'teal.6' }]} yAxisProps={{ allowDecimals: false }} curveType="monotone" />
                   : <Text c="dimmed" size="sm">No time data.</Text>}
               </Card>
             </Grid.Col>
             <Grid.Col span={{ base: 12, md: 6 }}>
               <Card withBorder><Text fw={600} mb="sm">By status</Text>
-                <BarChart h={240} data={byStatus} dataKey="name" series={[{ name: 'count', color: 'orange.6' }]} />
+                <BarChart h={240} data={byStatus} dataKey="name" series={[{ name: 'count', color: 'orange.6' }]} yAxisProps={{ allowDecimals: false }} />
               </Card>
             </Grid.Col>
             <Grid.Col span={{ base: 12, md: 7 }}>
               <Card withBorder p="xs"><Text fw={600} mb="xs">Event density {town ? `(${town})` : ''}</Text>
-                {sameTown ? <LaneMap lanes={scene.data?.lanes} heat={heat} height={380} />
+                {sameTown ? <LaneMap lanes={scene.data?.lanes} heat={heat} height={380} rings={hotspots.slice(0, 10).map((h, i) => ({
+                  id: i, x: h.x, y: h.y, r: h.radius_m ?? 12.5, label: `#${i + 1}`,
+                  title: `#${i + 1}: ${h.count} events${h.by_type ? ` (${Object.entries(h.by_type).map(([k, n]) => `${typeLabel(k)} ${n}`).join(', ')})` : ''}`,
+                }))} />
                   : <Text c="dimmed" size="sm">Pick one session to see its map (sessions may be different towns).</Text>}
               </Card>
             </Grid.Col>
@@ -84,10 +87,10 @@ export default function StatsPage() {
               <Card withBorder><Text fw={600} mb="sm">Hotspot ranking</Text>
                 {hotspots.length === 0 ? <Text c="dimmed" size="sm">No hotspots (needs enough events in one place).</Text> : (
                   <Table>
-                    <Table.Thead><Table.Tr><Table.Th>#</Table.Th><Table.Th>Where</Table.Th><Table.Th>Type</Table.Th><Table.Th>Events</Table.Th></Table.Tr></Table.Thead>
+                    <Table.Thead><Table.Tr><Table.Th>#</Table.Th><Table.Th>Where</Table.Th><Table.Th>Types</Table.Th><Table.Th>Events</Table.Th></Table.Tr></Table.Thead>
                     <Table.Tbody>
                       {hotspots.slice(0, 10).map((h, i) => (
-                        <Table.Tr key={i}><Table.Td>{i + 1}</Table.Td><Table.Td>{h.label}</Table.Td><Table.Td>{h.type ? typeLabel(h.type) : 'all'}</Table.Td><Table.Td>{h.count}</Table.Td></Table.Tr>
+                        <Table.Tr key={i}><Table.Td>{i + 1}</Table.Td><Table.Td><Text size="sm">{h.label}</Text><Text size="xs" c="dimmed">x {h.x.toFixed(0)}, y {h.y.toFixed(0)} m</Text></Table.Td><Table.Td>{h.by_type ? Object.entries(h.by_type).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${typeLabel(k)} ${n}`).join(', ') : h.type ? typeLabel(h.type) : 'all'}</Table.Td><Table.Td>{h.count}</Table.Td></Table.Tr>
                       ))}
                     </Table.Tbody>
                   </Table>

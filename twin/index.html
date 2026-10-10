@@ -7,6 +7,7 @@
   </head>
   <body>
     <div id="viewer"></div>
+    <button id="panelToggle" title="Show / hide the panel">☰</button>
     <aside id="panel">
       <header>
         <strong>3D Digital Twin</strong>
@@ -34,12 +35,18 @@
         <div class="muted" id="clock"></div>
         <div class="row">
           <label><input type="checkbox" id="heat" /> Problem sections (events per lane)</label>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="hotspots" checked /> Hotspots</label>
           <label><input type="checkbox" id="objects" checked /> Buildings &amp; objects</label>
         </div>
+        <label>Pins <select id="pinKind"><option value="all">violations + road surface</option><option value="violation">violations only</option><option value="anomaly">road surface only</option><option value="none">none</option></select></label>
         <div class="legend">
           <span style="--c:#40c057">ok</span><span style="--c:#fab005">checking</span><span style="--c:#fa5252">flagged</span>
           <span style="--c:#7048e8">bridge</span><span style="--c:#4c6ef5">highway</span>
         </div>
+        <details open><summary><strong>Hotspots</strong> <span class="muted">(25 m cells, click to fly)</span></summary><ol id="hotList" class="clicky"></ol></details>
+        <details><summary><strong>Problem road sections</strong> <span class="muted">(lanes by events)</span></summary><ol id="sections" class="clicky"></ol></details>
         <h4>Selected</h4>
         <div id="selected" class="muted">Click a lane, vehicle or pin.</div>
         <div id="editor" hidden>

@@ -16,7 +16,7 @@ from . import config, storage
 from .auth import seed_users
 from .db import SessionLocal, init_db
 from .live import hub
-from .routers import configs, core, events, live, planning, sessions
+from .routers import anomalies, configs, core, events, live, planning, sessions
 
 log = logging.getLogger("backend")
 
@@ -40,5 +40,5 @@ app = FastAPI(title="Aerial traffic surveillance API", version="0.1.0", lifespan
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"],
                    expose_headers=["Content-Disposition", "X-Event-Count", "X-Event-Total", "X-Export-Seconds"])
-for r in (core, sessions, events, configs, planning, live):
+for r in (core, sessions, events, anomalies, configs, planning, live):
     app.include_router(r.router, prefix="/api")

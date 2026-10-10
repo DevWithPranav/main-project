@@ -13,6 +13,24 @@ export interface MapPoint {
   r?: number;
   label?: string;
   heading_deg?: number;
+  /** pins: circle (violation) or diamond (road-surface anomaly) */
+  shape?: 'circle' | 'diamond';
+}
+
+export interface Trail {
+  id: string | number;
+  points: [number, number][];
+  color: string;
+}
+
+/** Hotspot ring: centre, radius in metres, rank label. */
+export interface Ring {
+  id: string | number;
+  x: number;
+  y: number;
+  r: number;
+  label: string;
+  title?: string;
 }
 
 export interface HeatCell {
@@ -28,6 +46,8 @@ interface Props {
   vehicles?: MapPoint[];
   pins?: MapPoint[];
   heat?: HeatCell[];
+  trails?: Trail[];
+  rings?: Ring[];
   laneColor?: (l: Lane) => string | null;
   selectedLane?: string | null;
   onLaneClick?: (l: Lane) => void;
@@ -51,7 +71,7 @@ function bounds(lanes: Lane[] | undefined, pts: MapPoint[]): Box {
 }
 
 export default function LaneMap({
-  lanes, zones, vehicles = [], pins = [], heat, laneColor, selectedLane, onLaneClick, onPinClick, height = 520, children,
+  lanes, zones, vehicles = [], pins = [], heat, trails, rings, laneColor, selectedLane, onLaneClick, onPinClick, height = 520, children,
 }: Props) {
   const dark = useComputedColorScheme('light') === 'dark';
   const full = useMemo(() => bounds(lanes, [...vehicles, ...pins]), [lanes]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -84,6 +104,8 @@ export default function LaneMap({
   }, []);
 
   const unit = Math.max(view[2], view[3]) / 600; // ~1 screen px in map metres
+  // a 4.6 m car is ~5 px over a whole town: draw cars at least ~11 px long, true size when zoomed in
+  const carScale = Math.max(1, (unit * 11) / 4.6);
   const base = dark ? '#5c5f66' : '#adb5bd';
   const lineFor = (l: Lane) => {
     const c = laneColor?.(l);
@@ -133,11 +155,22 @@ export default function LaneMap({
           <title>{`${l.id}${l.speed_limit_kmh ? ` · ${l.speed_limit_kmh} km/h` : ''}${l.road_class ? ` · ${l.road_class}` : ''}`}</title>
         </polyline>
       ))}
+      {trails?.map((tr) => tr.points.length > 1 && (
+        <polyline key={`t${tr.id}`} points={tr.points.map((p) => p.join(',')).join(' ')} fill="none" stroke={tr.color}
+          strokeWidth={Math.max(0.6, unit * 2)} strokeOpacity={0.55} strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />
+      ))}
+      {rings?.map((g) => (
+        <g key={`r${g.id}`} pointerEvents="none">
+          <circle cx={g.x} cy={g.y} r={Math.max(g.r, 8 * unit)} fill="#fa5252" fillOpacity={0.12} stroke="#e03131" strokeWidth={unit * 1.5} strokeDasharray={`${unit * 4} ${unit * 3}`} />
+          <text x={g.x + Math.max(g.r, 8 * unit) * 0.75} y={g.y - Math.max(g.r, 8 * unit) * 0.75} fontSize={unit * 13} fontWeight={700} fill="#e03131">{g.label}</text>
+          {g.title && <title>{g.title}</title>}
+        </g>
+      ))}
       {vehicles.map((v) => (
-        <g key={`v${v.id}`} transform={`translate(${v.x},${v.y}) rotate(${v.heading_deg ?? 0})`}>
-          <rect x={-2.3} y={-1} width={4.6} height={2} rx={0.4} fill={v.color} stroke={dark ? '#000' : '#fff'} strokeWidth={unit * 0.6} />
+        <g key={`v${v.id}`} transform={`translate(${v.x},${v.y}) rotate(${v.heading_deg ?? 0}) scale(${carScale})`}>
+          <rect x={-2.3} y={-1} width={4.6} height={2} rx={0.4} fill={v.color} stroke={dark ? '#000' : '#fff'} strokeWidth={(unit * 0.6) / carScale} />
           {v.label && (
-            <text x={3} y={-1.5} fontSize={unit * 10} fill={dark ? '#ced4da' : '#495057'} transform={`rotate(${-(v.heading_deg ?? 0)})`}>
+            <text x={3} y={-1.5} fontSize={(unit * 10) / carScale} fill={dark ? '#ced4da' : '#495057'} transform={`rotate(${-(v.heading_deg ?? 0)})`}>
               {v.label}
             </text>
           )}
@@ -145,7 +178,12 @@ export default function LaneMap({
       ))}
       {pins.map((p) => (
         <g key={`p${p.id}`} style={{ cursor: onPinClick ? 'pointer' : undefined }} onClick={() => onPinClick?.(p.id)}>
-          <circle cx={p.x} cy={p.y} r={(p.r ?? 6) * unit} fill={p.color} stroke="#fff" strokeWidth={unit * 1.5} />
+          {p.shape === 'diamond' ? (
+            <rect x={p.x - (p.r ?? 6) * unit} y={p.y - (p.r ?? 6) * unit} width={2 * (p.r ?? 6) * unit} height={2 * (p.r ?? 6) * unit}
+              transform={`rotate(45 ${p.x} ${p.y})`} fill={p.color} stroke="#fff" strokeWidth={unit * 1.5} />
+          ) : (
+            <circle cx={p.x} cy={p.y} r={(p.r ?? 6) * unit} fill={p.color} stroke="#fff" strokeWidth={unit * 1.5} />
+          )}
           {p.label && <title>{p.label}</title>}
         </g>
       ))}

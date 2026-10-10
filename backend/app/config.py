@@ -11,6 +11,9 @@ ENGINE_DIR = REPO / "ml" / "violation_engine"
 SCHEMA_DIR = REPO / "schemas"
 PROFILE_DIR = ENGINE_DIR / "configs" / "profiles"
 SCENE_DIR = ENGINE_DIR / "configs" / "scenes"
+# every saved profile version is also written here as <name>.json, the file the engine and the live
+# pipeline read (run_violations.py / services/live/pipeline.py --profile <file>); git-ignored
+PROFILE_OUT_DIR = Path(os.getenv("PROFILE_OUT_DIR", REPO / "backend" / "data" / "profiles"))
 RESULTS_DIR = Path(os.getenv("RESULTS_DIR", REPO / "ml" / "data" / "results" / "recorded_flight_validation"))
 RECORDINGS_DIR = Path(os.getenv("RECORDINGS_DIR", REPO / "simulation" / "data_export" / "recorded_flights"))
 TRACKER_RUN = os.getenv("TRACKER_RUN", "tracktrack_ours")  # results subfolder of a processed flight

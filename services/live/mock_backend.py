@@ -1,5 +1,5 @@
 """Stand-in for the backend's two live routes (backend/API.md), for testing the pipeline before the
-real backend runs. Standard library only. Logs every POST /api/events and a count of
+real backend runs. Standard library only. Logs every POST /api/events (and PUT /api/live/events/{id}) and a count of
 POST /api/live/state to a JSON-lines file with the receive time, checks the service token.
 
 Usage:
@@ -43,7 +43,7 @@ def make_handler(log_path: Path, token: str):
                 return self._reply(401, {"detail": "bad service token"})
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"null")
             with lock:
-                if self.path == "/api/events":
+                if self.path == "/api/events" or (self.command == "PUT" and self.path.startswith("/api/live/events/")):
                     counts["events"] += 1
                     with open(log_path, "a") as f:
                         f.write(json.dumps({"recv_wall": now, "route": "events", "event": body}) + "\n")
@@ -53,6 +53,8 @@ def make_handler(log_path: Path, token: str):
                     counts["vehicles"] += len(body or [])
                     return self._reply(200, {"n": len(body or [])})
             self._reply(404, {"detail": "not found"})
+
+        do_PUT = do_POST
 
     return H
 

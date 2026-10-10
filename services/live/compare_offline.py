@@ -187,7 +187,8 @@ def simulate(args) -> Path:
     traj = args.trajectories or OFFLINE / args.flight / "tracktrack_ours" / "trajectories.csv"
     cam = FlightCamera(flight)
     with open(flight / "frame_times.csv", newline="") as f:
-        sim = {int(r["frame"]): float(r["sim_time"]) for r in csv.DictReader(f)}
+        # flights before 2026-10-03 have no sim_time column: wall time, as replay_source.py sends them
+        sim = {int(r["frame"]): float(r.get("sim_time") or r["time_s"]) for r in csv.DictReader(f)}
     meta = json.loads((flight / "metadata.json").read_text())
     ns = Namespace(profile=args.profile, params=None, scene=args.scene, zones=args.zones, flat_ground=False)
     engine, surface, _ = build_engine(ns, meta.get("map", ""), args.out.name)

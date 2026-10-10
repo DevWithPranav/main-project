@@ -1,5 +1,5 @@
 {
- "note": "The 34 violation conditions of docs/Expected_Output.md Section 4.2. engine_type is the rules.py monitor that raises them; match says how an event of that type is recognised as this condition (schemas.condition_of): a tag, a value field, or the type's default. When an event matches several, the highest priority wins (default 0). status: built / partial / missing, updated 2026-10-09 (Build Plan M2). alias_of: counted under another condition.",
+ "note": "The 34 violation conditions of docs/Expected_Output.md Section 4.2. engine_type is the rules.py monitor that raises them; match says how an event of that type is recognised as this condition (schemas.condition_of): a tag, a value field, or the type's default. When an event matches several, the highest priority wins (default 0). status: built / partial / missing, updated 2026-10-09 (Build Plan M2); F2 / F3 / F5 partial 2026-10-10 (M3: rules + unit tests + staged acts planned; not yet scored on a staged flight). alias_of: counted under another condition.",
  "types": {
   "lane": ["lane_violation"],
   "illegal_stopping": ["highway_stop", "no_parking"],
@@ -39,9 +39,9 @@
   {"id": "E4", "group": "speeding", "name": "Speeding by vehicle category", "engine_type": "speeding", "match": {"value": {"limit_source": "class"}}, "status": "built"},
   {"id": "E5", "group": "speeding", "name": "Repeated speeding", "engine_type": null, "status": "built", "alias_of": "E1"},
   {"id": "F1", "group": "zebra", "name": "Stopping on a zebra crossing", "engine_type": "zebra_crossing", "match": {"default": true}, "status": "built"},
-  {"id": "F2", "group": "zebra", "name": "Blocking a pedestrian crossing", "engine_type": null, "status": "missing"},
-  {"id": "F3", "group": "zebra", "name": "Failure to yield", "engine_type": null, "status": "missing"},
+  {"id": "F2", "group": "zebra", "name": "Blocking a pedestrian crossing", "engine_type": "zebra_crossing", "match": {"tag": "blocking"}, "status": "partial", "priority": 1},
+  {"id": "F3", "group": "zebra", "name": "Failure to yield", "engine_type": "zebra_crossing", "match": {"tag": "failure_to_yield"}, "status": "partial", "priority": 1},
   {"id": "F4", "group": "zebra", "name": "Parking on a zebra crossing", "engine_type": null, "status": "built", "alias_of": "F1"},
-  {"id": "F5", "group": "zebra", "name": "Obstructing pedestrian movement", "engine_type": null, "status": "missing"}
+  {"id": "F5", "group": "zebra", "name": "Obstructing pedestrian movement", "engine_type": "zebra_crossing", "match": {"tag": "obstructing"}, "status": "partial", "priority": 2}
  ]
 }

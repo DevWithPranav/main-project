@@ -112,3 +112,16 @@ class PlannerHistory(Base):
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     recommendation: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     validation: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # M8 CARLA validation result
+
+
+class AnomalyStatus(Base):
+    """Maintenance status changes of an anomaly event (PRD: flagged -> reviewed -> work_order_issued
+    -> repaired, set by MAINTENANCE / ADMIN). The event row's `status` holds the current one."""
+    __tablename__ = "anomaly_status"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[str] = mapped_column(ForeignKey("events.event_id", ondelete="CASCADE"), index=True)
+    from_status: Mapped[str] = mapped_column(String(32))
+    to_status: Mapped[str] = mapped_column(String(32))
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    by: Mapped[str] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

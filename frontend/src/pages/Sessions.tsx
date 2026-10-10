@@ -3,7 +3,7 @@ import { notifications } from '@mantine/notifications';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../api';
+import { api, TWIN_URL } from '../api';
 import { useAuth } from '../auth';
 import { useSessions } from '../hooks';
 import { fmtDateTime } from '../lib/format';
@@ -63,8 +63,9 @@ export default function SessionsPage() {
                 <Table.Td>{s.profile ?? '-'}</Table.Td>
                 <Table.Td>
                   <Group gap={4}>
-                    <Button size="xs" variant="subtle" onClick={() => nav(`/live`)}>Replay</Button>
+                    <Button size="xs" variant="subtle" onClick={() => nav(`/live?session=${encodeURIComponent(s.session_id)}`)}>Replay</Button>
                     <Button size="xs" variant="subtle" onClick={() => nav(`/violations?session_id=${encodeURIComponent(s.session_id)}`)}>Events</Button>
+                    <Button size="xs" variant="subtle" component="a" href={`${TWIN_URL}/?session=${encodeURIComponent(s.session_id)}`} target="_blank">3D twin</Button>
                   </Group>
                 </Table.Td>
               </Table.Tr>

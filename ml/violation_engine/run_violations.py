@@ -20,6 +20,11 @@ Usage:
     python ml/violation_engine/run_violations.py <flight dir> --profile town05   # configs/profiles/town05.json
     python ml/violation_engine/run_violations.py --site <site.json> --trajectories <clip>/trajectories_final.csv --learn-flow
 
+Pedestrians (Build Plan M3, zebra conditions F2 / F3 / F5): pipeline runs add the people tracked by
+process_recorded_flight.py --people (people_trajectories.csv next to the trajectories, or --people);
+oracle runs add CARLA's walkers (walker_poses.csv, record_flight.py); --plan runs the planned walkers.
+Their track ids are offset by pedestrians.PEOPLE_ID_OFFSET.
+
 The optional red-light rule (signals.py) runs only with --red-light, on flights with traffic_lights.json
 (record_flight.py). It is off by default: left out of scope for now (2026-10-09).
 """
@@ -37,6 +42,7 @@ from events import COUNTED_STATUS, write_events
 from ground_coords import BOX_CENTRE_Z, FlightCamera, RoadSurface, add_world_columns, true_centres
 from kinematics import compute, smooth_track, write_rows
 from lane_map import SceneMap
+from pedestrians import ENGINE_CLASS as PEDESTRIAN, PEOPLE_ID_OFFSET, offset_rows
 from profiles import REPO, disabled_conditions, engine_params, load_profile
 from road_features import HIGHWAY_KMH, apply_overrides, derive
 from rules import Engine
@@ -70,6 +76,21 @@ def pipeline_rows(flight: Path, traj: Path, cam: FlightCamera, scene_data: dict 
     return compute(traj, cam.W, cam.H)
 
 
+def people_rows(flight: Path, people_csv: Path, cam: FlightCamera, out: Path) -> list[dict]:
+    """People tracked by the second detector (pedestrians.py) -> kinematics rows, ids offset. Projected
+    onto the flat road plane: people stand on pavements and kerbs, where the road surface model has no
+    height (a 0.15 m kerb moves a nadir projection by < 0.15 m)."""
+    with open(people_csv, newline="") as f:
+        header = next(csv.reader(f), [])
+    if "time_wall_s" not in header:
+        use_sim_time(flight, people_csv)
+    world = out / "people_world.csv"
+    n, missing = add_world_columns(people_csv, cam, out_path=world)
+    rows = offset_rows(compute(world, cam.W, cam.H))
+    print(f"[people] {n} detections ({missing} without a camera pose) -> {len({r['track_id'] for r in rows})} tracks")
+    return rows
+
+
 def use_sim_time(flight: Path, traj: Path) -> bool:
     """Flights from 2026-10-03 on log each frame's simulator time. Use it as time_s, like the oracle
     and the scenario log do (Architecture R2): wall-clock stamps of the frames jitter (frame-to-frame
@@ -94,9 +115,34 @@ def use_sim_time(flight: Path, traj: Path) -> bool:
     return True
 
 
+def true_walkers(flight: Path) -> dict[int, dict[int, np.ndarray]]:
+    """carla_frame -> {walker id: position (3,)} from walker_poses.csv (record_flight.py, M3); the
+    walker's location is its box centre (~0.9 m up), like a vehicle box centre. {} if not recorded."""
+    path = flight / "walker_poses.csv"
+    out = defaultdict(dict)
+    if path.exists():
+        with open(path, newline="") as f:
+            for r in csv.DictReader(f):
+                out[int(r["carla_frame"])][int(r["id"])] = np.array([float(r["x"]), float(r["y"]), float(r["z"])])
+    return out
+
+
 def oracle_rows(flight: Path, cam: FlightCamera) -> list[dict]:
-    """True vehicle centres while inside the camera view, as kinematics rows (track_id = actor id)."""
+    """True vehicle centres while inside the camera view, as kinematics rows (track_id = actor id);
+    walkers too when the flight logged them (class pedestrian, ids offset)."""
     actors = json.loads((flight / "actors.json").read_text())
+    rows = _oracle_rows(flight, cam, true_centres(flight), lambda aid: actor_class(actors.get(aid, {})), BOX_CENTRE_Z)
+    walkers = true_walkers(flight)
+    if walkers:
+        w = _oracle_rows(flight, cam, walkers, lambda aid: PEDESTRIAN, 0.9)
+        for r in w:
+            r["track_id"] += PEOPLE_ID_OFFSET
+        print(f"[oracle] {len({r['track_id'] for r in w})} walker tracks in view (walker_poses.csv)")
+        rows = sorted(rows + w, key=lambda r: (r["time_s"], r["track_id"]))
+    return rows
+
+
+def _oracle_rows(flight: Path, cam: FlightCamera, centres: dict, cls_of, centre_z: float) -> list[dict]:
     cf_frame = {cf: fr for fr, cf in cam.frame_cf.items()}
     cfs = np.array(sorted(cf_frame))
     with open(flight / "frame_times.csv", newline="") as f:
@@ -105,7 +151,7 @@ def oracle_rows(flight: Path, cam: FlightCamera) -> list[dict]:
     ft_cf = np.array([int(r["carla_frame"]) for r in ft])
     ft_t = np.array([float(r[tcol]) for r in ft])
     per_actor = defaultdict(list)
-    for c, cents in true_centres(flight).items():
+    for c, cents in centres.items():
         k = int(np.abs(cfs - c).argmin())
         frame = int(cf_frame[int(cfs[k])])
         if not cents:
@@ -131,7 +177,7 @@ def oracle_rows(flight: Path, cam: FlightCamera) -> list[dict]:
             if len(seg) < 3:
                 continue
             k = smooth_track(seg[:, 0], seg[:, 2], seg[:, 3], np.ones(len(seg), bool), meas_sigma=ORACLE_MEAS_SIGMA)
-            cls = actor_class(actors.get(aid, {}))
+            cls = cls_of(aid)
             for i in range(len(seg)):
                 h = k["heading_deg"][i]
                 rows.append({"frame": int(seg[i, 1]), "time_s": round(float(seg[i, 0]), 4),
@@ -143,7 +189,7 @@ def oracle_rows(flight: Path, cam: FlightCamera) -> list[dict]:
                              "heading_deg": "" if math.isnan(h) else round(float(h), 1),
                              # the road under it (box centre minus BOX_CENTRE_Z): picks the right level
                              # where roads cross over each other
-                             "road_z": round(float(seg[i, 4]) - BOX_CENTRE_Z, 2)})
+                             "road_z": round(float(seg[i, 4]) - centre_z, 2)})
     rows.sort(key=lambda r: (r["time_s"], r["track_id"]))
     return rows
 
@@ -165,18 +211,23 @@ def plan_rows(plan: dict, gap_s: float = PLAN_GAP_S) -> tuple[list[dict], dict[i
     (10 Hz samples) played one after the other. Returns rows and track_id -> act."""
     rows, owner = [], {}
     for i, (act, t0) in enumerate(zip(plan["acts"], plan_offsets(plan, gap_s))):
-        for j, key in enumerate(("samples", "lead_samples")):
-            if key not in act:
+        # walkers (M3): one track each, class pedestrian, ids offset as the pipeline's people
+        paths = [("samples", act.get("samples")), ("lead_samples", act.get("lead_samples"))] +             [("walker", w) for w in act.get("walker_samples", [])]
+        for j, (key, samples) in enumerate(paths):
+            if samples is None:
                 continue
-            a = np.array(act[key])
-            tid = (i + 1) * 10 + j
-            owner[tid] = {**{k: v for k, v in act.items() if not k.endswith("samples")}, "act": i, "role": "lead" if j else "main"}
+            a = np.array(samples)
+            walker = key == "walker"
+            tid = (i + 1) * 10 + j + (PEOPLE_ID_OFFSET if walker else 0)
+            owner[tid] = {**{k: v for k, v in act.items() if not k.endswith("samples")}, "act": i,
+                          "role": "walker" if walker else ("lead" if j else "main")}
             t = a[:, 0] + t0
             k = smooth_track(t, a[:, 1], a[:, 2], np.ones(len(a), bool), meas_sigma=ORACLE_MEAS_SIGMA)
             for n in range(len(a)):
                 h = k["heading_deg"][n]
                 rows.append({"frame": int(round(t[n] * 10)), "time_s": round(float(t[n]), 3), "track_id": tid,
-                             "class": act.get("cls", "car") if j == 0 else "car", "conf": 1.0, "visible": 1,
+                             "class": PEDESTRIAN if walker else (act.get("cls", "car") if j == 0 else "car"),
+                             "conf": 1.0, "visible": 1,
                              "x": round(float(k["x"][n]), 3),
                              "y": round(float(k["y"][n]), 3), "vx": round(float(k["vx"][n]), 3),
                              "vy": round(float(k["vy"][n]), 3), "speed_kmh": round(float(k["speed_kmh"][n]), 2),
@@ -347,6 +398,9 @@ def main() -> None:
                     help="Replace the lane map's lanes by directions learned from the traffic (flow_map.py)")
     ap.add_argument("--flat-ground", action="store_true",
                     help="Project boxes onto a flat plane even when the lane map has road heights (the pre-M2 behaviour)")
+    ap.add_argument("--people", type=Path, default=None,
+                    help="People tracks CSV (default: people_trajectories.csv next to the trajectories, if there)")
+    ap.add_argument("--no-people", action="store_true", help="Leave pedestrians out (no F2 / F3 / F5)")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
     params, disabled = engine_config(args)
@@ -388,6 +442,10 @@ def main() -> None:
         out.mkdir(parents=True, exist_ok=True)
         rows = pipeline_rows(args.flight, traj, cam, None if args.flat_ground else scene_data, out)
         source = str(traj)
+        people = args.people or traj.parent / "people_trajectories.csv"
+        if not args.no_people and people.exists():
+            rows = sorted(rows + people_rows(args.flight, people, cam, out), key=lambda r: (r["time_s"], r["track_id"]))
+            source += f" + {people}"
     write_rows(rows, out / "kinematics.csv")
 
     if args.learn_flow:

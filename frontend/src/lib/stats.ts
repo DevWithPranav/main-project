@@ -12,6 +12,8 @@ export interface Hotspot {
   count: number;
   label: string;
   type?: string;
+  by_type?: Record<string, number>;
+  lane_ids?: string[];
   radius_m?: number;
 }
 
@@ -91,14 +93,23 @@ export function toHotspots(x: unknown): Hotspot[] {
     const cy = y0 ?? Number(pick(o, ['y', 'cy', 'center_y']));
     if (!Number.isFinite(cx) || !Number.isFinite(cy)) return;
     const count = Number(pick(o, COUNT_FIELDS) ?? 0);
-    const label = String(pick(o, ['label', 'name', 'lane_id', 'zone_id', 'id']) ?? `Hotspot ${i + 1}`);
+    // backend/API.md: {x, y, cell_m, count, by_type: {type: n}, lane_ids: [...]}
+    const byType = o.by_type && typeof o.by_type === 'object' ? (o.by_type as Record<string, number>) : undefined;
+    const laneIds = Array.isArray(o.lane_ids) ? (o.lane_ids as unknown[]).map(String) : undefined;
+    const top = byType ? Object.entries(byType).sort((a, b) => b[1] - a[1])[0]?.[0] : undefined;
+    const named = pick(o, ['label', 'name', 'lane_id', 'zone_id', 'id']);
+    const label = named !== undefined ? String(named)
+      : laneIds?.length ? `lanes ${laneIds.slice(0, 2).join(', ')}${laneIds.length > 2 ? ' …' : ''}`
+      : `(${cx.toFixed(0)}, ${cy.toFixed(0)})`;
     out.push({
       x: cx,
       y: cy,
       count: Number.isFinite(count) ? count : 0,
-      label,
-      type: typeof o.type === 'string' ? o.type : undefined,
-      radius_m: typeof o.radius_m === 'number' ? o.radius_m : undefined,
+      label: label || `Hotspot ${i + 1}`,
+      type: typeof o.type === 'string' ? o.type : top,
+      by_type: byType,
+      lane_ids: laneIds,
+      radius_m: typeof o.radius_m === 'number' ? o.radius_m : typeof o.cell_m === 'number' ? o.cell_m / 2 : undefined,
     });
   });
   return out.sort((a, b) => b.count - a.count);

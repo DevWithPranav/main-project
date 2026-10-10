@@ -120,8 +120,9 @@ def fixed_conf_eval(model, images: list[Path], names: dict, conf: float, iou: fl
     return out
 
 
-def ultralytics_eval(model, data: Path, split: str, imgsz: int, device, project: Path) -> dict:
-    m = model.val(data=str(data), split=split, imgsz=imgsz, device=device, batch=4, plots=False,
+def ultralytics_eval(model, data: Path, split: str, imgsz: int, device, project: Path, workers: int = 0) -> dict:
+    # workers=0: DataLoader worker processes die on Windows (measured 2026-10-10, RTX 4060 box)
+    m = model.val(data=str(data), split=split, imgsz=imgsz, device=device, batch=4, plots=False, workers=workers,
                   project=str(project), name="val", exist_ok=True, verbose=False)
     out = {}
     for k, idx in enumerate(m.ap_class_index):
@@ -144,6 +145,7 @@ def main() -> None:
     ap.add_argument("--iou", type=float, default=0.5, help="mask IoU for a true positive")
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--device", default="0")
+    ap.add_argument("--workers", type=int, default=0, help="val DataLoader workers (0 on Windows)")
     ap.add_argument("--out", default=None, help="JSON path (default: <run>/m9_eval_<split>.json)")
     a = ap.parse_args()
 
@@ -155,7 +157,7 @@ def main() -> None:
     names = model.names
     images = split_images(Path(a.data), a.split)
     t0 = time.time()
-    ul = ultralytics_eval(model, Path(a.data), a.split, a.imgsz, a.device, out_path.parent / "m9_eval_tmp")
+    ul = ultralytics_eval(model, Path(a.data), a.split, a.imgsz, a.device, out_path.parent / "m9_eval_tmp", a.workers)
     fc = fixed_conf_eval(model, images, names, a.conf, a.iou, a.imgsz, a.device)
     cats = {}
     for cat in CATEGORIES:
