@@ -14,8 +14,8 @@ dict form the vehicle path uses; project them with the same LiveCamera, feed the
 online.OnlineKinematics(min_mean_conf=PEOPLE_MIN_MEAN_CONF) and pass its rows through offset_rows()
 before IncrementalEngine.step.
 
-The thresholds come from eval_pedestrian_detection.py on CARLA walkers (docs/main_project_tracker.md,
-2026-10-10).
+The thresholds below are starting values, NOT yet measured: eval_pedestrian_detection.py on a
+flight with CARLA walkers (recorded with --labels) sets them (Build Plan M3, Measure).
 
 Usage (a quick look at one frame):
     python ml/violation_engine/pedestrians.py <image> [--imgsz 1280] [--conf 0.2]
@@ -27,8 +27,8 @@ from pathlib import Path
 PEOPLE_WEIGHTS = Path(__file__).resolve().parents[1] / "data" / "results" / "full_train" / "train" / "weights" / "best.pt"
 PEOPLE_NAMES = {"pedestrian", "people"}  # VisDrone: walking / standing ("pedestrian") and sitting or in groups ("people")
 ENGINE_CLASS = "pedestrian"  # both become one class for the rules
-# eval_pedestrian_detection.py on CARLA walkers (Town10HD flights, 2026-10-10): at 1280 px recall is
-# far higher than at the model's own 640 px on few-pixel people; conf 0.2 is the F1-best threshold there
+# starting values (not measured yet; eval_pedestrian_detection.py --imgsz 640 1280 decides): 1280 px
+# because people are a few pixels tall from ~67 m (vehicles: 1280 found ~16 % more on the roundabout clip)
 PEOPLE_IMGSZ = 1280
 PEOPLE_CONF = 0.2
 PEOPLE_TRACK_CONF = 0.1  # the tracker sees boxes down to this (its own second-stage association), rows keep their conf

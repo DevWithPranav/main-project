@@ -49,6 +49,7 @@ import cv2  # noqa: E402
 
 from backend_client import BackendClient  # noqa: E402
 from transport import DEFAULT_PORT, FrameReceiver  # noqa: E402
+from ground_coords import centre_dz  # noqa: E402
 
 LIVE_RESULTS = REPO / "ml" / "data" / "results" / "live"
 DEFAULT_WEIGHTS = REPO / "ml" / "data" / "results" / "retrain_v1" / "train" / "weights" / "best.pt"  # current detector (tracker, 2026-10-03)
@@ -187,7 +188,7 @@ def main() -> None:
     latency = defaultdict(list)
     recent_flag: dict[int, float] = {}
     n_seen = n_proc = 0
-    last_state = 0.0
+    next_state = 0.0  # schedule of vehicle-state posts (--state-hz on average)
     first_wall = None
     final_events: dict[str, dict] = {}
 
@@ -267,7 +268,8 @@ def main() -> None:
                 clss = res.boxes.cls.cpu().numpy().astype(int)
                 cam.set_pose(frame, h["pose"])
                 u, v = xywh[:, 0], xywh[:, 1]
-                g = cam.to_ground_on_roads(frame, u, v, surface) if surface is not None else cam.to_ground(frame, u, v)
+                dz = centre_dz(res.names[int(c)].lower() for c in clss)  # buses / trucks: taller box centre
+                g = cam.to_ground_on_roads(frame, u, v, surface, dz) if surface is not None else cam.to_ground(frame, u, v, dz=dz)
                 ok = edge_mask(xywh[:, 0], xywh[:, 1], xywh[:, 2], xywh[:, 3], cam.W, cam.H)
                 for i in range(len(ids)):
                     name = res.names[int(clss[i])].lower()
@@ -289,8 +291,11 @@ def main() -> None:
             n_proc += 1
 
             now = time.time()
-            if live and now - last_state >= 1.0 / args.state_hz:
-                last_state = now
+            # a fixed schedule, not "period since the last post": at 13 fps (77 ms frames) that waited
+            # for every 2nd frame and gave 6.9 Hz instead of 10 (replay 2026-10-10)
+            if live and now >= next_state:
+                period = 1.0 / args.state_hz
+                next_state = max(next_state + period, now - period)  # catch up at most one period
                 flagged = ie.open_track_ids() | {k for k, w in recent_flag.items() if now - w < RECENT_FLAG_S}
                 states = []
                 for s in live:

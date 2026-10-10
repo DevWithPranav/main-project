@@ -39,7 +39,10 @@ DEFAULTS = {
     "no_parking": {"min_s": 30.0, "max_kmh": 2.0, "close_gap_s": 2.0},
     "zebra_crossing": {"min_s": 10.0, "max_kmh": 2.0, "close_gap_s": 2.0},
     "highway_stop": {"min_s": 20.0, "max_kmh": 5.0, "close_gap_s": 2.0},
-    "place_memory": {"radius_m": 1.5, "keep_s": 10.0},
+    # keep_s: a stopped car's detection can drop out for tens of seconds under a tree crown (2026-10-10
+    # staging, Town03 spots 1 / 4: gaps of 10 s and 24 s, both 45 s no-parking acts missed at 10 s;
+    # at 30 s both caught, no negative triggered, events vs oracle 32 -> 28 false)
+    "place_memory": {"radius_m": 1.5, "keep_s": 30.0},
     "wrong_way": {"angle_deg": 150.0, "min_s": 5 / 30, "min_back_m": 5.0, "min_kmh": 5.0,
                   "confirm_gap_s": 0.3, "close_gap_s": 2.0},
     # anywhere: also U-turns outside no_u_turn zones (D2-D4), judged by what the path crossed;

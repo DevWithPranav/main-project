@@ -16,6 +16,9 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); f
 #panel ul { padding-left: 16px; margin: 4px 0; }
 #panel button { cursor: pointer; }
 .muted { color: var(--muted); }
+.tag { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: #495057; color: #fff; }
+.scn p { margin: 4px 0; font-size: 12px; }
+#scnList li { cursor: pointer; margin-bottom: 4px; }
 .err { color: #fa5252; white-space: pre-wrap; }
 .legend span { display: inline-flex; align-items: center; margin-right: 8px; }
 .legend span::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--c); margin-right: 4px; }

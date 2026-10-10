@@ -41,6 +41,7 @@ import { Api, profileSummaries, unwrapProfile } from "./api";
 import { Frame, parseAnchor, DEFAULT_ANCHOR } from "./coords";
 import { buildLaneMeshes, crosswalkZones, HeightIndex, laneCategory, mergeInto, emptyMesh, polygonFan, type Mesh } from "./laneGeometry";
 import { buildProfile, overrideTarget, validateNote, validateOverride, validateProfileName, validateZone } from "./planEdits";
+import { buildRequest, resultHtml, summaryText } from "./whatif";
 import { gridHotspots, isAnomaly, LiveTrails, pinStyle, problemSections } from "./layers";
 import { eventTime, indexEventsByTrack, parseTrajectories, sampleTrack, statesAt, timeRange, type EventIndex, type Track } from "./replay";
 import type { Lane, LaneOverride, Scene, TwinEvent, VehicleState, Zone } from "./types";
@@ -135,6 +136,7 @@ let selectedLane: Lane | null = null;
 const pendingOverrides: LaneOverride[] = [];
 const pendingZones: Zone[] = [];
 let drawing: [number, number][] | null = null;
+let whatifArea: [number, number][] | null = null;
 
 const HOT_R = 12.5; // hotspot column radius = half the 25 m grid cell
 const z = (x: number, y: number) => (heights ? heights.heightAt(x, y) : 0);
@@ -386,7 +388,12 @@ async function loadTown(town: string) {
 async function loadSession(id: string) {
   const s = await api.session(id);
   const town = s.town ?? s.scene ?? null;
-  if (town && town !== scene?.scene) {
+  if ((s as { source?: string }).source === "video") {
+    // a real clip: its site map in its own metres (no town, no CARLA buildings)
+    scene = await api.sessionScene(id);
+    buildRoads(scene);
+    if (objectPrim) objectPrim.show = false;
+  } else if (town && town !== scene?.scene) {
     ($("town") as HTMLSelectElement).value = town;
     await loadTown(town);
   } else if (!town && !scene) {
@@ -534,6 +541,52 @@ async function save() {
   }
 }
 
+// ------------------------------------------------------------------ what-if (PRD 21.3)
+
+async function loadWhatif() {
+  try {
+    const cms = await api.countermeasures();
+    $("cm").innerHTML = `<option value="">none (rules only)</option>` +
+      cms.map((c) => `<option value="${c.key}">${c.name}${c.quantified ? "" : " (not quantified)"}</option>`).join("");
+  } catch {
+    /* older backend: rules-only what-if */
+  }
+  await loadScenarios();
+}
+
+async function loadScenarios() {
+  const sid = ($("session") as HTMLSelectElement).value;
+  if (!sid) return;
+  try {
+    const list = await api.scenarios(sid);
+    $("scnList").innerHTML = list.map((s) => `<li data-id="${s.id}"><b>${s.name}</b><br>${summaryText(s)}</li>`).join("") || "<li>none yet</li>";
+  } catch {
+    $("scnList").innerHTML = "<li>none yet</li>";
+  }
+}
+
+async function projectImpact() {
+  const { body, error } = buildRequest(($("session") as HTMLSelectElement).value, ($("scnName") as HTMLInputElement).value,
+    pendingOverrides, pendingZones, ($("cm") as HTMLSelectElement).value || null, whatifArea);
+  if (!body) {
+    $("scnResult").textContent = error ?? "";
+    return;
+  }
+  try {
+    let s = await api.createScenario(body);
+    $("scnResult").textContent = "Replaying the recorded traffic with the change (up to a minute or two)…";
+    await loadScenarios();
+    while (s.status === "running") {
+      await new Promise((r) => setTimeout(r, 2000));
+      s = await api.scenario(s.id);
+    }
+    $("scnResult").innerHTML = resultHtml(s);
+    await loadScenarios();
+  } catch (e) {
+    $("scnResult").textContent = (e as Error).message;
+  }
+}
+
 async function loadHistory(name: string) {
   try {
     const h = await api.profileHistory(name);
@@ -560,6 +613,13 @@ handler.setInputAction((ev: { position: Cartesian2 }) => {
 }, ScreenSpaceEventType.LEFT_CLICK);
 handler.setInputAction(() => {
   if (!drawing) return;
+  if (($("zoneType") as HTMLSelectElement).value === "area") {  // what-if area, not a rule zone
+    whatifArea = drawing.length >= 3 ? drawing : null;
+    $("cmArea").textContent = whatifArea ? `area: drawn polygon (${whatifArea.length} points)` : "area: needs 3+ points";
+    drawing = null;
+    $("drawHint").textContent = "";
+    return;
+  }
   const zn: Zone = { id: `twin_${Date.now()}`, type: ($("zoneType") as HTMLSelectElement).value, polygon: drawing };
   const errs = validateZone(zn);
   $("saveErr").textContent = errs.join("\n");
@@ -575,6 +635,11 @@ $("drawZone").onclick = () => {
   $("drawHint").textContent = "left-click corners, right-click to finish";
 };
 $("addOverride").onclick = addOverride;
+$("project").onclick = projectImpact;
+$("scnList").onclick = async (e) => {
+  const id = (e.target as HTMLElement).closest("li")?.dataset.id;
+  if (id) $("scnResult").innerHTML = resultHtml(await api.scenario(id));
+};
 $("save").onclick = save;
 $("play").onclick = () => setPlaying(!playing);
 $("time").oninput = (e) => {
@@ -654,6 +719,7 @@ async function start(wantSession: string | null = null, wantMode: typeof mode = 
   } else if (town) await loadTown(town);
   const profiles = profileSummaries(await api.profiles());
   if (wantMode !== mode) setMode(wantMode);
+  if (api.canEdit()) loadWhatif();
   ($("profileName") as HTMLInputElement).placeholder = profiles.find((p) => p.name.includes("planner"))?.name ?? `${(scene?.scene ?? "town").toLowerCase()}_planner`;
   requestAnimationFrame(tick);
 }

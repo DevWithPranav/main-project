@@ -40,7 +40,7 @@
           <label><input type="checkbox" id="hotspots" checked /> Hotspots</label>
           <label><input type="checkbox" id="objects" checked /> Buildings &amp; objects</label>
         </div>
-        <label>Pins <select id="pinKind"><option value="all">violations + road surface</option><option value="violation">violations only</option><option value="anomaly">road surface only</option><option value="none">none</option></select></label>
+        <label>Pins <select id="pinKind"><option value="violation">violations</option><option value="none">none</option></select></label>
         <div class="legend">
           <span style="--c:#40c057">ok</span><span style="--c:#fab005">checking</span><span style="--c:#fa5252">flagged</span>
           <span style="--c:#7048e8">bridge</span><span style="--c:#4c6ef5">highway</span>
@@ -57,7 +57,7 @@
           <button id="addOverride">Add lane change</button>
           <hr />
           <button id="drawZone">Draw zone</button>
-          <select id="zoneType"><option>no_parking</option><option>no_u_turn</option></select>
+          <select id="zoneType"><option>no_parking</option><option>no_u_turn</option><option value="area">what-if area</option></select>
           <span id="drawHint" class="muted"></span>
           <h4>Pending edits</h4>
           <ul id="pending"></ul>
@@ -65,6 +65,14 @@
           <label>Why (logged) <textarea id="note" rows="2"></textarea></label>
           <button id="save">Validate &amp; save</button>
           <div class="err" id="saveErr"></div>
+          <h4>What-if <span class="muted">(PRD 21.3)</span></h4>
+          <label>Countermeasure <select id="cm"><option value="">none (rules only)</option></select></label>
+          <div id="cmArea" class="muted">area: changed lanes (draw a "what-if area" to set one)</div>
+          <label>Scenario name <input id="scnName" placeholder="e.g. 20 km/h on road 24" /></label>
+          <button id="project">Project impact</button>
+          <div id="scnResult" class="scn"></div>
+          <h4>Saved scenarios</h4>
+          <ul id="scnList" class="muted"></ul>
           <h4>Edit history</h4>
           <ul id="history" class="muted"></ul>
         </div>

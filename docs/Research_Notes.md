@@ -59,3 +59,27 @@ Web research done before building each milestone (rule: `AGENTS/rules.md` §7). 
 - RGB-D as a 4th input channel: no study found showing it helps YOLO segmentation; PothRGBD uses depth only for measurement ([arXiv 2505.04207](https://arxiv.org/abs/2505.04207)). **Not adopted** (the drone has no depth either).
 - SAHI tiled inference for small objects in large aerial frames ([Ultralytics guide](https://docs.ultralytics.com/guides/sahi-tiled-inference)). **To test** on the aerial test set vs whole-frame.
 - Copy-paste augmentation, higher imgsz, cosine LR: standard Ultralytics options; **to test** against E1/E2 (`train_m9.py --set`).
+
+## 2026-10-10: What-if recommendation system (plan: `docs/WhatIf_Plan.md`)
+
+- Signal delay: HCM control delay `d = d1·PF + d2 + d3`; `d1` is the Webster-derived uniform term, `d2` covers random arrivals and oversaturation. Webster is deterministic, suited to undersaturated conditions; newer HCM editions changed the formulation, so check the edition ([NPTEL signal design](https://archive.nptel.ac.in/content/storage2/courses/105104098/TransportationII/lecture8/text/8%20slide.htm)). **Adopted** for signal-timing what-ifs; **to test** against CARLA signal runs.
+- Link travel time: BPR `t = t0(1 + α(v/c)^β)`, α=0.15, β=4 default; closures reduce `c` (and raise `t0` for work-zone speeds) ([PTV Visum VD functions](https://cgi.ptvgroup.com/vision-help/VISUM_2025_ENG/Content/1_Benutzermodell%20IV/1_5_Vordefinierte%20CR-Funktionen.htm)). Standard BPR underestimates delay on partly blocked roads ([UGPTI brief](https://www.ugpti.org/resources/reports/downloads/mpc22-448-brief.pdf)). **Adopted** with a widened high end for closures/incidents; no published lane-loss-to-capacity recipe found, so the mapping (capacity scaled by lanes lost) is ours and flagged *assumed*. Capacity cuts can also reduce demand, which a static model misses ([York closure](https://www.richardclegg.org/previous/pubs/rgc_utsg2006.doc)).
+- Speed vs crashes: Nilsson power model (exponents 2 injury / 3 serious / 4 fatal, rural Swedish data); Elvik's meta-analyses (98 then 115 studies) give lower exponents; road environment matters and the model does not suit urban arterials directly ([Cameron & Elvik via science.gov](https://www.science.gov/topicpages/n/nilsson+model.html), [SWOV](https://swov.nl/nl/publicatie/nilssons-power-model-connecting-speed-and-road-trauma-does-it-apply-urban-roads)). **Adopted with caution**: use Elvik's urban-specific exponents (not yet looked up; **to do** before coding), show a range, flag as published/uncalibrated.
+- Safety indicators: TTC and PET from simulation, plus TET/TIT; thresholds in the literature vary (TTC 1.5 to 4 s; PET 1 to 8 s; conflict definitions inconsistent), and simulation can underestimate conflicts such as illegal pedestrian crossings ([FHWA SSAM](https://www.fhwa.dot.gov/publications/research/safety/03050/02.cfm), [VISSIM/SSAM pedestrian study](https://trid.trb.org/View/1526117)). **Adopted**: thresholds are parameters, results shown over a range; TTC reported as likelihood, not severity.
+- Not found: a ready-made digital-twin what-if recommender to copy. The design is our own composition of the above.
+
+## What-if for planner changes (2026-10-10, PRD 21.3)
+
+Question: how should the twin answer "what if we change this?" before a CARLA validation run?
+
+- PRD 21.3 asks for a rule-based projection ("Before 142 -> Projected after ~35"), labelled a projected estimate.
+- Crash modification factors (CMFs) are the standard way to express a countermeasure's effect (FHWA CMF Clearinghouse,
+  https://cmfclearinghouse.fhwa.dot.gov/resources_about.php); our M8 catalogue (`ml/planning/catalogue.py`,
+  docs/research/M8_recommendations.md) already holds the sourced ranges. They are published claims about crashes, not our
+  measurements, and are shown that way.
+- Counterfactual replay of recorded trajectories under changed rules is the cheap, exact part: the same vehicles judged by
+  the changed rules. It does not model driver response (that needs the CARLA baseline-vs-modified run, M8).
+
+Adopted: two answers kept apart in `ml/planning/whatif.py`: (1) rule replay on the session's kinematics (measured; only
+vehicles within 60 m of the change, baseline and modified on the same rows), (2) projection = affected historical events
+x the catalogue factor ("not quantified" when no factor was retrieved). Scenarios are stored for side-by-side comparison.

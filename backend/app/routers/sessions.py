@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,7 +53,9 @@ async def trajectories(sid: str, db: AsyncSession = Depends(get_db), _: Principa
 
 
 class ImportReq(BaseModel):
-    flight: str
+    flight: str  # CARLA flight folder, or the real clip's folder under video_validation (source "video")
+    source: str = "carla"  # carla | video (Expected_Output 3: external videos are a session source too)
+    run: str | None = None  # video: run folder (default: the newest with violations)
     violations_dir: str | None = None
     anomalies_dir: str | None = None  # M9: default the newest anomalies*/ with an anomalies.json
     include_anomalies: bool = True
@@ -64,7 +67,9 @@ class ImportReq(BaseModel):
 async def import_flight(body: ImportReq, db: AsyncSession = Depends(get_db),
                         user: Principal = Depends(require("OPERATOR"))):
     t_start = datetime.now(timezone.utc)
-    fdir = ingest.flight_dir(body.flight)
+    if body.source not in ("carla", "video"):
+        raise HTTPException(422, "source must be carla or video")
+    fdir = ingest.video_dir(body.flight, body.run) if body.source == "video" else ingest.flight_dir(body.flight)
     adir = ingest.pick_anomalies_dir(fdir, body.anomalies_dir) if body.include_anomalies else None
     # A flight with anomalies only (no violation run) imports too; without either it is a 404.
     vdir = ingest.pick_violations_dir(fdir, body.violations_dir, required=adir is None)
@@ -79,7 +84,7 @@ async def import_flight(body: ImportReq, db: AsyncSession = Depends(get_db),
     tracks, t0 = await asyncio.to_thread(ingest.load_tracks, vdir) if vdir else ({}, None)
     if t0 is None:
         t0 = min((e.get("start_s", e.get("t_s", 0.0)) for e in events + anoms), default=0.0)
-    town = ingest.town_of(body.flight)
+    town = ingest.town_of(body.flight) if body.source == "carla" else None
     scene = body.scene or (town if town and (config.SCENE_DIR / f"{town}.json").is_file() else None)
 
     def rel(d):
@@ -94,11 +99,15 @@ async def import_flight(body: ImportReq, db: AsyncSession = Depends(get_db),
             "snapshots": sum(bool((e.get("evidence") or {}).get("snapshot_key")) for e in anoms),
             "n_tracks": len(tracks), "imported_by": user.username, "imported_at": t_start.isoformat()}
     events = events + anoms
-    s = await db.get(Session, body.flight)
+    sid = ingest.video_session_id(vdir, body.flight) if body.source == "video" else body.flight
+    s = await db.get(Session, sid)
     if s is None:
-        s = Session(session_id=body.flight)
+        s = Session(session_id=sid)
         db.add(s)
-    s.name, s.source, s.town, s.flight = f"{town or 'CARLA'} flight {body.flight}", "carla", town, body.flight
+    if body.source == "video":
+        s.name, s.source, s.town, s.flight = f"Real video {body.flight}", "video", None, body.flight
+    else:
+        s.name, s.source, s.town, s.flight = f"{town or 'CARLA'} flight {body.flight}", "carla", town, body.flight
     s.started_at, s.t0_s, s.profile, s.scene, s.meta = ingest.flight_start(body.flight), t0, body.profile, scene, meta
     await db.flush()
     # Recurrence across sessions (PRD: same type within 3 m of a defect an earlier flight logged).
@@ -156,6 +165,30 @@ async def make_session_video(sid: str, db: AsyncSession = Depends(get_db),
     s = await db.get(Session, sid)
     if s is None:
         raise HTTPException(404, f"no session {sid}")
-    if not s.flight or media.session_source(s.flight) is None:
+    run = run_dir(s)
+    if not s.flight or media.session_source(s.flight, run) is None:
         raise HTTPException(404, f"no video for session {sid}")
-    return media.start_encode(sid, s.flight)
+    return media.start_encode(sid, s.flight, run)
+
+
+def run_dir(s: Session):
+    """A real clip's run folder (the violations folder's parent); None for CARLA flights."""
+    v = (s.meta or {}).get("violations_dir")
+    return (config.REPO / v).parent if s.source == "video" and v else None
+
+
+@router.get("/sessions/{sid}/scene")
+async def session_scene(sid: str, db: AsyncSession = Depends(get_db), _: Principal = Depends(current_user)):
+    """The map a session's events and tracks are in: a CARLA session's town lane map, or a real clip's
+    site map in its own metres (the scene.json run_violations.py --site saved: lanes, zones, learned flow)."""
+    s = await db.get(Session, sid)
+    if s is None:
+        raise HTTPException(404, f"no session {sid}")
+    if s.source == "video":
+        p = config.REPO / ((s.meta or {}).get("violations_dir") or "_") / "scene.json"
+    else:
+        name = s.scene or s.town
+        p = config.SCENE_DIR / f"{name}.json" if name else None
+    if p is None or not p.is_file():
+        raise HTTPException(404, f"no map for session {sid}")
+    return FileResponse(p, media_type="application/json")

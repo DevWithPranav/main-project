@@ -16,7 +16,6 @@ anomalies_dir defaults to the newest anomalies* folder that has an anomalies.jso
 import csv
 import json
 import math
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +32,37 @@ def flight_dir(flight: str) -> Path:
     if not d.is_dir():
         raise HTTPException(404, f"no processed flight at {d}")
     return d
+
+
+def video_dir(clip: str, run: str | None = None) -> Path:
+    """A processed real clip (process_video.py + run_violations.py --site): <VIDEO_RESULTS_DIR>/<clip>/<run>;
+    run defaults to the newest run folder that has a violations*/violations.json (detector or tracker
+    variants live side by side, e.g. tracktrack_ours, tracktrack_retrain_v1)."""
+    for v in (clip, run or "x"):
+        if not v or any(c in v for c in "/\\") or v.startswith("."):
+            raise HTTPException(422, "flight / run must be folder names under video_validation")
+    root = config.VIDEO_RESULTS_DIR / clip
+    if run:
+        d = root / run
+        if not d.is_dir():
+            raise HTTPException(404, f"no run {run} for clip {clip}")
+        return d
+    runs = [d for d in root.glob("*") if d.is_dir() and any((v / "violations.json").is_file() for v in d.glob("violations*"))]
+    if not runs:
+        raise HTTPException(404, f"no processed real clip with violations under {root}")
+    return max(runs, key=lambda d: max((v / "violations.json").stat().st_mtime for v in d.glob("violations*") if (v / "violations.json").is_file()))
+
+
+def video_session_id(vdir: Path | None, clip: str) -> str:
+    """Session id of a real clip: its site file's name (e.g. highway_brazil), which also prefixes its event
+    ids; else a slug of the folder name. Folder names of stock clips carry spaces, commas and '&', and the
+    event filters read a comma as "several sessions"."""
+    import re
+    if vdir is not None and (vdir / "summary.json").is_file():
+        site = json.loads((vdir / "summary.json").read_text(encoding="utf-8")).get("site")
+        if site:
+            return Path(site.replace("\\", "/")).stem
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", clip).strip("_")[:64] or "video"
 
 
 def pick_violations_dir(fdir: Path, name: str | None, required: bool = True) -> Path | None:
@@ -108,24 +138,25 @@ def validate(events: list[dict]) -> tuple[list[dict], list[str]]:
 
 def upload_evidence(events: list[dict], vdir: Path, prefix: str) -> int:
     """Upload clip / snapshot files named in evidence to S3; record their keys. Returns uploads.
-    mp4 clips (mp4v, which browsers can't play) are uploaded as VP8 WebM (media.py)."""
+    mp4 clips (mp4v, which browsers can't play) are uploaded as they are and queued for VP8 WebM
+    transcoding in the background (media.queue_clip); /api/files serves the WebM once it exists.
+    Transcoding at import took 53 s per 26 MB clip and timed the import out (2026-10-10)."""
     n = 0
-    with tempfile.TemporaryDirectory() as tmp:
-        for e in events:
-            ev = e.get("evidence") or {}
-            for k in ("clip", "snapshot"):
-                rel = ev.get(k)
-                if not rel or "://" in rel:
-                    continue
-                p = (vdir / rel).resolve()
-                if not p.is_file() or vdir.resolve() not in p.parents:
-                    continue
-                if k == "clip" and p.suffix.lower() == ".mp4":
-                    p = media.clip_to_webm(p, Path(tmp)) or p
-                key = f"{prefix}/{e['event_id']}{p.suffix}" if k == "clip" else f"{prefix}/{e['event_id']}_snap{p.suffix}"
-                n += storage.upload(p, key)
-                ev[f"{k}_key"] = key
-            e["evidence"] = ev
+    for e in events:
+        ev = e.get("evidence") or {}
+        for k in ("clip", "snapshot"):
+            rel = ev.get(k)
+            if not rel or "://" in rel:
+                continue
+            p = (vdir / rel).resolve()
+            if not p.is_file() or vdir.resolve() not in p.parents:
+                continue
+            key = f"{prefix}/{e['event_id']}{p.suffix}" if k == "clip" else f"{prefix}/{e['event_id']}_snap{p.suffix}"
+            n += storage.upload(p, key)
+            ev[f"{k}_key"] = key
+            if k == "clip" and p.suffix.lower() == ".mp4":
+                media.queue_clip(p, key)
+        e["evidence"] = ev
     return n
 
 

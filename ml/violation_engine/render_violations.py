@@ -48,8 +48,11 @@ LABEL = {"no_parking": "NO PARKING", "wrong_way": "WRONG WAY", "illegal_u_turn":
 
 def event_value(e: dict) -> str:
     v = e.get("value", {})
-    if "max_speed_kmh" in v:
+    if "max_speed_kmh" in v and "limit_kmh" in v:
         return f"{v['max_speed_kmh']:.0f} in {v['limit_kmh']:.0f} km/h"
+    if "pedestrian_track_ids" in v:  # F2 / F3 / F5 (zebra_pedestrians.py)
+        gap = v.get("min_gap_m")
+        return "pedestrian" + (f" {gap:.1f} m away" if gap is not None else " waiting")
     if "dwell_s" in v:
         return f"{v['dwell_s']:.0f} s"
     if "distance_m" in v:

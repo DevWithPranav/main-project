@@ -20,7 +20,8 @@ FLIGHT = os.getenv("TEST_FLIGHT", "20261009_201727")
 # --- auth, health -------------------------------------------------------------------------------
 
 def test_health(client):
-    assert client.get("/api/health").json() == {"db": "ok", "redis": "ok", "s3": "ok"}
+    h = client.get("/api/health").json()
+    assert {k: h[k] for k in ("db", "redis", "s3")} == {"db": "ok", "redis": "ok", "s3": "ok"}
 
 
 @pytest.mark.parametrize("user,role", [("officer", "OFFICER"), ("operator", "OPERATOR"), ("planner", "PLANNER"),
@@ -98,6 +99,21 @@ def test_evidence_clip_served(client, auth, imported):
     r = client.get(url, headers={"Range": "bytes=0-99"})
     assert r.status_code == 206 and len(r.content) == 100 and r.headers["content-type"] in ("video/webm", "video/mp4")
     assert client.get("/api/files/nope/missing.mp4").status_code == 404
+
+
+def test_clip_served_as_webm_once_made(client):
+    """Import uploads the mp4 and transcodes in the background; the WebM wins once it exists."""
+    from backend.app import config, storage
+    s3 = storage.client()
+    s3.put_object(Bucket=config.S3_BUCKET, Key="test/clip.mp4", Body=b"mp4", ContentType="video/mp4")
+    try:
+        assert client.get("/api/files/test/clip.mp4").headers["content-type"] == "video/mp4"
+        s3.put_object(Bucket=config.S3_BUCKET, Key="test/clip.webm", Body=b"webm", ContentType="video/webm")
+        r = client.get("/api/files/test/clip.mp4")
+        assert r.headers["content-type"] == "video/webm" and r.content == b"webm"
+        assert set(client.get("/api/health").json()["clips"]) >= {"queued", "done", "pending"}
+    finally:
+        s3.delete_objects(Bucket=config.S3_BUCKET, Delete={"Objects": [{"Key": "test/clip.mp4"}, {"Key": "test/clip.webm"}]})
 
 
 # --- events: filters, one, create, review -------------------------------------------------------

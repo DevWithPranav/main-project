@@ -147,8 +147,11 @@ export function createApiClient(opts: ClientOptions) {
     conditions: () => json<ConditionsDoc>('/api/conditions'),
     scenes: () => json<SceneListEntry[]>('/api/scenes'),
     scene: (town: string) => json<Scene>(`/api/scenes/${encodeURIComponent(town)}`),
+    /** The map a session lives in: its town, or a real clip's own site map (metres of that site). */
+    sessionScene: (sid: string) => json<Scene>(`/api/sessions/${encodeURIComponent(sid)}/scene`),
 
-    recommendations: () => json<Recommendation[] | Page<Recommendation>>('/api/recommendations'),
+    recommendations: (sessionId?: string | null) =>
+      json<Recommendation[] | Page<Recommendation>>(`/api/recommendations${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`),
     decide: (id: string, decision: 'accepted' | 'rejected' | 'modified', rationale: string) =>
       post<unknown>(`/api/recommendations/${encodeURIComponent(id)}/decision`, { decision, rationale }),
     plannerHistory: () => json<PlannerHistoryEntry[] | Page<PlannerHistoryEntry>>('/api/planner/history'),

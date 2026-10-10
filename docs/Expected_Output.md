@@ -152,10 +152,10 @@ Not checked inside junctions: legal turns look like anything there (PRD edge cas
 | # | Condition | Detection rule | Status |
 |---|---|---|---|
 | F1 | Stopping on a zebra crossing | Stationary on the crossing > 10 s (PRD), not in a queue | ✅ |
-| F2 | Blocking a pedestrian crossing | Vehicle on the crossing while a pedestrian waits at it or is on it | ❌ needs pedestrians |
-| F3 | Failure to yield | Vehicle passes through the crossing while a pedestrian with priority is on it or entering it | ❌ needs pedestrians |
+| F2 | Blocking a pedestrian crossing | Vehicle on the crossing while a pedestrian waits at it or is on it | 🟡 built + unit-tested (M3, 2026-10-10), staged acts dry-run OK; CARLA run + pedestrian detection numbers pending |
+| F3 | Failure to yield | Vehicle passes through the crossing while a pedestrian with priority is on it or entering it | 🟡 built + unit-tested (M3, 2026-10-10), staged acts dry-run OK; CARLA run + pedestrian detection numbers pending |
 | F4 | Parking on a zebra crossing | Left standing on the crossing (long stop, no queue) | ✅ (F1 with a longer threshold) |
-| F5 | Obstructing pedestrian movement | Stopped vehicle in a pedestrian's path across the crossing | ❌ needs pedestrians |
+| F5 | Obstructing pedestrian movement | Stopped vehicle in a pedestrian's path across the crossing | 🟡 built + unit-tested (M3, 2026-10-10), staged acts dry-run OK; CARLA run + pedestrian detection numbers pending |
 
 F2, F3 and F5 need **pedestrian detection and tracking**, which the current 3-class detector doesn't do (see Section 11).
 
@@ -177,7 +177,7 @@ Each event stores:
 | Vehicle detection mAP@0.5 | ≥ 0.75 | 0.696 VisDrone val (3-class), 0.702 GT clip, 0.844 CARLA Town05 |
 | Tracking continuity / ID switches | ≥ 90 % / ≤ 5 % | GT clip IDF1 0.881, 2 ID switches on 40 vehicles; staged flight: all 13 scripted cars tracked within 0.03–0.1 m of truth (wrong-way car 3 m) |
 | Violation F1 per type | ≥ 0.70 (precision ≥ 0.85, recall ≥ 0.75) | Staged flight `20261009_201727`, pipeline vs staged (re-scored 2026-10-10 after M2): wrong-way, U-turn, zebra, speeding 1.0; lane 0.222 (natural lane events count against it); no-parking missed (spot at the frame edge; the stager now keeps acts in view). Pipeline vs oracle: highway stop 0.824, lane 0.421, others 1.0. One staged act per type, so far below the PRD's 100 scenarios per type |
-| Event-to-dashboard latency | ≤ 3 s | Not measurable yet (batch pipeline) |
+| Event-to-dashboard latency | ≤ 3 s | p50 1.19 s, max 1.71 s (8 events, replayed flight on one machine, 13.1 fps, 2026-10-10); not yet measured with CarlaAir rendering on the same GPU |
 
 ---
 
@@ -330,7 +330,7 @@ The project is complete when each item has been demonstrated, with the measured 
 | What-if = rule-based projection | Kept as a quick estimate; **validation by CARLA baseline-vs-modified runs** added | Team statement |
 | Recommendations from a fixed rule table | Rule table kept as a starting point; ranking adjusted by measured simulation outcomes and planner feedback | Team statement |
 | Monitoring + Planning dashboards | Plus a **Configuration Dashboard** (merges Monitoring with system configuration) | Team statement |
-| Road-surface anomalies (Objective 3) | **Kept** (Section 11, #2) | Team 2026-10-09 |
+| Road-surface anomalies (Objective 3) | **Dropped** (Section 11, #2). Was kept on 2026-10-09 | Team 2026-10-10 |
 | Automated PDF / Excel / GeoJSON reports (Objective 5) | **Kept, on demand from the dashboard**; scheduled delivery dropped (Section 11, #3) | Team 2026-10-09 |
 | CesiumJS twin on OSM / GPS → 3D twin | **3D**, CesiumJS with a configurable anchor, roads from OpenDRIVE (Section 11, #5) | Team 2026-10-09 |
 | MinIO object store (PRD §13.3) | **SeaweedFS** (S3-compatible, Apache-2.0): MinIO no longer publishes free images. Same S3 API and bucket layout | Measured 2026-10-09 (pull refused on Docker Hub and quay.io) |
@@ -343,7 +343,7 @@ The project is complete when each item has been demonstrated, with the measured 
 | # | Question | Decision |
 |---|---|---|
 | 1 | Pedestrian detection for F2, F3, F5 | **Two detectors now:** the retrained 3-class model stays for vehicles; the earlier 10-class model (`full_train`, pedestrian mAP50 0.540) runs alongside, for pedestrians only. **Later:** retrain one model with car / bus / truck + pedestrian |
-| 2 | Road-surface anomalies (pothole track) | **Kept** as a deliverable (PRD Objective 3, F1 ≥ 0.65 per category). Anomalies appear as events on the twin and in the dashboard like violations |
+| 2 | Road-surface anomalies (pothole track) | **Dropped from the project (team, 2026-10-10).** PRD Objective 3 is out of scope; the dashboard and twin show violations only. Earlier decision (2026-10-09): kept as a deliverable. The code already written (`ml/pothole/`, the backend's anomaly routes and event kind) stays in the repo, unused |
 | 3 | Automated reports | **Kept, on demand only:** the dashboard exports PDF (summary + hotspot map + recommendations), Excel (event tables) and GeoJSON (events, hotspots, recommendations) for any date range and area (PRD target ≤ 10 s). Scheduled / emailed reports dropped for now |
 | 4 | Live mode architecture | **Single machine now** (simulator and detector share the RTX 4050). **Two machines for the presentation:** one runs CarlaAir, one runs the detector and the dashboards. So the live feed is sent over the network (frames + pose + time) from the start: the same code runs on one machine (localhost) or two |
 | 5 | Twin technology | **3D.** The road network is built from the OpenDRIVE lane map in map metres. CesiumJS (PRD) is used with a configurable anchor point, because CARLA towns have no real-world location. No OSM buildings for CARLA towns (they would belong to the anchor's real city) |

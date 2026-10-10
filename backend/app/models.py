@@ -114,6 +114,37 @@ class PlannerHistory(Base):
     validation: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # M8 CARLA validation result
 
 
+class AuditLog(Base):
+    """PRD 28.4 data-access audit log: one row per API action (audit.py). Append-only: a database
+    trigger (db.init_db) rejects UPDATE and DELETE for everyone, ADMIN included; no API changes it."""
+    __tablename__ = "audit_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    role: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)  # e.g. event.review, export.pdf, files.get
+    method: Mapped[str] = mapped_column(String(8))
+    path: Mapped[str] = mapped_column(Text)
+    resource_id: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result: Mapped[int] = mapped_column(Integer)  # HTTP status
+
+
+class Scenario(Base):
+    """A planner's what-if (PRD 21.3): the proposed change and its result (ml/planning/whatif.py), kept so
+    scenarios can be compared and shared. status: running | done | failed."""
+    __tablename__ = "scenarios"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(256))
+    session_id: Mapped[str] = mapped_column(String(128), index=True)
+    by: Mapped[str] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    request: Mapped[dict] = mapped_column(JSONType)
+    status: Mapped[str] = mapped_column(String(16))
+    result: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class AnomalyStatus(Base):
     """Maintenance status changes of an anomaly event (PRD: flagged -> reviewed -> work_order_issued
     -> repaired, set by MAINTENANCE / ADMIN). The event row's `status` holds the current one."""

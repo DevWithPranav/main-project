@@ -41,9 +41,18 @@ function Health() {
   if (q.isError) return <Badge color="red">backend unreachable</Badge>;
   return (
     <Group gap={4}>
-      {Object.entries(q.data ?? {}).map(([k, v]) => (
-        <Badge key={k} color={v === 'ok' ? 'green' : 'red'} variant="light" title={v}>{k}</Badge>
-      ))}
+      {Object.entries(q.data ?? {}).map(([k, v]) =>
+        typeof v === 'string' ? (
+          <Badge key={k} color={v === 'ok' ? 'green' : 'red'} variant="light" title={v}>{k}</Badge>
+        ) : null,
+      )}
+      {/* evidence clips still being made browser-playable in the background (backend media.py) */}
+      {q.data?.clips && (q.data.clips.pending > 0 || q.data.clips.failed > 0) && (
+        <Badge color={q.data.clips.failed ? 'orange' : 'blue'} variant="light"
+          title={`${q.data.clips.done} done, ${q.data.clips.pending} pending, ${q.data.clips.failed} failed`}>
+          clips {q.data.clips.pending} pending
+        </Badge>
+      )}
     </Group>
   );
 }
@@ -142,8 +151,12 @@ export default function LivePage() {
   const townNames = (scenes.data ?? []).map((x) => (typeof x === 'string' ? x : String(x.town ?? x.scene ?? x.name ?? ''))).filter(Boolean);
   const ownTown = sessionTown(session);
   const fallbackTown = sp.get('town') ?? sessionTown(sessions.data?.find((x) => sessionTown(x))) ?? townNames[0] ?? null;
-  const town = ownTown ?? fallbackTown;
-  const scene = useScene(town);
+  // a real clip (source video) is in its own site's metres: its map comes with the session, not a town
+  const isVideo = session?.source === 'video';
+  const town = isVideo ? null : ownTown ?? fallbackTown;
+  const townScene = useScene(town);
+  const siteScene = useQuery({ queryKey: ['sessionScene', sid], queryFn: () => api.sessionScene(sid!), enabled: !!sid && isVideo, staleTime: Infinity });
+  const scene = isVideo ? siteScene : townScene;
 
   // ---- replay
   const traj = useQuery({ queryKey: ['traj', sid], queryFn: () => api.trajectories(sid!), enabled: !!sid && mode === 'replay' });
@@ -293,9 +306,9 @@ export default function LivePage() {
           w={340}
           searchable
         />
-        {session && !ownTown && (
-          <Select w={130} data={townNames} value={town} onChange={setTown} aria-label="Town" placeholder="Town" />
-        )}
+        {session && !ownTown && (isVideo
+          ? <Badge variant="outline" color="gray">site map</Badge>
+          : <Select w={130} data={townNames} value={town} onChange={setTown} aria-label="Town" placeholder="Town" />)}
         <SegmentedControl value={mode} onChange={(v) => { setPlaying(false); setMode(v as 'replay' | 'live'); }} data={[{ value: 'replay', label: 'Replay' }, { value: 'live', label: 'Live' }]} />
         {mode === 'live' && <Badge color={status === 'open' ? 'green' : status === 'connecting' ? 'yellow' : 'red'}>{status}</Badge>}
         {mode === 'live' && status === 'open' && <Text size="xs" c="dimmed">{liveVehicles.length} vehicles</Text>}

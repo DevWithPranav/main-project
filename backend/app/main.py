@@ -13,10 +13,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config, storage
+from .audit import AuditMiddleware
 from .auth import seed_users
 from .db import SessionLocal, init_db
 from .live import hub
-from .routers import anomalies, configs, core, events, live, planning, sessions
+from .routers import anomalies, audit, configs, core, events, live, planning, scenarios, sessions
 
 log = logging.getLogger("backend")
 
@@ -37,8 +38,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Aerial traffic surveillance API", version="0.1.0", lifespan=lifespan)
+app.add_middleware(AuditMiddleware)  # PRD 28.4; added first, so it runs inside CORS
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"],
                    expose_headers=["Content-Disposition", "X-Event-Count", "X-Event-Total", "X-Export-Seconds"])
-for r in (core, sessions, events, anomalies, configs, planning, live):
+for r in (core, sessions, events, anomalies, configs, planning, scenarios, audit, live):
     app.include_router(r.router, prefix="/api")

@@ -11,6 +11,15 @@ OSM `oneway`) still needs a lane direction for the wrong-way rule. Following Mon
     direction, becomes a one-way "lane" (a CELL_M segment along that direction, CELL_M wide)
   - a cell where traffic goes several ways (intersection, roundabout entry, a two-way road seen
     at this resolution) becomes a junction lane: matched, but never checked for wrong way
+  - so does a cell with more than MAX_OPPOSITE tracks going the opposite way (> OPPOSITE_DEG) in
+    its 3x3 neighbourhood: the other half of a two-way road. Without it, a two-way street whose
+    lanes fall in neighbouring cells (position noise of a moving oblique camera, sparse traffic)
+    learned one-way cells and flagged the oncoming traffic: 7 of 8 wrong-way events on the snowy
+    roundabout clip, each with 13-34 opposite tracks around its cell (2026-10-10). A real
+    wrong-way driver on a one-way road adds 1 opposite track, so it is still caught. Real footage
+    only (two_way_check): with CARLA's exact positions each cell sits on one lane and the plain rule
+    is right (flight 20261009_201727 vs the Town05 map: 84 one-way cells, 0 wrong; with the check
+    36, 0 wrong), so the check would only cost coverage there
 
 The result is a list of lane entries for lane_map.SceneMap, so the existing monitors run on it
 unchanged; lines are "none" (unknown), so only direction-based rules use it (wrong way).
@@ -39,6 +48,8 @@ MIN_KMH = 10.0
 MIN_TRACKS = 5
 DOMINANT = 0.8
 ANGLE_DEG = 45.0  # a vote counts for a direction within this angle of it
+OPPOSITE_DEG = 135.0  # a track going this far off a cell's direction goes the opposite way
+MAX_OPPOSITE = 2  # opposite tracks tolerated in a cell's 3x3 neighbourhood (wrong-way drivers)
 AGREE_DEG = 30.0  # --check: learned and mapped direction agree within this
 
 
@@ -47,7 +58,7 @@ def circ_mean(deg: np.ndarray) -> float:
     return math.degrees(math.atan2(np.sin(r).mean(), np.cos(r).mean()))
 
 
-def learn(rows: list[dict], cell: float = CELL_M) -> dict[tuple, dict]:
+def learn(rows: list[dict], cell: float = CELL_M, two_way_check: bool = True) -> dict[tuple, dict]:
     """(i, j) cell -> {"dir_deg", "tracks", "share", "one_way"} from kinematics rows."""
     per = defaultdict(lambda: defaultdict(list))  # cell -> track -> headings
     for r in rows:
@@ -56,9 +67,10 @@ def learn(rows: list[dict], cell: float = CELL_M) -> dict[tuple, dict]:
             continue
         x, y = float(r["x"]), float(r["y"])
         per[(math.floor(x / cell), math.floor(y / cell))][int(r["track_id"])].append(float(h))
+    mean = {c: {tid: circ_mean(np.array(hs)) for tid, hs in tracks.items()} for c, tracks in per.items()}
     out = {}
     for c, tracks in per.items():
-        votes = np.array([circ_mean(np.array(hs)) for hs in tracks.values()])
+        votes = np.array(list(mean[c].values()))
         if len(votes) < MIN_TRACKS:
             continue
         best_share, best_dir = 0.0, 0.0
@@ -66,8 +78,12 @@ def learn(rows: list[dict], cell: float = CELL_M) -> dict[tuple, dict]:
             near = np.abs((votes - v + 180) % 360 - 180) <= ANGLE_DEG
             if near.mean() > best_share:
                 best_share, best_dir = float(near.mean()), circ_mean(votes[near])
+        opposite = {tid for di in (-1, 0, 1) for dj in (-1, 0, 1)
+                    for tid, h in mean.get((c[0] + di, c[1] + dj), {}).items()
+                    if abs((h - best_dir + 180) % 360 - 180) > OPPOSITE_DEG}
         out[c] = {"dir_deg": round(best_dir, 1), "tracks": len(votes), "share": round(best_share, 2),
-                  "one_way": best_share >= DOMINANT}
+                  "opposite_nearby": len(opposite),
+                  "one_way": best_share >= DOMINANT and (not two_way_check or len(opposite) <= MAX_OPPOSITE)}
     return out
 
 

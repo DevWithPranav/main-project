@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import storage
+from .. import media, storage
 from ..auth import Principal, authenticate, current_user, make_token
 from ..db import get_db
 from ..live import hub
@@ -48,13 +48,17 @@ async def health(db: AsyncSession = Depends(get_db)):
     except Exception as e:  # noqa: BLE001
         out["redis"] = f"error: {e}"
     out["s3"] = await asyncio.to_thread(storage.health)
+    out["clips"] = media.clip_status()
     return out
 
 
 @router.get("/files/{key:path}")
 def get_file(key: str, request: Request):
     """Evidence from the S3 store, with Range support so <video> can seek. Open without a token in
-    dev so <video src> works (see API.md)."""
+    dev so <video src> works (see API.md). An mp4 clip is served as its WebM once the background
+    transcode has made it (media.queue_clip)."""
+    if key.lower().endswith(".mp4") and storage.exists(media.webm_key(key)):
+        key = media.webm_key(key)
     try:
         obj = storage.get(key, request.headers.get("range"))
     except Exception:

@@ -2,23 +2,29 @@
 
 Records staged violations for every vehicle condition CARLA can stage, so each one can be scored
 on real perception. Prepared 2026-10-10. Every spot below was dry-run offline (planned paths through
-the rules), and all 91 acts behave as planned.
+the rules), and all 109 acts behave as planned (re-planned 2026-10-10 after the first session: occlusion
+check, walker acts, longer speeding acts, firetruck for E4, C2 from inside the junction).
 
-**Covers 22 conditions:** A1 A2 A4 A5 A6 A8 · B1 B3 B4 B5 · C1 C2 C3 C4 C5 · D1 D2 D3 D4 · E1 E4 · F1.
+**Covers 25 conditions:** A1 A2 A4 A5 A6 A8 · B1 B3 B4 B5 · C1 C2 C3 C4 C5 · D1 D2 D3 D4 · E1 E4 · F1 F2 F3 F5.
 Not here: A3 (no CARLA town has a forbidden lane change across a non-solid line; it is covered by
-unit tests and real sites) and F2 / F3 / F5 (need pedestrian detection, M3).
+unit tests and real sites). F2 / F3 / F5 use CARLA walkers the stager spawns.
 
-**Time:** about 30 min of staging, plus setup. 5 spots in 2 towns, so 5 recordings.
+**Time:** about 35 min of staging, plus setup. 6 spots in 2 towns, so 6 recordings.
+
+**Old spot 3 (-130.1, -38.8) is dropped:** it lies under Town03's elevated railway, which hid the road
+(pipeline 0/12 there). With the occlusion check the stager now refuses it; its conditions moved to
+spots 3, 4 and 5 below.
 
 ## The spots
 
 | # | Town | X | Y | Heading | Acts | New conditions |
 |---|---|---|---|---|---|---|
-| 1 | Town03 | -30.1 | 111.2 | 0 | 21 | A1 A4 A6 A8 B3 B4 C1 C2 C4 E1 E4 F1 |
-| 2 | Town03 | 169.9 | 161.2 | 0 | 19 | A5 B1 C3 D1 D4 |
-| 3 | Town03 | -130.1 | -38.8 | 0 | 15 | A2 D2 D3 |
-| 4 | Town03 | 119.9 | 61.2 | 90 | 13 | C5 |
-| 5 | Town05 | -253.6 | 11.6 | 0 | 23 | B5 |
+| 1 | Town03 | -30.1 | 111.2 | 0 | 27 | A1 A4 A6 A8 B3 B4 C1 C2 C4 D2 E1 E4 F1 F2 F3 F5 |
+| 2 | Town03 | 169.9 | 161.2 | 0 | 16 | A5 B1 C3 D1 D4 |
+| 3 | Town03 | 119.9 | 61.2 | 90 | 18 | C5 (and D2 again) |
+| 4 | Town03 | 169.9 | 111.2 | 0 | 13 | A2 (stager with `--no-pedestrians`) |
+| 5 | Town03 | 69.9 | 111.2 | 90 | 13 | D3 |
+| 6 | Town05 | -253.6 | 11.6 | 0 | 22 | B5 |
 
 You don't fly by hand. `goto_spot.py` puts the drone at the spot, 67.6 m above the road, and holds it
 there. The stager reads the drone's real position and plans inside the actual camera view.
@@ -62,7 +68,7 @@ Wait for `[load_map] AirSim ready`. This can take about 25 s; don't restart anyt
 
 ---
 
-## Step 3: record one spot (repeat for spots 1 to 4)
+## Step 3: record one spot (repeat for spots 1 to 5)
 
 The commands below are for **spot 1**. For other spots, swap in that spot's X, Y and heading from the table.
 
@@ -90,7 +96,8 @@ $flight = (Get-ChildItem simulation\data_export\recorded_flights -Directory | So
 $flight
 python simulation\violation_scenarios\stage_violations.py --out "$flight\scenario_log.json"
 ```
-Check that `$flight` printed today's newest folder. Then wait. The stager runs its acts one after
+At **spot 4 only**, add `--no-pedestrians` to that last line (the cars of the walker acts would also
+commit A1 there). Check that `$flight` printed today's newest folder. Then wait. The stager runs its acts one after
 another and finishes with `[done] N violations, M negatives -> ...`.
 
 **3e. Stop recording**
@@ -108,18 +115,19 @@ Then go back to 3a with the next spot.
 |---|---|---|
 | 1 | `-30.1 111.2 --yaw 0` | `-30.1 111.2` |
 | 2 | `169.9 161.2 --yaw 0` | `169.9 161.2` |
-| 3 | `-130.1 -38.8 --yaw 0` | `-130.1 -38.8` |
-| 4 | `119.9 61.2 --yaw 90` | `119.9 61.2` |
-| 5 | `-253.6 11.6 --yaw 0` | `-253.6 11.6` |
+| 3 | `119.9 61.2 --yaw 90` | `119.9 61.2` |
+| 4 | `169.9 111.2 --yaw 0` | `169.9 111.2` |
+| 5 | `69.9 111.2 --yaw 90` | `69.9 111.2` |
+| 6 | `-253.6 11.6 --yaw 0` | `-253.6 11.6` |
 
-## Step 4: spot 5 (Town05)
+## Step 4: spot 6 (Town05)
 
 Window D: `python simulation\carla_scripts\load_map.py Town05`, then wait for `AirSim ready`.
-Then do Step 3 with spot 5's numbers.
+Then do Step 3 with spot 6's numbers.
 
 ## Step 5: hand over
 
-Send Claude the 5 flight folder names with their spot numbers. Claude processes and scores them
+Send Claude the 6 flight folder names with their spot numbers. Claude processes and scores them
 (the commands are below). If anything went wrong at a spot, say which one; it can be re-recorded alone.
 
 ---
@@ -140,7 +148,7 @@ Optional check before staging (offline, no simulator), which shows the acts plan
 ## After the session (main venv; Claude runs these)
 
 ```powershell
-python ml/violation_engine/process_recorded_flight.py <flight> --tracker tracktrack_ours
+python ml/violation_engine/process_recorded_flight.py <flight> --tracker tracktrack_ours --weights ml/data/results/retrain_v1/train/weights/best.pt --people
 python ml/violation_engine/run_violations.py <flight> --profile town05 --scene ml/violation_engine/configs/scenes/<Town>.json --zones <flight>/scenario_log.json
 python ml/violation_engine/run_violations.py <flight> --oracle --profile town05 --scene ml/violation_engine/configs/scenes/<Town>.json --zones <flight>/scenario_log.json
 python ml/violation_engine/eval_violations.py <pipeline violations dir> <oracle violations dir> --scenario <flight>/scenario_log.json

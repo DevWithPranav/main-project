@@ -12,6 +12,7 @@ so speed, timing and position are exactly what was planned:
   illegal_u_turn   U-turn inside a no-U-turn zone                    + negative: same U-turn outside any zone
   lane_violation   drive on the line between two same-direction lanes for 7 s
   zebra_crossing   stop 15 s on a crosswalk                          + negative: stop behind a queue
+                   F2 / F3 / F5 with a CARLA walker on the same crosswalk (pedestrian_acts.py, Build Plan M3)
   road features    Build Plan M2, one act per condition that fits the view (plan_road_feature_acts):
                    A1 wrong lane through a junction, A3 across a mixed line's solid side, A5 car in a bus
                    lane, A6 on the shoulder, A8 cut-in (TTC 0.9 s), B1 / B4 / B5 stop on a highway / ramp /
@@ -54,6 +55,7 @@ import carla
 import numpy as np
 
 from occlusion import Occluder
+from pedestrian_acts import plan_pedestrian_acts, set_pose, spawn_walkers
 
 REPO = Path(__file__).resolve().parents[2]
 XODR_DIR = REPO / "CarlaAir-v0.1.7-Windows11-x86_64" / "WindowsNoEditor" / "CarlaUE4" / "Content" / "Carla" / "Maps" / "OpenDrive"
@@ -63,7 +65,9 @@ BLUEPRINT = "vehicle.tesla.model3"
 DT = 0.05  # planned trajectory resolution (s)
 GAP_S = 6.0  # pause between acts
 FRONT_M = 2.3  # Tesla Model 3 centre to front bumper (predicates.HALF_LENGTH_M["car"])
-SPEED_IN_VIEW_S = 2.5  # rules.DEFAULTS speeding: min_track_age_s 1.0 + min_s 0.33, plus margin
+# rules.DEFAULTS speeding: min_track_age_s 1.0 + min_s 0.33, plus margin for a track that breaks once
+# (2.5 s: the 1.6x act at Town03 spot 1 broke into 4 tracks in its 1.2 s on camera and was missed)
+SPEED_IN_VIEW_S = 3.5
 # share of an act's points that may be hidden from the camera by structures (occlusion.py): a moving
 # act may pass under one tree crown; a stop (all its points in one place) must be fully visible
 MAX_HIDDEN_FRAC = 0.1
@@ -278,7 +282,8 @@ def ground_z(m, xy) -> float:
     return wp.transform.location.z if wp is not None else 0.0
 
 
-def plan(m, town: str, view: View, seed: int, world=None, red_light: bool = False, occlusion: bool = True) -> dict:
+def plan(m, town: str, view: View, seed: int, world=None, red_light: bool = False, occlusion: bool = True,
+         pedestrians: bool = True) -> dict:
     if view.cam_z is None:  # offline: the camera altitude_m above the road under the spot, as goto_spot puts it
         view.set_camera(ground_z(m, view.c) + view.altitude, occluder_for(town) if occlusion else None)
     rng = random.Random(seed)
@@ -422,6 +427,10 @@ def plan(m, town: str, view: View, seed: int, world=None, red_light: bool = Fals
             foll.move([xyz(w) for w in after], 20 / 3.6)
             acts.append({"type": "zebra_crossing", "expected": False, "traj": foll, "lead": lead,
                          "note": "on the crossing behind a stopped car (queue)", "truth": ("start", "end")})
+        # F2 / F3 / F5: one car + one walker each on the same crossing (M3); --no-pedestrians where the
+        # crossing's approach runs through a junction and the cars pick up A1 (Town03 (169.9, 111.2))
+        if pedestrians:
+            acts += plan_pedestrian_acts(wp_c, poly, view, Trajectory, xyz)
 
     # highway stops (B1 / B4 / B5) and the other road-feature conditions: plan_road_feature_acts
     m2_acts, extras = plan_road_feature_acts(m, view, runs, take, props, limit, used_roads, zones)
@@ -696,8 +705,13 @@ def plan_road_feature_acts(m, view: View, runs: list, take, props, limit, used_r
     if r is None:
         skip("C2", "no lane in view that starts at a junction")
     else:
-        into = [xyz(r[-1].next(8.0)[0])] + [xyz(w) for w in r[::-1][:41]]
-        act("C2", "wrong_way", True, Trajectory().mark("start").move(into, 30 / 3.6).mark("end"),
+        # starts 16 m into the junction and waits 2 s there: from 8 m and no wait the car was in the
+        # junction ~1 s, before the tracker had confirmed it, so the rule never saw where it came from
+        # and both pipeline and oracle called it C1 (Town03 spot 1, 2026-10-10)
+        jn = [w[0] for w in (r[-1].next(16.0), r[-1].next(8.0)) if w and w[0].is_junction]
+        into = [xyz(w) for w in jn] + [xyz(w) for w in r[::-1][:41]]
+        tr = Trajectory().move([into[0], into[0] + np.array([1e-3, 0.0, 0.0])], 30 / 3.6).hold(2.0)
+        act("C2", "wrong_way", True, tr.mark("start").move(into, 30 / 3.6).mark("end"),
             "out of the junction into a lane against its direction")
     for cond, pred, what in (("C4", lambda q: q.get("ramp") in ("on", "off"), "ramp"),
                              ("C5", lambda q: q.get("one_way") and q.get("road_class") == "urban" and not q.get("ramp"), "one-way")):
@@ -811,10 +825,12 @@ def plan_road_feature_acts(m, view: View, runs: list, take, props, limit, used_r
         lim = limit(*xyz(cand[0])[:2])
         cls_lim = round(0.6 * lim)
         kmh = min(cls_lim + 15.0, lim)
-        extras["engine_params"].setdefault("speeding", {})["class_limits_kmh"] = {"truck": cls_lim}
+        # heavy vehicles (bus and truck) share the limit: the detector calls CARLA's firetruck bus 54 % /
+        # truck 43 % and the carlacola car 55 % (2026-10-10 staging flights), so the act uses the firetruck
+        extras["engine_params"].setdefault("speeding", {})["class_limits_kmh"] = {"truck": cls_lim, "bus": cls_lim}
         for cls, expected in (("truck", True), ("car", False)):
             act("E4", "speeding", expected, Trajectory().mark("start").move([xyz(w) for w in cand], kmh / 3.6).mark("end"),
-                f"a {cls} at {kmh:.0f} km/h (lane {lim:.0f}, trucks {cls_lim})", cls=cls)
+                f"a {cls} at {kmh:.0f} km/h (lane {lim:.0f}, heavy vehicles {cls_lim})", cls=cls)
     return acts, extras
 
 
@@ -961,7 +977,7 @@ def _crosswalk_near(m, center, radius):
 
 BLUEPRINTS = {"car": [BLUEPRINT],
               "bus": ["vehicle.mitsubishi.fusorosa"],
-              "truck": ["vehicle.carlamotors.carlacola", "vehicle.carlamotors.european_hgv", "vehicle.carlamotors.firetruck"]}
+              "truck": ["vehicle.carlamotors.firetruck", "vehicle.carlamotors.european_hgv", "vehicle.carlamotors.carlacola"]}
 
 
 def spawn(world, bp_lib, tr: Trajectory, cls: str = "car"):
@@ -988,6 +1004,11 @@ def run_act(world, bp_lib, act: dict) -> dict:
                 c.destroy()
             return {"error": f"spawn failed ({name})"}
         cars[name] = v
+    walkers = spawn_walkers(world, bp_lib, act["walkers"]) if act.get("walkers") else []
+    if act.get("walkers") and not walkers:
+        for c in cars.values():
+            c.destroy()
+        return {"error": "walker spawn failed"}
     light = None
     if "signal" in act:  # green (frozen) until red_at_s, then red; freeze() holds every light in the town
         light = _traffic_light(world, act["signal"]["id"])
@@ -1000,7 +1021,7 @@ def run_act(world, bp_lib, act: dict) -> dict:
     snap = world.wait_for_tick()
     t0 = snap.timestamp.elapsed_seconds
     frames = {}
-    duration = max(tr.duration for _, tr in trajs)
+    duration = max([tr.duration for _, tr in trajs] + [w.duration for w in act.get("walkers", [])])
     try:
         while True:
             snap = world.wait_for_tick()
@@ -1008,6 +1029,8 @@ def run_act(world, bp_lib, act: dict) -> dict:
             for name, tr in trajs:
                 p, yaw = tr.at(min(t, tr.duration))
                 cars[name].set_transform(carla.Transform(carla.Location(p[0], p[1], p[2] + 0.02), carla.Rotation(yaw=yaw)))
+            for w, w_tr in zip(walkers, act.get("walkers", [])):
+                set_pose(w, w_tr, t)
             for m_name, m_t in act["traj"].marks.items():
                 if m_name not in frames and t >= m_t:
                     frames[m_name] = (snap.frame, round(snap.timestamp.elapsed_seconds, 3))
@@ -1024,7 +1047,9 @@ def run_act(world, bp_lib, act: dict) -> dict:
         out["signal"] = {**act["signal"], "red_frame": frames.get("red", (None,))[0]}
     if "lead" in cars:
         out["lead_actor_id"] = cars["lead"].id
-    for c in cars.values():
+    if walkers:
+        out["walker_actor_ids"] = [w.id for w in walkers]
+    for c in list(cars.values()) + walkers:
         c.destroy()
     return out
 
@@ -1048,6 +1073,7 @@ def main() -> None:
     ap.add_argument("--suggest", action="store_true",
                     help="Offline: list the fewest drone spots (centre, heading) that stage every condition in --town")
     ap.add_argument("--step", type=float, default=50.0, help="--suggest grid spacing (m)")
+    ap.add_argument("--no-pedestrians", action="store_true", help="Leave out the walker acts (F2 / F3 / F5)")
     ap.add_argument("--no-occlusion", action="store_true",
                     help="Don't check structures over the road (<Town>_objects.json); the pre-2026-10-10 behaviour")
     args = ap.parse_args()
@@ -1096,7 +1122,8 @@ def main() -> None:
     if not args.plan_only and tf is not None and args.altitude is None:  # the camera is where the drone is
         view.set_camera(tf.location.z, None if args.no_occlusion else occluder_for(town))
     print(f"[view] {view.describe()}")
-    p = plan(m, town, view, args.seed, world, red_light=args.red_light, occlusion=not args.no_occlusion)
+    p = plan(m, town, view, args.seed, world, red_light=args.red_light, occlusion=not args.no_occlusion,
+             pedestrians=not args.no_pedestrians)
     acts = [a for a in p["acts"] if not args.only or a["type"] in args.only]
     zones = list(p["zones"])
     print(f"[plan] {town} centre ({center[0]:.0f}, {center[1]:.0f}): {len(acts)} acts, {len(zones)} zones")
@@ -1118,12 +1145,17 @@ def main() -> None:
             samples = [[round(float(t), 2)] + a["traj"].at(t)[0][:2].round(3).tolist() for t in ts]
             entry = {"type": a["type"], "condition": a.get("condition"), "cls": a.get("cls", "car"),
                      "also": a.get("also", []), "expected": a["expected"], "note": a["note"],
-                     "duration_s": round(a["traj"].duration, 1), "truth_s": [a["traj"].marks[k] for k in a["truth"]],
+                     # the whole act, walkers and lead car included (run_act waits for all of them)
+                     "duration_s": round(max([a["traj"].duration] + [w.duration for w in a.get("walkers", [])]
+                                             + ([a["lead"].duration] if "lead" in a else [])), 1), "truth_s": [a["traj"].marks[k] for k in a["truth"]],
                      "path_start": pts[0, :2].round(1).tolist(), "path_end": pts[-1, :2].round(1).tolist(),
                      "samples": samples}
             if "lead" in a:
                 entry["lead_samples"] = [[round(float(t), 2)] + a["lead"].at(t)[0][:2].round(3).tolist()
                                          for t in np.arange(0.0, a["lead"].duration, 0.1)]
+            if a.get("walkers"):  # M3: run_violations.py --plan adds them as pedestrian tracks
+                entry["walker_samples"] = [[[round(float(t), 2)] + w.at(t)[0][:2].round(3).tolist()
+                                            for t in np.arange(0.0, w.duration, 0.1)] for w in a["walkers"]]
             if "signal" in a:  # the dry run's signal schedule and stop line (live runs: record_flight.py logs both)
                 entry["signal"] = a["signal"]
                 if all(sl["id"] != a["stop_line"]["id"] for sl in log.setdefault("stop_lines", [])):

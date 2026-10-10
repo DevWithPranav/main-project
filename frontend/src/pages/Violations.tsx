@@ -26,7 +26,7 @@ export default function ViolationsPage() {
   return (
     <Stack>
       <Group justify="space-between">
-        <Title order={3}>Violations & anomalies</Title>
+        <Title order={3}>Violations</Title>
         <Text c="dimmed" size="sm">{total} events</Text>
       </Group>
       <FilterBar value={filters} onChange={(f) => { setPage(1); setFilters(f); }} />

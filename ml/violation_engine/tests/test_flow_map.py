@@ -46,6 +46,17 @@ class Flow(unittest.TestCase):
         flow = flow_map.learn(rows)
         self.assertTrue(flow and not any(f["one_way"] for f in flow.values()))
 
+    def test_two_way_road_in_neighbouring_cells_is_not_one_way(self):
+        # eastbound at y = 0.5, westbound at y = -3.5: the two lanes land in different 4 m cells, so
+        # each cell alone looks one-way; the opposite traffic next door makes them a two-way road
+        rows = self.rows(6, wrong=False)
+        rows += [r for i in range(6) for r in track((lambda t: (35 - kmh(30) * t, -3.5), 9.0), tid=50 + i, t0=60.0 + 2 * i)]
+        flow = flow_map.learn(rows)
+        self.assertTrue(flow)
+        self.assertFalse(any(f["one_way"] for f in flow.values()))
+        sc = SceneMap({"scene": "flow", "lanes": flow_map.flow_lanes(flow), "zones": []})
+        self.assertFalse([e for e in Engine(sc).run(rows) if e.type == "wrong_way"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -131,7 +131,14 @@ export interface VehicleState {
 /** `{track_id: [[t_s, x, y, speed_kmh], ...]}` */
 export type Trajectories = Record<string, [number, number, number, number][]>;
 
-export type Health = Record<string, string>;
+/** Service statuses ("ok" or an error string) and the background clip transcodes. */
+export interface Health {
+  db?: string;
+  redis?: string;
+  s3?: string;
+  clips?: { queued: number; done: number; skipped: number; failed: number; pending: number };
+  [service: string]: string | Health['clips'] | undefined;
+}
 
 export interface Me {
   username: string;
@@ -247,18 +254,22 @@ export interface Scene {
 /** Scene list entries: names or small objects, depending on the backend. */
 export type SceneListEntry = string | { town?: string; scene?: string; name?: string; [k: string]: unknown };
 
-/** Build Plan M8 recommendation; every field optional since M8 is still being built. */
+/** Build Plan M8 recommendation (ml/planning/recommend.py: objects per field, Expected_Output 7.3);
+ * older / mock shapes are plain text, so every field stays loosely typed and the page reads it defensively. */
 export interface Recommendation {
   id: string;
   problem?: string;
   type?: string;
+  area?: string;
+  tier?: string;
   location?: unknown;
   evidence?: unknown;
-  action?: string;
+  action?: unknown;
   expected_impact?: unknown;
-  priority?: string | number;
-  validation_method?: string;
-  confidence?: number | string;
+  priority?: unknown;
+  validation_method?: unknown;
+  confidence?: unknown;
+  simulation?: unknown;
   limitations?: string | string[];
   alternatives?: unknown;
   projected_estimate?: unknown;

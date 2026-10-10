@@ -29,7 +29,7 @@ The work splits into **four tracks** that can run side by side once milestone M0
 | **Live** | M4 | Streaming detection + tracking + engine |
 | **Platform** | M5 → M6 → M7 | Backend, Configuration Dashboard, 3D twin |
 | **Planning** | M8 | Analytics, recommendations, CARLA validation runs |
-| **Surface** | M9 | Pothole / crack / waterlogging / debris model |
+| ~~**Surface**~~ | ~~M9~~ | ~~Pothole / crack / waterlogging / debris model~~ (dropped 2026-10-10) |
 
 M10 brings everything together for the final evaluation and the two-machine presentation.
 
@@ -156,7 +156,11 @@ CesiumJS (decision #5):
 
 **Done when:** at least one recommendation per in-scope type comes from event data, and each is validated by a baseline-vs-modified run with its metrics shown to the planner.
 
-### M9 — Road-surface anomalies (L) · Surface track
+### M9 — Road-surface anomalies (L) · Surface track — **DROPPED (team, 2026-10-10)**
+
+Road-surface anomalies (PRD Objective 3) are out of the project. The plan below is kept for the record only; the code written
+for it (`ml/pothole/`, backend anomaly routes) stays in the repo, unused, and the UI shows violations only.
+
 
 - **Model:** continue the pothole track (decision #2, tracker §3). Write `ml/pothole/modify_model.py` (DSConv + SimAM in YOLO26l-seg), train it, and score each category against F1 ≥ 0.65 (PRD §27.4).
 - **Integration:** anomaly events with a severity score, de-duplicated by location, shown on the twin and the dashboard like violations; maintenance status per the PRD.

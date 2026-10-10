@@ -1,0 +1,120 @@
+{
+ "video": "ml/data/real_videos/uavdt_M0603.mp4",
+ "note": "UAVDT M0603 (train split: up to 120 of its 2035 frames were in retrain_v1's training set, so detection here is somewhat optimistic). Real drone footage, China (right-hand traffic), signalised four-way intersection, camera looking straight down and still for 68 s (1024x540, 30 fps). Scale from the tracked cars: median car box max(w,h) = 49.6 px over 86 car tracks taken as 4.5 m, so 0.0907 m/px (lanes ~33 px apart = 3.0 m, plausible). Crosswalks traced on frame 1; they are signalised (signal phases not visible), so F1-F5 events here go to review. No lanes drawn: the traffic direction is learned (run_violations.py --learn-flow). No speed limit known, so speeding is not judged. Speeds are estimates (speed_sigma_kmh 3).",
+ "reference_frame": 0,
+ "frame_size": [
+  1024,
+  540
+ ],
+ "ref_point": 0.5,
+ "calibration": {
+  "method": "scale",
+  "image_points": [
+   [
+    0,
+    270
+   ],
+   [
+    1000,
+    270
+   ]
+  ],
+  "length_m": 90.7
+ },
+ "lanes": [],
+ "zones": [
+  {
+   "id": "crosswalk_N",
+   "type": "crosswalk",
+   "signalised": true,
+   "polygon_px": [
+    [
+     305,
+     108
+    ],
+    [
+     722,
+     108
+    ],
+    [
+     722,
+     166
+    ],
+    [
+     305,
+     166
+    ]
+   ]
+  },
+  {
+   "id": "crosswalk_S",
+   "type": "crosswalk",
+   "signalised": true,
+   "polygon_px": [
+    [
+     285,
+     393
+    ],
+    [
+     730,
+     393
+    ],
+    [
+     730,
+     478
+    ],
+    [
+     285,
+     478
+    ]
+   ]
+  },
+  {
+   "id": "crosswalk_W",
+   "type": "crosswalk",
+   "signalised": true,
+   "polygon_px": [
+    [
+     230,
+     205
+    ],
+    [
+     292,
+     205
+    ],
+    [
+     292,
+     375
+    ],
+    [
+     230,
+     375
+    ]
+   ]
+  },
+  {
+   "id": "crosswalk_E",
+   "type": "crosswalk",
+   "signalised": true,
+   "polygon_px": [
+    [
+     730,
+     165
+    ],
+    [
+     790,
+     165
+    ],
+    [
+     792,
+     305
+    ],
+    [
+     732,
+     305
+    ]
+   ]
+  }
+ ],
+ "speed_sigma_kmh": 3.0
+}

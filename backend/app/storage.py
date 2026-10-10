@@ -2,6 +2,7 @@
 callers run these in a thread (FastAPI sync routes / asyncio.to_thread)."""
 
 import mimetypes
+from urllib.parse import quote
 
 mimetypes.add_type("video/webm", ".webm")  # not in every Windows registry
 from functools import cache
@@ -62,4 +63,5 @@ def get(key: str, range_header: str | None = None) -> dict:
 
 
 def file_url(key: str) -> str:
-    return f"/api/files/{key}"
+    # real clips' keys carry their folder name (spaces, commas): percent-encode, keep the path's slashes
+    return f"/api/files/{quote(key, safe='/')}"

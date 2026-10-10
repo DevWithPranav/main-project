@@ -13,8 +13,9 @@ Acts, one car + one walker each, at the crosswalk nearest the drone (the F1 act'
     F2  blocking           the car stops 6 s on the crossing (under F1's 10 s) while the walker
                            waits at the kerb; the walker crosses after it has gone      (violation)
     F2  nobody waiting     same stop, the walker stands 12 m along the pavement          (negative)
-    F5  obstructing        the car stops 9.5 s on the crossing; the walker walks up to 0.6 m
-                           from its side, waits 4 s, turns back to the kerb before the car leaves
+    F5  obstructing        the car stops 9.5 s on the crossing; the walker, waiting on the crossing
+                           3.5 m from its side, walks up to 0.6 m from it, waits (up to 4 s) and
+                           is back before the car leaves
                                                                                          (violation)
 
 Walking speed 1.4 m/s: typical free walking speed (MUTCD signal timing assumes 1.07-1.2 m/s for
@@ -146,17 +147,26 @@ def plan_pedestrian_acts(wp_c, poly, view, Trajectory, xyz) -> list[dict]:
                  "walkers": [_walker(Trajectory, cr, [("stand", kerb, car.duration, cr.wm - 12.0)])],
                  "note": "6 s on the crossing, pedestrian 12 m along the pavement", "truth": ("start", "end")})
 
-    # F5: 9.5 s on the crossing; the walker sets off when the car stops, waits 0.6 m from its side for
-    # 4 s, then goes back to the kerb before the car leaves
+    # F5: 9.5 s on the crossing (under F1's 10 s); the walker sets off when the car stops, waits 0.6 m
+    # from its side (up to 4 s), then is back at the kerb 0.5 s before the car leaves, so the car's
+    # departure is not also a failure to yield
+    # The walker starts already on the crossing, in the next lane 3.5 m from the car's side (beyond
+    # zebra_pedestrians conflict_m 3 m, so the car arriving is not a failure to yield): from the kerb
+    # the walk there and back took the whole 9.5 s (Town03 spot 1, 2026-10-10)
     car = stop_on(9.5)
     s_block = near_side + side * 0.6
+    s_wait = near_side + side * 3.5
+    if not (cr.s0 < s_wait < cr.s1):
+        s_wait = kerb
     t0 = car.marks["start"] + 0.5
-    ped = _walker(Trajectory, cr, [("stand", kerb, t0), ("walk", s_block), ("stand", s_block, 4.0), ("walk", kerb),
-                                   ("stand", kerb, 3.0)])
-    if ped.duration - 3.0 > car.marks["end"] - 0.5:
-        print("[plan] F5: the walker would still be on the crossing when the car leaves - check the timing")
-    acts.append({"type": "zebra_crossing", "condition": "F5", "expected": True, "traj": car, "walkers": [ped],
-                 "note": "stopped in a crossing pedestrian's path", "truth": ("start", "end")})
+    wait = min(4.0, car.marks["end"] - 0.5 - t0 - 2 * walk_to(s_wait, s_block))
+    if wait < 1.5:  # zebra_pedestrians obstruct_min_s 1.0 plus margin
+        print(f"[plan] F5: only {wait:.1f} s at the car's side before it leaves - act skipped")
+    ped = _walker(Trajectory, cr, [("stand", s_wait, t0), ("walk", s_block), ("stand", s_block, max(wait, 0.0)),
+                                   ("walk", s_wait), ("stand", s_wait, 3.0)])
+    if wait >= 1.5:
+        acts.append({"type": "zebra_crossing", "condition": "F5", "expected": True, "traj": car, "walkers": [ped],
+                     "note": "stopped in a crossing pedestrian's path", "truth": ("start", "end")})
 
     kept = []
     for a in acts:

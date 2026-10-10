@@ -30,7 +30,7 @@ state ("ok"|"checking"|"flagged"), t_s}`.
 |---|---|---|
 | `POST /api/auth/login` | none | `{username, password}` → token |
 | `GET /api/me` | any | `{username, role}` |
-| `GET /api/health` | none | `{db, redis, s3}` each `"ok"` or an error string |
+| `GET /api/health` | none | `{db, redis, s3}` each `"ok"` or an error string; `clips` = background WebM transcodes `{queued, done, skipped, failed, pending}` |
 | `GET /api/sessions` | any | list of sessions |
 | `POST /api/sessions/import` | OPERATOR, ADMIN | `{flight, violations_dir?, scene?, profile?}`: loads `violations.json` (+ clips, trajectories) of a processed flight; returns the session |
 | `GET /api/sessions/{id}` | any | one session |
@@ -49,6 +49,9 @@ state ("ok"|"checking"|"flagged"), t_s}`.
 | `GET /api/recommendations` | any | from `ml/planning` (M8): list of recommendation objects |
 | `POST /api/recommendations/{id}/decision` | PLANNER, ADMIN | `{decision: accepted|rejected|modified, rationale}` → planner history |
 | `GET /api/planner/history` | any | decisions + validation results |
+| `GET /api/scenarios/countermeasures` | any | the M8 catalogue: key, name, violation types it addresses, whether a sourced factor exists |
+| `POST /api/scenarios` | PLANNER, ADMIN | what-if (PRD 21.3): `{session_id, name, changes: {lane_overrides, zones}, countermeasure?, area?}` → 202 `{id, status: running}`; runs `ml/planning/whatif.py` in the background |
+| `GET /api/scenarios?session_id=` · `GET /api/scenarios/{id}` | any | saved scenarios (summary) · one with `result.replay` (rule replay on the recorded traffic, measured) and `result.projection` (countermeasure × sourced factor, projected estimate) |
 | `POST /api/live/state` | service token | list of vehicle states → Redis (TTL 2 s) + WebSocket |
 | `WS /api/ws/live?session_id=` | token as `?token=` | server pushes `{"type":"vehicles","items":[...]}` (≤ 10 Hz) and `{"type":"event","event":{...}}` |
 
@@ -71,7 +74,7 @@ Run: `docker compose up -d`, then `venv\Scripts\python.exe -m uvicorn backend.ap
 - **Event** objects also carry `occurred_at` (ISO UTC: session start + event time; this is what
   `since` / `until` / `by_hour` use). Validate an event against the schema without it. Evidence keeps
   the engine's `clip` / `snapshot` paths and gains `clip_key` / `clip_url` (and `snapshot_*`).
-- **`GET /api/files/{key}`**: no token needed (so `<video src>` works); supports `Range` (206).
+- **`GET /api/files/{key}`**: no token needed (so `<video src>` works); supports `Range` (206). Evidence clips are uploaded as mp4 at import and transcoded to WebM in the background; a `.mp4` key is served as its `.webm` once that exists.
 - **`/api/events` filters** `type`, `condition`, `status`, `kind`, `review`, `session_id` take
   comma lists (`status=flagged,needs_review`). `limit` ≤ 5000. Order: `occurred_at`, then `event_id`.
   `GET /api/events/{id}/reviews` lists every review of an event (`{outcome, note, by, at}`).

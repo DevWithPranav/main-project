@@ -7,7 +7,7 @@ import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import type { ExportFormat } from '../api/client';
-import { ANOMALY_STATUSES, ANOMALY_TYPES, VIOLATION_STATUSES, VIOLATION_TYPES } from '../api/types';
+import { VIOLATION_STATUSES, VIOLATION_TYPES } from '../api/types';
 import { useConditions, useSessions } from '../hooks';
 import { activeFilterCount, filtersToParams, paramsToFilters, type EventFilters } from '../lib/filters';
 import { statusLabel, typeLabel } from '../lib/format';
@@ -41,14 +41,14 @@ export default function FilterBar({ value, onChange }: { value: EventFilters; on
     }
   };
 
-  const types = value.kind === 'anomaly' ? ANOMALY_TYPES : value.kind === 'violation' ? VIOLATION_TYPES : [...VIOLATION_TYPES, ...ANOMALY_TYPES];
-  const statuses = [...new Set([...VIOLATION_STATUSES, ...ANOMALY_STATUSES])];
+  // road-surface anomalies (M9) were dropped from the project (2026-10-10): violations only
+  const types = VIOLATION_TYPES;
+  const statuses = VIOLATION_STATUSES;
 
   return (
     <Group gap="xs" align="end">
       <Select label="Session" w={200} clearable searchable value={value.session_id ?? null} onChange={set('session_id')}
         data={(sessions.data ?? []).map((s) => ({ value: s.session_id, label: s.name || s.session_id }))} />
-      <Select label="Kind" w={120} clearable value={value.kind ?? null} onChange={set('kind')} data={['violation', 'anomaly']} />
       <Select label="Type" w={170} clearable value={value.type ?? null} onChange={set('type')} data={types.map((t) => ({ value: t, label: typeLabel(t) }))} />
       <Select label="Condition" w={230} clearable searchable value={value.condition ?? null} onChange={set('condition')}
         data={(conds?.conditions ?? []).filter((c) => !c.alias_of).map((c) => ({ value: c.id, label: `${c.id} ${c.name}` }))} />

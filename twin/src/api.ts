@@ -5,6 +5,7 @@
  * flight's trajectories/events from the repo in the same shapes, so the twin runs without a backend.
  */
 import type { Scene, Session, TownObjects, Trajectories, TwinEvent } from "./types";
+import type { Countermeasure, ScenarioRequest, ScenarioRow } from "./whatif";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -60,6 +61,8 @@ export class Api {
   health = () => this.req<Record<string, string>>("GET", "/health");
   scenes = () => this.req<unknown>("GET", "/scenes");
   scene = (town: string) => this.req<Scene>("GET", `/scenes/${encodeURIComponent(town)}`);
+  /** A session's own map: its town, or a real clip's site map (its own metres). */
+  sessionScene = (id: string) => this.req<Scene>("GET", `/sessions/${encodeURIComponent(id)}/scene`);
   /** Static town objects as oriented boxes (export_town_objects.py); 404 when not exported. */
   objects = (town: string) => this.req<TownObjects>("GET", `/scenes/${encodeURIComponent(town)}/objects`);
   sessions = () => this.req<Session[]>("GET", "/sessions");
@@ -82,6 +85,12 @@ export class Api {
   profileHistory = (name: string) => this.req<any[]>("GET", `/profiles/${encodeURIComponent(name)}/history`);
   putProfile = (name: string, body: { profile: unknown; note: string; zones?: unknown }) =>
     this.req<unknown>("PUT", `/profiles/${encodeURIComponent(name)}`, body);
+
+  /** What-if scenarios (PRD 21.3): POST returns at once with status "running"; poll scenario(id). */
+  countermeasures = () => this.req<Countermeasure[]>("GET", "/scenarios/countermeasures");
+  createScenario = (body: ScenarioRequest) => this.req<ScenarioRow>("POST", "/scenarios", body);
+  scenario = (id: string) => this.req<ScenarioRow>("GET", `/scenarios/${encodeURIComponent(id)}`);
+  scenarios = (sessionId: string) => this.req<ScenarioRow[]>("GET", `/scenarios?session_id=${encodeURIComponent(sessionId)}`);
 
   /** WebSocket URL for live vehicles/events (token as ?token=, per the contract). */
   liveUrl(sessionId?: string): string {

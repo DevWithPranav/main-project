@@ -56,6 +56,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "detection"))
 from carla_autolabel import ue_matrix  # noqa: E402
 
 BOX_CENTRE_Z = 0.75  # m above the road: a car's box centre seen from above (~half its height)
+# taller classes: measured on the 2026-10-10 staging flights (4 flights, pipeline vs true positions,
+# outward offset from the nadir point): with 0.75 m, cars came out -0.03 m (median) but bus +1.07 m
+# and truck +1.09 m too high, so their positions were pushed outward (a bus 35 m off-centre ~1.1 m
+# sideways, enough to read as straddling a line)
+CLASS_CENTRE_Z = {"bus": 1.85, "truck": 1.85}
+
+
+def centre_dz(classes) -> np.ndarray:
+    """Per box: its class's box-centre height minus BOX_CENTRE_Z (0 for cars and unknown classes)."""
+    return np.array([CLASS_CENTRE_Z.get(str(c), BOX_CENTRE_Z) - BOX_CENTRE_Z for c in classes], float)
 MAX_POSE_GAP = 40  # sim ticks; a frame further than this from any logged pose has no position
 
 
@@ -120,13 +130,15 @@ class FlightCamera:
         pos = np.array([np.interp(cf_c, self.pose_cf, self.pose_pos[:, i]) for i in range(3)])
         return pos, self._slerp([cf_c]).as_matrix()[0]
 
-    def to_ground(self, frame: int, u: np.ndarray, v: np.ndarray, ground_z: float | None = None) -> np.ndarray | None:
-        """Pixels (u, v arrays) of one frame -> (N, 2) world x, y on the plane z = ground_z."""
+    def to_ground(self, frame: int, u: np.ndarray, v: np.ndarray, ground_z: float | None = None,
+                  dz=0.0) -> np.ndarray | None:
+        """Pixels (u, v arrays) of one frame -> (N, 2) world x, y on the plane z = ground_z (+ dz per box:
+        centre_dz of its class)."""
         p = self.pose(frame)
         if p is None:
             return None
         pos, R = p
-        gz = self.ground_z if ground_z is None else ground_z
+        gz = (self.ground_z if ground_z is None else ground_z) + np.asarray(dz, float)
         # UE camera frame: x forward, y right, z up (u = W/2 + f*y/x, v = H/2 - f*z/x)
         d_cam = np.stack([np.ones_like(u, dtype=float), (np.asarray(u, float) - self.W / 2) / self.f,
                           -(np.asarray(v, float) - self.H / 2) / self.f])
@@ -134,8 +146,9 @@ class FlightCamera:
         t = (gz - pos[2]) / d[2]
         return (pos[:2, None] + t * d[:2]).T
 
-    def to_ground_on_roads(self, frame: int, u: np.ndarray, v: np.ndarray, surface: "RoadSurface") -> np.ndarray | None:
-        """Like to_ground, but onto the road surface (box centres BOX_CENTRE_Z above it); points that
+    def to_ground_on_roads(self, frame: int, u: np.ndarray, v: np.ndarray, surface: "RoadSurface",
+                           dz=0.0) -> np.ndarray | None:
+        """Like to_ground, but onto the road surface (box centres BOX_CENTRE_Z + dz above it); points that
         land on no road at any height keep the flat-plane position."""
         p = self.pose(frame)
         if p is None:
@@ -144,7 +157,8 @@ class FlightCamera:
         d = R @ np.stack([np.ones_like(u, dtype=float), (np.asarray(u, float) - self.W / 2) / self.f,
                           -(np.asarray(v, float) - self.H / 2) / self.f])
         levels = surface.levels  # candidate road heights, ascending
-        t = (levels[:, None] + BOX_CENTRE_Z - pos[2]) / d[2][None, :]  # (L, N)
+        dz = np.broadcast_to(np.asarray(dz, float), u.shape)
+        t = (levels[:, None] + BOX_CENTRE_Z + dz[None, :] - pos[2]) / d[2][None, :]  # (L, N)
         X, Y = pos[0] + t * d[0][None, :], pos[1] + t * d[1][None, :]
         top, low = surface.heights(X, Y)
         tol = surface.LEVEL_STEP_M / 2 + 0.05
@@ -152,7 +166,7 @@ class FlightCamera:
         hit = ok.any(axis=0)
         k = len(levels) - 1 - np.argmax(ok[::-1], axis=0)  # the highest level where the ray meets a road
         cols = np.arange(len(k))
-        out = self.to_ground(frame, u, v)
+        out = self.to_ground(frame, u, v, dz=dz)
         out[hit] = np.stack([X[k, cols], Y[k, cols]], axis=1)[hit]
         return out
 
@@ -248,7 +262,8 @@ def add_world_columns(csv_path: Path, cam: FlightCamera, surface: RoadSurface | 
     missing = 0
     for frame, rs in by_frame.items():
         u, v = np.array([float(r["cx"]) for r in rs]), np.array([float(r["cy"]) for r in rs])
-        g = cam.to_ground(frame, u, v) if surface is None else cam.to_ground_on_roads(frame, u, v, surface)
+        dz = centre_dz(r.get("class", "car") for r in rs)
+        g = cam.to_ground(frame, u, v, dz=dz) if surface is None else cam.to_ground_on_roads(frame, u, v, surface, dz)
         exact = int(cam.pose_exact(frame))
         for i, r in enumerate(rs):
             r["pose_exact"] = exact

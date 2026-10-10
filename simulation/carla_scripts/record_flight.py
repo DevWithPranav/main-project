@@ -418,8 +418,8 @@ class VehiclePoseLogger:
     to an actor or a map object (shown as an unmatched "P#" with a low --ignore-vehicles-pct
     lifetime, i.e. it existed only briefly)."""
 
-    def __init__(self, world, known_vehicles: dict, rescan_every: float = 2.0):
-        self.world = world
+    def __init__(self, world, known_vehicles: dict, rescan_every: float = 2.0, pattern: str = "vehicle.*"):
+        self.world, self.pattern = world, pattern
         self.known = known_vehicles  # id -> {type_id, base_type, bbox}; shared with the caller, grown in place
         self.ids: set[int] = set(int(k) for k in known_vehicles)
         self.frames: dict[int, list] = {}
@@ -428,7 +428,7 @@ class VehiclePoseLogger:
         self._cb = world.on_tick(self._on_tick)
 
     def _rescan(self) -> None:
-        for a in self.world.get_actors().filter("vehicle.*"):
+        for a in self.world.get_actors().filter(self.pattern):
             if a.id not in self.ids:
                 self.ids.add(a.id)
                 self.known[a.id] = {"type_id": a.type_id, "base_type": a.attributes.get("base_type", ""),
@@ -613,15 +613,19 @@ def main() -> None:
     print(f"[signals] logging {len(light_logger.lights)} traffic lights (red-light rule)")
     seg_grabber = None
     depth_grabber = None
-    pose_logger = None
+    pose_logger = walker_logger = None
     known_vehicles: dict = {}
+    known_walkers: dict = {}
     if args.labels:
         (out_dir / "seg").mkdir(exist_ok=True)
         (out_dir / "depth").mkdir(exist_ok=True)
         snapshot_vehicles(world, known_vehicles)
         baked = map_vehicles(world)
         (out_dir / "map_vehicles.json").write_text(json.dumps(baked, indent=1))
-        pose_logger = VehiclePoseLogger(world, known_vehicles)
+        # rescan 0.5 s: at 2 s a staged car's first ~1.3 s were missing from the truth (2026-10-10)
+        pose_logger = VehiclePoseLogger(world, known_vehicles, rescan_every=0.5)
+        # Build Plan M3: walkers too (background and staged), the truth for the zebra rules F2 / F3 / F5
+        walker_logger = VehiclePoseLogger(world, known_walkers, rescan_every=0.5, pattern="walker.pedestrian.*")  # staged walkers live ~10-25 s
         # spawned back to back so both usually fire on the same ticks; the converter also
         # accepts a depth frame a tick or two off
         seg_grabber = SegCameraGrabber(world, drone_actor, out_dir / "seg", interval=args.label_interval,
@@ -677,6 +681,8 @@ def main() -> None:
             depth_grabber.stop()
             seg_grabber.write_poses(out_dir / "camera_poses.csv")
             pose_logger.stop_and_write(out_dir / "vehicle_poses.csv", set(seg_grabber.poses))
+            walker_logger.stop_and_write(out_dir / "walker_poses.csv", set(seg_grabber.poses))
+            print(f"[labels] {len(known_walkers)} walkers -> walker_poses.csv")
             snapshot_vehicles(world, known_vehicles)
             (out_dir / "actors.json").write_text(json.dumps({str(k): v for k, v in known_vehicles.items()}, indent=1))
             print(f"[labels] {seg_grabber.saved_count} seg + {depth_grabber.saved_count} depth frames, "

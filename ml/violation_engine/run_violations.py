@@ -297,11 +297,12 @@ def run_site(args, params: dict | None, disabled: set[str]) -> None:
     print(f"[violations] {len(events)} events -> {out}")
 
 
-def with_learned_flow(scene_data: dict, rows: list[dict]) -> dict:
+def with_learned_flow(scene_data: dict, rows: list[dict], two_way_check: bool = True) -> dict:
     """Lanes learned from the traffic itself (flow_map.py) in place of the map's lanes; zones and
-    stop lines are kept. For footage with no lane map: only the wrong-way rule gets a direction."""
+    stop lines are kept. For footage with no lane map: only the wrong-way rule gets a direction.
+    two_way_check: real footage (noisy positions); off for CARLA's exact ones (flow_map.py)."""
     from flow_map import flow_lanes, learn
-    lanes = flow_lanes(learn(rows))
+    lanes = flow_lanes(learn(rows, two_way_check=two_way_check))
     print(f"[flow] {len(lanes)} learned cells, {sum(not l['junction'] for l in lanes)} one-way")
     return {**scene_data, "lanes": lanes}
 
@@ -449,7 +450,7 @@ def main() -> None:
     write_rows(rows, out / "kinematics.csv")
 
     if args.learn_flow:
-        scene_data = with_learned_flow(scene_data, rows)
+        scene_data = with_learned_flow(scene_data, rows, two_way_check=False)  # CARLA: exact positions
     # red light (optional, off unless --red-light): recorded signal states + CARLA's stop lines
     signals = SignalLog.from_flight(args.flight) if args.red_light else None
     if signals is not None:

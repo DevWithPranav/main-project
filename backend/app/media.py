@@ -4,7 +4,8 @@ The pipeline writes MPEG-4 Part 2 (`mp4v`) files: annotated overlay videos and e
 Chrome and Firefox do not decode that codec, so <video> stays black. OpenCV's bundled FFmpeg can
 write VP8 / WebM here (no H.264 encoder in the pip wheel; checked 2026-10-10), so videos are
 transcoded once:
-  - evidence clips at import (a few seconds each)
+  - evidence clips after import, one at a time in a background worker (queue_clip); the mp4 is
+    uploaded first, and /api/files serves <key>.webm in its place once it exists
   - a session's overlay video on request, in a background thread (20261002_001635: 5 611 frames
     1080p -> 854x480 every 2nd frame, ~14 source fps on the dev laptop, so ~7 min)
 The session video is stored in S3 as sessions/<id>/video.webm with sessions/<id>/video.json:
@@ -18,6 +19,7 @@ Usage (also run by POST /api/sessions/{id}/video):
 import argparse
 import csv
 import json
+import queue
 import tempfile
 import threading
 import time
@@ -80,11 +82,64 @@ def clip_to_webm(src: Path, tmp_dir: Path) -> Path | None:
         return None
 
 
+# ------------------------------------------------------------------ evidence clips, in the background
+
+_clip_q: "queue.Queue[tuple[Path, str]]" = queue.Queue()
+_clip_stats = {"queued": 0, "done": 0, "skipped": 0, "failed": 0}
+_clip_worker: threading.Thread | None = None
+
+
+def webm_key(key: str) -> str:
+    """S3 key of the WebM made from an uploaded mp4 clip."""
+    return key[:-4] + ".webm" if key.lower().endswith(".mp4") else key
+
+
+def queue_clip(src: Path, key: str) -> None:
+    """Transcode src later and upload it as webm_key(key). The mp4 stays as the fallback."""
+    global _clip_worker
+    with _lock:
+        _clip_stats["queued"] += 1
+        if _clip_worker is None or not _clip_worker.is_alive():
+            _clip_worker = threading.Thread(target=_run_clips, daemon=True, name="clip-webm")
+            _clip_worker.start()
+    _clip_q.put((src, key))
+
+
+def _run_clips() -> None:
+    while True:
+        src, key = _clip_q.get()
+        outcome = "failed"
+        try:
+            if storage.exists(webm_key(key)):
+                outcome = "skipped"  # made by an earlier import
+            else:
+                # the worker is a daemon: a server stopped mid-encode leaves the file open
+                with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                    dst = clip_to_webm(src, Path(tmp))
+                    if dst is not None:
+                        storage.upload(dst, webm_key(key))
+                        outcome = "done"
+        except Exception:  # noqa: BLE001 - the mp4 is still served
+            pass
+        with _lock:
+            _clip_stats[outcome] += 1
+        _clip_q.task_done()
+
+
+def clip_status() -> dict:
+    """{queued, done, skipped, failed, pending} since the server started."""
+    with _lock:
+        out = dict(_clip_stats)
+    out["pending"] = out["queued"] - out["done"] - out["skipped"] - out["failed"]
+    return out
+
+
 # ------------------------------------------------------------------ session overlay video
 
-def session_source(flight: str) -> Path | None:
-    """The overlay video with boxes, IDs and speeds; else the raw flight video."""
-    run = config.RESULTS_DIR / flight / config.TRACKER_RUN
+def session_source(flight: str, run: Path | None = None) -> Path | None:
+    """The overlay video with boxes, IDs and speeds; else the raw flight video. run: a real clip's run
+    folder (process_video.py output), whose annotated video is in clip frames = session time / fps."""
+    run = run or config.RESULTS_DIR / flight / config.TRACKER_RUN
     for p in (run / "annotated_final.mp4", run / "annotated.mp4", config.RECORDINGS_DIR / flight / "flight.mp4"):
         if p.is_file():
             return p
@@ -120,9 +175,9 @@ def video_info(sid: str) -> dict:
     return {"status": "ready", "url": storage.file_url(vk), **side}
 
 
-def encode_session(sid: str, flight: str) -> dict:
+def encode_session(sid: str, flight: str, run: Path | None = None) -> dict:
     """Blocking: transcode + upload. Updates _jobs for progress."""
-    src = session_source(flight)
+    src = session_source(flight, run)
     if src is None:
         raise FileNotFoundError(f"no video for flight {flight}")
     ft = frame_times(flight)
@@ -150,7 +205,7 @@ def encode_session(sid: str, flight: str) -> dict:
     return side
 
 
-def start_encode(sid: str, flight: str) -> dict:
+def start_encode(sid: str, flight: str, run: Path | None = None) -> dict:
     """Start encode_session in a daemon thread unless one runs; returns the current info."""
     with _lock:
         if (_jobs.get(sid) or {}).get("status") == "encoding":
@@ -159,7 +214,7 @@ def start_encode(sid: str, flight: str) -> dict:
 
     def run() -> None:
         try:
-            encode_session(sid, flight)
+            encode_session(sid, flight, run)
         except Exception as e:  # noqa: BLE001 - reported by GET .../video
             with _lock:
                 _jobs[sid] = {"status": "failed", "error": str(e)}
