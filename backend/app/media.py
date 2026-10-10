@@ -8,7 +8,8 @@ transcoded once:
     uploaded first, and /api/files serves <key>.webm in its place once it exists
   - a session's overlay video on request, in a background thread (20261002_001635: 5 611 frames
     1080p -> 854x480 every 2nd frame, ~14 source fps on the dev laptop, so ~7 min)
-The session video is stored in S3 as sessions/<id>/video.webm with sessions/<id>/video.json:
+A session has two videos, kind `annotated` (the model's overlay) and `raw` (the footage the model
+was given), stored in S3 as sessions/<id>/video.webm + video.json and raw.webm + raw.json; the json:
 {fps, step, frames, frame_t: [t_s of each output frame], source}, so a player maps
 video time <-> session time (sim seconds, the time base of events and trajectories).
 
@@ -136,11 +137,32 @@ def clip_status() -> dict:
 
 # ------------------------------------------------------------------ session overlay video
 
-def session_source(flight: str, run: Path | None = None) -> Path | None:
-    """The overlay video with boxes, IDs and speeds; else the raw flight video. run: a real clip's run
-    folder (process_video.py output), whose annotated video is in clip frames = session time / fps."""
+KINDS = ("annotated", "raw")  # the model's output (boxes, IDs, speeds) / the footage the model was given
+
+
+def raw_source(flight: str, run: Path | None = None) -> Path | None:
+    """The footage before the model: a CARLA flight's flight.mp4 (same frames as frames/ and the
+    overlay), or a real clip's source video named in its run_config.json."""
+    if run is None:
+        p = config.RECORDINGS_DIR / flight / "flight.mp4"
+        return p if p.is_file() else None
+    try:
+        src = Path(json.loads((run / "run_config.json").read_text(encoding="utf-8"))["source"])
+    except (OSError, KeyError, ValueError):
+        src = Path(f"{flight}.mp4")
+    for p in (src, config.REPO / src, config.REPO / src.name, config.REPO / "ml" / "data" / "real_videos" / src.name):
+        if p.is_file():
+            return p
+    return None
+
+
+def session_source(flight: str, run: Path | None = None, kind: str = "annotated") -> Path | None:
+    """kind annotated: the overlay video with boxes, IDs and speeds; raw: raw_source. run: a real clip's
+    run folder (process_video.py output), whose videos are in clip frames = session time / fps."""
+    if kind == "raw":
+        return raw_source(flight, run)
     run = run or config.RESULTS_DIR / flight / config.TRACKER_RUN
-    for p in (run / "annotated_final.mp4", run / "annotated.mp4", config.RECORDINGS_DIR / flight / "flight.mp4"):
+    for p in (run / "annotated_final.mp4", run / "annotated.mp4"):
         if p.is_file():
             return p
     return None
@@ -157,17 +179,18 @@ def frame_times(flight: str) -> list[float] | None:
     return [float(r[col]) for r in rows]
 
 
-def video_key(sid: str) -> tuple[str, str]:
-    return f"sessions/{sid}/video.webm", f"sessions/{sid}/video.json"
+def video_key(sid: str, kind: str = "annotated") -> tuple[str, str]:
+    name = "video" if kind == "annotated" else kind  # annotated keeps the original key (videos made before)
+    return f"sessions/{sid}/{name}.webm", f"sessions/{sid}/{name}.json"
 
 
-def video_info(sid: str) -> dict:
+def video_info(sid: str, kind: str = "annotated") -> dict:
     """{status: none|encoding|ready|failed, ...}; ready adds url + the sidecar."""
     with _lock:
-        job = dict(_jobs.get(sid) or {})
+        job = dict(_jobs.get(f"{sid}:{kind}") or {})
     if job.get("status") in ("encoding", "failed"):
         return job
-    vk, jk = video_key(sid)
+    vk, jk = video_key(sid, kind)
     try:
         side = json.loads(storage.get(jk)["Body"].read())
     except Exception:  # noqa: BLE001 - not made yet
@@ -175,16 +198,17 @@ def video_info(sid: str) -> dict:
     return {"status": "ready", "url": storage.file_url(vk), **side}
 
 
-def encode_session(sid: str, flight: str, run: Path | None = None) -> dict:
+def encode_session(sid: str, flight: str, run: Path | None = None, kind: str = "annotated") -> dict:
     """Blocking: transcode + upload. Updates _jobs for progress."""
-    src = session_source(flight, run)
+    src = session_source(flight, run, kind)
     if src is None:
-        raise FileNotFoundError(f"no video for flight {flight}")
+        raise FileNotFoundError(f"no {kind} video for flight {flight}")
     ft = frame_times(flight)
+    job = f"{sid}:{kind}"
 
     def prog(x: float) -> None:
         with _lock:
-            _jobs[sid] = {"status": "encoding", "progress": round(x, 3), "source": src.name}
+            _jobs[job] = {"status": "encoding", "progress": round(x, 3), "source": src.name}
 
     prog(0.0)
     t0 = time.perf_counter()
@@ -195,39 +219,41 @@ def encode_session(sid: str, flight: str, run: Path | None = None) -> dict:
             frame_t = [round(ft[i], 3) for i in range(0, meta["src_frames"], SESSION_STEP)][: meta["frames"]]
         else:  # no frame clock: assume the video starts at session time 0
             frame_t = [round(i / meta["fps"], 3) for i in range(meta["frames"])]
-        side = {**meta, "frame_t": frame_t, "source": src.name, "encode_s": round(time.perf_counter() - t0, 1)}
-        vk, jk = video_key(sid)
+        side = {**meta, "frame_t": frame_t, "source": src.name, "kind": kind, "encode_s": round(time.perf_counter() - t0, 1)}
+        vk, jk = video_key(sid, kind)
         storage.client().upload_file(str(dst), config.S3_BUCKET, vk, ExtraArgs={"ContentType": "video/webm"})
         storage.client().put_object(Bucket=config.S3_BUCKET, Key=jk, Body=json.dumps(side).encode(),
                                     ContentType="application/json")
     with _lock:
-        _jobs.pop(sid, None)
+        _jobs.pop(job, None)
     return side
 
 
-def start_encode(sid: str, flight: str, run: Path | None = None) -> dict:
+def start_encode(sid: str, flight: str, run: Path | None = None, kind: str = "annotated") -> dict:
     """Start encode_session in a daemon thread unless one runs; returns the current info."""
+    job = f"{sid}:{kind}"
     with _lock:
-        if (_jobs.get(sid) or {}).get("status") == "encoding":
-            return dict(_jobs[sid])
-        _jobs[sid] = {"status": "encoding", "progress": 0.0}
+        if (_jobs.get(job) or {}).get("status") == "encoding":
+            return dict(_jobs[job])
+        _jobs[job] = {"status": "encoding", "progress": 0.0}
 
-    def run() -> None:
+    def go() -> None:
         try:
-            encode_session(sid, flight, run)
+            encode_session(sid, flight, run, kind)
         except Exception as e:  # noqa: BLE001 - reported by GET .../video
             with _lock:
-                _jobs[sid] = {"status": "failed", "error": str(e)}
+                _jobs[job] = {"status": "failed", "error": str(e)}
 
-    threading.Thread(target=run, daemon=True, name=f"video-{sid}").start()
+    threading.Thread(target=go, daemon=True, name=f"video-{job}").start()
     return {"status": "encoding", "progress": 0.0}
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("flight")
+    ap.add_argument("--kind", choices=KINDS, default="annotated")
     a = ap.parse_args()
-    side = encode_session(a.flight, a.flight)
+    side = encode_session(a.flight, a.flight, kind=a.kind)
     print({k: v for k, v in side.items() if k != "frame_t"})
 
 

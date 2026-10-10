@@ -327,6 +327,10 @@ def engine_config(args) -> tuple[dict | None, set[str]]:
         for k in ("scene", "zones"):  # not road.site: that would switch a flight run into site mode
             if getattr(args, k) is None and road.get(k):
                 setattr(args, k, REPO / road[k])
+        # a --zones file (e.g. a scenario log) and the profile's zone file (zones drawn in the dashboard,
+        # backend /api/zones) both apply: road_scene adds the profile's on top
+        if road.get("zones") and args.zones != REPO / road["zones"]:
+            args.road_zones_file = REPO / road["zones"]
         print(f"[profile] {prof['name']}: off = "
               f"{sorted([t for t, v in params.items() if v.get('enabled') is False] + sorted(disabled)) or 'none'}")
     for t, v in (json.loads(args.params.read_text()) if args.params else {}).items():
@@ -348,6 +352,13 @@ def road_scene(scene: dict, args, derive_features: bool = False) -> dict:
     if extra:
         scene["zones"] = scene.get("zones", []) + extra
         print(f"[profile] {len(extra)} extra zone(s) from the profile")
+    zf = getattr(args, "road_zones_file", None)  # the profile's zone file next to a --zones file
+    if zf is not None:
+        if not zf.is_file():
+            raise SystemExit(f"profile road.zones file not found: {zf}")
+        add = json.loads(zf.read_text()).get("zones", [])
+        scene["zones"] = scene.get("zones", []) + add
+        print(f"[profile] {len(add)} zone(s) from {zf.name} (profile road.zones) added to --zones")
     return scene
 
 

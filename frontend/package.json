@@ -19,6 +19,7 @@
     "@tabler/icons-react": "3.49.0",
     "@tanstack/react-query": "5.104.1",
     "ajv": "8.20.0",
+    "cesium": "1.145.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-router-dom": "7.18.4",
@@ -37,6 +38,11 @@
     "postcss-simple-vars": "^7.0.1",
     "typescript": "5.9.3",
     "vite": "8.3.4",
+    "vite-plugin-static-copy": "4.1.1",
     "vitest": "5.0.3"
+  },
+  "overrides": {
+    "@cesium/engine": "26.3.0",
+    "@cesium/widgets": "16.2.0"
   }
 }

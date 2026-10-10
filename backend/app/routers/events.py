@@ -1,10 +1,8 @@
 """Events: list / one / create (live), review, stats, exports."""
 
-import asyncio
 import math
 import time
 from collections import Counter, defaultdict
-from dataclasses import asdict
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -13,12 +11,12 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import config, exports
 from ..auth import Principal, current_user, require
 from ..db import get_db
 from ..engine_bridge import condition_of, event_errors
 from ..events import EventFilters, base_query, event_filters, iso, to_api, to_row
 from ..live import hub
+from . import reports
 from ..models import Event, Review, Session
 
 router = APIRouter()
@@ -130,29 +128,15 @@ async def stats(f: EventFilters = Depends(event_filters), db: AsyncSession = Dep
     }
 
 
-MEDIA = {"csv": ("text/csv", "csv"), "geojson": ("application/geo+json", "geojson"),
-         "xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"),
-         "pdf": ("application/pdf", "pdf")}
-
-
 @router.get("/export")
 async def export(format: str = Query(..., pattern="^(pdf|xlsx|geojson|csv)$"),
                  f: EventFilters = Depends(event_filters), db: AsyncSession = Depends(get_db),
-                 _: Principal = Depends(current_user)):
+                 user: Principal = Depends(current_user)):
+    """The file itself; also recorded in the report history (routers/reports.py: S3 + reports row)."""
     t0 = time.perf_counter()
-    events = [to_api(r) for r in await filtered(db, f, config.EXPORT_MAX_ROWS)]
-    total = (await db.execute(f.apply(select(func.count()).select_from(Event)))).scalar_one()
-    fdict = {k: (iso(v) if isinstance(v, datetime) else v) for k, v in asdict(f).items()}
-    if format == "csv":
-        body = exports.to_csv(events)
-    elif format == "geojson":
-        body = exports.to_geojson(events)
-    elif format == "xlsx":
-        body = await asyncio.to_thread(exports.to_xlsx, events, fdict)
-    else:
-        body = await asyncio.to_thread(exports.to_pdf, events, fdict)
-    media, ext = MEDIA[format]
-    name = f"events_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.{ext}"
-    return Response(body, media_type=media, headers={
-        "Content-Disposition": f'attachment; filename="{name}"', "X-Event-Count": str(len(events)), "X-Event-Total": str(total),
-        "X-Export-Seconds": f"{time.perf_counter() - t0:.3f}"})
+    out = await reports.build(db, format, f)
+    rep = await reports.record(db, format, out, user)
+    return Response(out["body"], media_type=out["media"], headers={
+        "Content-Disposition": f'attachment; filename="{out["filename"]}"', "X-Event-Count": str(out["n_events"]),
+        "X-Event-Total": str(out["n_total"]), "X-Export-Seconds": f"{time.perf_counter() - t0:.3f}",
+        "X-Report-Id": rep.id if rep else ""})

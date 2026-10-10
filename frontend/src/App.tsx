@@ -26,7 +26,8 @@ import {
   IconSun,
 } from '@tabler/icons-react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { MOCK, TWIN_URL } from './api';
+import { lazy, Suspense } from 'react';
+import { MOCK } from './api';
 import { useAuth } from './auth';
 import { ROLE_COLORS } from './lib/permissions';
 import ConfigPage from './pages/Config';
@@ -37,6 +38,9 @@ import SessionsPage from './pages/Sessions';
 import StatsPage from './pages/Stats';
 import ViolationsPage from './pages/Violations';
 
+// Cesium is large: the twin page loads on first visit only
+const TwinPage = lazy(() => import('./pages/Twin'));
+
 const NAV = [
   { to: '/live', label: 'Live monitoring', icon: IconRadar },
   { to: '/violations', label: 'Violations', icon: IconListCheck },
@@ -44,6 +48,7 @@ const NAV = [
   { to: '/sessions', label: 'Sessions', icon: IconDatabase },
   { to: '/config', label: 'Configuration', icon: IconAdjustments },
   { to: '/recommendations', label: 'Recommendations', icon: IconBulb },
+  { to: '/twin', label: '3D digital twin', icon: IconCube },
 ];
 
 export default function App() {
@@ -107,7 +112,6 @@ export default function App() {
             }}
           />
         ))}
-        <NavLink label="3D digital twin" leftSection={<IconCube size={18} />} href={TWIN_URL} target="_blank" component="a" />
       </AppShell.Navbar>
       <AppShell.Main>
         <Routes>
@@ -117,6 +121,14 @@ export default function App() {
           <Route path="/sessions" element={<SessionsPage />} />
           <Route path="/config" element={<ConfigPage />} />
           <Route path="/recommendations" element={<RecommendationsPage />} />
+          <Route
+            path="/twin"
+            element={
+              <Suspense fallback={<Center h={400}><Loader /></Center>}>
+                <TwinPage />
+              </Suspense>
+            }
+          />
           <Route path="*" element={<Navigate to="/live" replace />} />
         </Routes>
       </AppShell.Main>

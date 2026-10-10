@@ -7,7 +7,7 @@ import asyncpg
 import pytest
 
 FLIGHT = os.getenv("TEST_FLIGHT", "20261009_201727")
-TEST_DB = "postgresql://aerial:aerial_dev@localhost:5432/aerial_test"
+TEST_DB = f"postgresql://aerial:aerial_dev@localhost:5432/{os.getenv('TEST_DB_NAME', 'aerial_test')}"
 
 
 def test_actions_are_logged(client, auth, imported):

@@ -152,23 +152,35 @@ async def import_flight(body: ImportReq, db: AsyncSession = Depends(get_db),
 
 # --- browser video of a session (media.py): overlay video as VP8 WebM + frame -> session time ----
 
+def _kind(kind: str) -> str:
+    if kind not in media.KINDS:
+        raise HTTPException(422, f"kind must be one of {', '.join(media.KINDS)}")
+    return kind
+
+
 @router.get("/sessions/{sid}/video")
-async def session_video(sid: str, db: AsyncSession = Depends(get_db), _: Principal = Depends(current_user)):
-    if await db.get(Session, sid) is None:
+async def session_video(sid: str, kind: str = "annotated", db: AsyncSession = Depends(get_db),
+                        _: Principal = Depends(current_user)):
+    """kind annotated (model output) or raw (the footage the model was given)."""
+    s = await db.get(Session, sid)
+    if s is None:
         raise HTTPException(404, f"no session {sid}")
-    return await asyncio.to_thread(media.video_info, sid)
+    info = await asyncio.to_thread(media.video_info, sid, _kind(kind))
+    if info["status"] == "none":  # tell the page whether "Prepare" can work
+        info["available"] = bool(s.flight and media.session_source(s.flight, run_dir(s), kind))
+    return info
 
 
 @router.post("/sessions/{sid}/video")
-async def make_session_video(sid: str, db: AsyncSession = Depends(get_db),
+async def make_session_video(sid: str, kind: str = "annotated", db: AsyncSession = Depends(get_db),
                              _: Principal = Depends(require("OPERATOR"))):
     s = await db.get(Session, sid)
     if s is None:
         raise HTTPException(404, f"no session {sid}")
     run = run_dir(s)
-    if not s.flight or media.session_source(s.flight, run) is None:
-        raise HTTPException(404, f"no video for session {sid}")
-    return media.start_encode(sid, s.flight, run)
+    if not s.flight or media.session_source(s.flight, run, _kind(kind)) is None:
+        raise HTTPException(404, f"no {kind} video for session {sid}")
+    return media.start_encode(sid, s.flight, run, kind)
 
 
 def run_dir(s: Session):

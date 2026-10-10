@@ -1,5 +1,6 @@
 """Configuration: profiles (versioned), conditions, scenes (lane maps)."""
 
+import copy
 import json
 import re
 from datetime import datetime, timezone
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import config
 from ..auth import Principal, current_user, require
 from ..db import get_db
-from ..engine_bridge import load, profile_errors
+from ..engine_bridge import ROAD_ATTRIBUTES, apply_overrides, load, profile_errors
 from ..events import iso
 from ..models import Profile
 
@@ -129,9 +130,41 @@ async def get_scene_objects(town: str, _: Principal = Depends(current_user)):
     return FileResponse(p, media_type="application/json")
 
 
-@router.get("/scenes/{town}")
-async def get_scene(town: str, _: Principal = Depends(current_user)):
+def scene_path(town: str):
     for p in config.SCENE_DIR.glob("*.json"):
         if p.stem.lower() == town.lower():
-            return FileResponse(p, media_type="application/json")
+            return p
     raise HTTPException(404, f"no scene {town}")
+
+
+@cache
+def scene_doc(path_str: str, mtime: float) -> dict:
+    from pathlib import Path
+    return json.loads(Path(path_str).read_text(encoding="utf-8"))
+
+
+@router.get("/scenes/{town}")
+async def get_scene(town: str, profile: str | None = None, db: AsyncSession = Depends(get_db),
+                    _: Principal = Depends(current_user)):
+    """The lane map; with ?profile=<name>, that profile's road.lane_overrides applied (latest version, the
+    engine's road_features.apply_overrides): each changed lane gets "overridden": [keys]."""
+    p = scene_path(town)
+    if profile is None:
+        return FileResponse(p, media_type="application/json")
+    prof = await latest(db, profile)
+    if prof is None:
+        raise HTTPException(404, f"no profile {profile}")
+    doc = copy.deepcopy(scene_doc(str(p), p.stat().st_mtime))
+    try:
+        apply_overrides(doc, prof.data.get("road", {}).get("lane_overrides", []), mark=True)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {**doc, "profile": profile, "overrides_applied": sum("overridden" in l for l in doc.get("lanes", []))}
+
+
+@router.get("/road/attributes")
+async def road_attributes(_: Principal = Depends(current_user)):
+    """The lane attributes a profile's road.lane_overrides may set, and the conditions each drives."""
+    names = {c["id"]: c["name"] for c in load("conditions.json")["conditions"]}
+    return [{**{k: v for k, v in a.items() if k != "drives"},
+             "drives": [{"condition": c, "label": names.get(c, c)} for c in a["drives"]]} for a in ROAD_ATTRIBUTES]

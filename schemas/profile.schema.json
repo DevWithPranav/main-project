@@ -90,13 +90,23 @@
     },
     "lane_overrides": {
      "type": "array",
+     "description": "Planner overrides of the lane map's road attributes (road_features.apply_overrides, after derive()). lane_id: exact id or fnmatch glob (r46_s0_l2, r46_*, r46_s0_*); an entry matching no lane is an error at run time. Later entries win; null clears restricted / ramp. Which conditions each attribute drives: backend GET /api/road/attributes",
      "items": {
       "type": "object",
       "required": ["lane_id"],
       "properties": {
-       "lane_id": {"type": "string"},
+       "lane_id": {"type": "string", "minLength": 1},
        "speed_limit_kmh": {"type": "number", "exclusiveMinimum": 0},
-       "restricted": {"enum": ["bus", "emergency", "restricted", null]}
+       "restricted": {"enum": ["bus", "emergency", "restricted", null]},
+       "road_class": {"enum": ["urban", "highway"]},
+       "lane_type": {"enum": ["driving", "shoulder", "parking"]},
+       "lane_change": {"enum": ["none", "left", "right", "both"]},
+       "one_way": {"type": "boolean"},
+       "bridge": {"type": "boolean"},
+       "tunnel": {"type": "boolean"},
+       "ramp": {"enum": ["on", "off", "link", null]},
+       "median_left": {"type": "boolean"},
+       "note": {"type": "string"}
       },
       "additionalProperties": false
      }

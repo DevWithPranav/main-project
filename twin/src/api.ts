@@ -13,10 +13,27 @@ export class ApiError extends Error {
   }
 }
 
+/** `exp` (unix s) of a JWT, else null. */
+export function tokenExp(token: string | null): number | null {
+  const part = token?.split(".")[1];
+  if (!part) return null;
+  try {
+    const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+    const exp = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4))).exp;
+    return typeof exp === "number" ? exp : null;
+  } catch {
+    return null;
+  }
+}
+
 export class Api {
   token: string | null = null;
+  /** Standalone login only; embedded in the dashboard the parent sends refreshed access tokens. */
+  refreshToken: string | null = null;
   role: string | null = null;
   username: string | null = null;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private refreshing: Promise<boolean> | null = null;
 
   constructor(public base = "/api") {}
 
@@ -24,11 +41,37 @@ export class Api {
     return this.base !== "/api";
   }
 
-  private async req<T>(method: string, path: string, body?: unknown): Promise<T> {
+  /** New tokens: renew a minute before the access token expires (keeps the live socket's token valid). */
+  setTokens(access: string | null, refresh: string | null = this.refreshToken): void {
+    this.token = access;
+    this.refreshToken = refresh;
+    clearTimeout(this.timer);
+    const exp = tokenExp(access);
+    if (exp !== null && refresh) this.timer = setTimeout(() => void this.refresh(), Math.max(5000, exp * 1000 - Date.now() - 60000));
+  }
+
+  /** POST /auth/refresh (one at a time); false when there is no refresh token or it was refused. */
+  refresh(): Promise<boolean> {
+    this.refreshing ??= (async () => {
+      if (!this.refreshToken) return false;
+      try {
+        const r = await this.req<{ access_token: string; refresh_token: string }>("POST", "/auth/refresh", { refresh_token: this.refreshToken });
+        this.setTokens(r.access_token, r.refresh_token);
+        return true;
+      } catch {
+        return false;
+      }
+    })().finally(() => (this.refreshing = null));
+    return this.refreshing;
+  }
+
+  private async req<T>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
     const r = await fetch(this.base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    if (r.status === 401 && this.token && !retried && !path.startsWith("/auth/") && (await this.refresh()))
+      return this.req<T>(method, path, body, true);
     if (!r.ok) {
       let msg = `${r.status} ${r.statusText}`;
       try {
@@ -43,15 +86,19 @@ export class Api {
   }
 
   async login(username: string, password: string): Promise<string> {
-    const r = await this.req<{ access_token: string; role: string }>("POST", "/auth/login", { username, password });
-    this.token = r.access_token;
+    const r = await this.req<{ access_token: string; refresh_token?: string; role: string }>("POST", "/auth/login", { username, password });
+    this.setTokens(r.access_token, r.refresh_token ?? null);
     this.role = r.role;
     this.username = username;
     return r.role;
   }
 
-  logout(): void {
-    this.token = this.role = this.username = null;
+  /** Revokes both tokens on the server (best effort) and forgets them. */
+  async logout(): Promise<void> {
+    if (this.token || this.refreshToken)
+      await this.req("POST", "/auth/logout", { refresh_token: this.refreshToken }).catch(() => undefined);
+    this.setTokens(null, null);
+    this.role = this.username = null;
   }
 
   canEdit(): boolean {

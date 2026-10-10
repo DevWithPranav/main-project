@@ -8,7 +8,9 @@ export type Action =
   | 'review_anomaly'
   | 'import_session'
   | 'edit_profile'
-  | 'decide_recommendation';
+  | 'decide_recommendation'
+  | 'edit_zone'
+  | 'deactivate_zone';
 
 const RULES: Record<Action, Role[]> = {
   review_violation: ['OFFICER', 'ADMIN'],
@@ -16,6 +18,8 @@ const RULES: Record<Action, Role[]> = {
   import_session: ['OPERATOR', 'ADMIN'],
   edit_profile: ['ADMIN', 'PLANNER'],
   decide_recommendation: ['PLANNER', 'ADMIN'],
+  edit_zone: ['PLANNER', 'ADMIN'], // POST / PUT /api/zones
+  deactivate_zone: ['ADMIN'], // DELETE /api/zones/{id}
 };
 
 export function can(role: Role | null | undefined, action: Action): boolean {

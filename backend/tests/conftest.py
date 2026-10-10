@@ -8,15 +8,18 @@ Usage:
 
 import asyncio
 import os
+import tempfile
 import threading
 import time
 
 import httpx
 import pytest
 
-PORT = 8011
-TEST_DB = "aerial_test"
+PORT = int(os.getenv("TEST_PORT", "8011"))  # TEST_PORT / TEST_DB_NAME let two suites run at once
+TEST_DB = os.getenv("TEST_DB_NAME", "aerial_test")
 os.environ["DATABASE_URL"] = f"postgresql+asyncpg://aerial:aerial_dev@localhost:5432/{TEST_DB}"
+# zone files the engine reads (routers/zones.py) go to a temp folder, not backend/data/zones
+os.environ.setdefault("ZONE_OUT_DIR", os.path.join(tempfile.gettempdir(), f"aerial_zones_{TEST_DB}"))
 BASE = f"http://127.0.0.1:{PORT}"
 TEST_FLIGHT = os.getenv("TEST_FLIGHT", "20261009_201727")  # a processed flight with violations/ + clips
 TEST_VIOLATIONS_DIR = os.getenv("TEST_VIOLATIONS_DIR", "violations")  # its folder with >= 3 events and clips
@@ -33,7 +36,7 @@ async def _reset_db() -> None:
     conn = await asyncpg.connect(f"postgresql://aerial:aerial_dev@localhost:5432/{TEST_DB}")
     try:
         await conn.execute("CREATE EXTENSION IF NOT EXISTS postgis")
-        for t in ("audit_log", "scenarios", "anomaly_status", "planner_history", "recommendations", "reviews", "profiles", "events", "tracks", "sessions", "users"):
+        for t in ("zone_versions", "zones", "reports", "audit_log", "scenarios", "anomaly_status", "planner_history", "recommendations", "reviews", "profiles", "events", "tracks", "sessions", "users"):
             await conn.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
     finally:
         await conn.close()

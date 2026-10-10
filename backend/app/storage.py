@@ -1,7 +1,11 @@
 """Evidence store: S3 API on SeaweedFS (path-style), bucket `evidence`. boto3 is blocking, so
 callers run these in a thread (FastAPI sync routes / asyncio.to_thread)."""
 
+import base64
+import hashlib
+import hmac
 import mimetypes
+import time
 from urllib.parse import quote
 
 mimetypes.add_type("video/webm", ".webm")  # not in every Windows registry
@@ -55,6 +59,10 @@ def upload(path: Path, key: str) -> bool:
     return True
 
 
+def put_bytes(body: bytes, key: str, ctype: str) -> None:
+    client().put_object(Bucket=config.S3_BUCKET, Key=key, Body=body, ContentType=ctype)
+
+
 def get(key: str, range_header: str | None = None) -> dict:
     kw = {"Bucket": config.S3_BUCKET, "Key": key}
     if range_header:
@@ -62,6 +70,22 @@ def get(key: str, range_header: str | None = None) -> dict:
     return client().get_object(**kw)
 
 
-def file_url(key: str) -> str:
+_SIGN_KEY = (config.FILE_URL_SECRET.encode() if config.FILE_URL_SECRET
+             else hmac.new(config.JWT_SECRET.encode(), b"evidence-links", hashlib.sha256).digest())
+
+
+def sign(key: str, exp: int) -> str:
+    return base64.urlsafe_b64encode(hmac.new(_SIGN_KEY, f"{key}\n{exp}".encode(), hashlib.sha256).digest()[:18]).decode()
+
+
+def check_sig(key: str, exp: int | None, sig: str | None) -> bool:
+    """A file_url signature that matches `key` and has not expired."""
+    return bool(exp and sig) and exp >= time.time() and hmac.compare_digest(sign(key, exp), sig)
+
+
+def file_url(key: str, minutes: float | None = None) -> str:
+    """PRD 28.5: a signed link that works without a token until `exp` (config.FILE_URL_MINUTES, rounded up
+    to 5 min so repeated reads give the same URL and <video> does not reload)."""
+    exp = int(-(-(time.time() + 60 * (config.FILE_URL_MINUTES if minutes is None else minutes)) // 300) * 300)
     # real clips' keys carry their folder name (spaces, commas): percent-encode, keep the path's slashes
-    return f"/api/files/{quote(key, safe='/')}"
+    return f"/api/files/{quote(key, safe='/')}?exp={exp}&sig={sign(key, exp)}"

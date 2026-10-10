@@ -2,14 +2,14 @@
 
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import media, storage
-from ..auth import Principal, authenticate, current_user, make_token
+from .. import auth, media, storage
+from ..auth import Principal, authenticate, bearer, current_user
 from ..db import get_db
 from ..live import hub
 
@@ -21,12 +21,34 @@ class Login(BaseModel):
     password: str
 
 
+class Refresh(BaseModel):
+    refresh_token: str
+
+
+class Logout(BaseModel):
+    refresh_token: str | None = None
+
+
 @router.post("/auth/login")
 async def login(body: Login, db: AsyncSession = Depends(get_db)):
     u = await authenticate(db, body.username, body.password)
     if u is None:
         raise HTTPException(401, "wrong username or password")
-    return {"access_token": make_token(u.username, u.role), "token_type": "bearer", "role": u.role}
+    if u.disabled:
+        raise HTTPException(403, "account disabled")
+    return await auth.issue(u)
+
+
+@router.post("/auth/refresh")
+async def refresh(body: Refresh, db: AsyncSession = Depends(get_db)):
+    return await auth.refresh(db, body.refresh_token)
+
+
+@router.post("/auth/logout", status_code=204)
+async def logout(request: Request, body: Logout | None = None):
+    """Revokes the bearer access token and the refresh token in the body (either may be missing or expired)."""
+    await auth.logout(bearer(request), body.refresh_token if body else None)
+    return Response(status_code=204)
 
 
 @router.get("/me")
@@ -53,14 +75,22 @@ async def health(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/files/{key:path}")
-def get_file(key: str, request: Request):
-    """Evidence from the S3 store, with Range support so <video> can seek. Open without a token in
-    dev so <video src> works (see API.md). An mp4 clip is served as its WebM once the background
-    transcode has made it (media.queue_clip)."""
+async def get_file(key: str, request: Request, exp: int | None = None, sig: str | None = None, token: str | None = None):
+    """Evidence from the S3 store, with Range support so <video> can seek. Needs a signed link from
+    the API (storage.file_url: ?exp=&sig=, PRD 28.5) or a token (bearer header or ?token=). An mp4 clip
+    is served as its WebM once the background transcode has made it (media.queue_clip)."""
+    if not storage.check_sig(key, exp, sig) and await auth.principal(bearer(request) or token) is None:
+        if sig:
+            raise HTTPException(403, "evidence link expired or invalid")
+        raise HTTPException(401, "evidence needs a signed link or a token", headers={"WWW-Authenticate": "Bearer"})
+    return await asyncio.to_thread(_serve_file, key, request.headers.get("range"))
+
+
+def _serve_file(key: str, rng: str | None) -> StreamingResponse:
     if key.lower().endswith(".mp4") and storage.exists(media.webm_key(key)):
         key = media.webm_key(key)
     try:
-        obj = storage.get(key, request.headers.get("range"))
+        obj = storage.get(key, rng)
     except Exception:
         raise HTTPException(404, f"no file {key}")
     headers = {"Accept-Ranges": "bytes", "Content-Length": str(obj["ContentLength"])}

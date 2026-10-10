@@ -16,7 +16,7 @@ OpenDRIVE (export_lane_map.py) always wins:
                space between the lane's edge and the opposing lane's edge
   restricted   null unless set (OpenDRIVE "restricted" lanes, site file or profile override)
 
-apply_overrides() applies a profile's road.lane_overrides (restricted / speed limit by lane id
+apply_overrides() applies a profile's road.lane_overrides (any OVERRIDE_KEYS attribute by lane id
 or glob, e.g. "r37_*"). numpy only: export_lane_map.py runs it in the simulator env too.
 
 Usage:
@@ -40,6 +40,33 @@ PROBE_STEP_M = 0.5
 STATION_M = 10.0  # probe spacing along a lane
 RAMP_DEPTH = 4  # junction lanes allowed between a ramp and the highway
 GRID_M = 8.0
+_READ_AS = {"lane_type": "driving", "lane_change": "both", "road_class": "urban", "bridge": False, "tunnel": False,
+            "median_left": False}  # a missing key reads as this in lane_map.SceneMap
+# what a profile's road.lane_overrides may set (schemas/profile.schema.json), served by the backend's
+# GET /api/road/attributes; drives: condition ids (schemas/conditions.json) whose outcome it changes, read off rules.py
+ROAD_ATTRIBUTES = [
+    {"key": "speed_limit_kmh", "label": "Speed limit (km/h)", "type": "number", "min_exclusive": 0, "drives": ["E1", "E4"],
+     "how": "SpeedingMonitor: the lane's limit (a speed zone, E3, replaces it; a lower class limit caps it, E4)"},
+    {"key": "road_class", "label": "Road class", "type": "enum", "values": ["urban", "highway"], "drives": ["B1", "B2", "C3"],
+     "how": "highway (outside junctions): stopping there is a highway stop (B1; B2 on a shoulder); wrong way is C3"},
+    {"key": "lane_type", "label": "Lane type", "type": "enum", "values": ["driving", "shoulder", "parking"],
+     "drives": ["A6", "B2", "A1", "A2", "A3", "A4", "A8", "C1", "C2", "C3", "C4", "C5", "D2", "D3", "D4"],
+     "how": "shoulder: moving on it is A6, stopping on it on a highway is B2 (status possible_breakdown); only driving lanes are checked for "
+            "lane changes / straddling (A1-A4, A8), wrong way (C1-C5) and U-turns (D2-D4)"},
+    {"key": "lane_change", "label": "Lane change allowed", "type": "enum", "values": ["none", "left", "right", "both"],
+     "drives": ["A3"], "how": "a lane change to a side not allowed here is A3"},
+    {"key": "restricted", "label": "Restricted lane", "type": "enum", "values": ["bus", "emergency", "restricted", None],
+     "drives": ["A5"], "how": "a vehicle class not exempt (lane_violation.restricted_exempt) in the lane is A5; null clears"},
+    {"key": "one_way", "label": "One-way road", "type": "bool", "drives": ["C5"],
+     "how": "wrong way in a one-way lane is C5 (else C1)"},
+    {"key": "bridge", "label": "Bridge", "type": "bool", "drives": ["B5"], "how": "stopping on it is a highway stop, B5"},
+    {"key": "tunnel", "label": "Tunnel", "type": "bool", "drives": ["B5"], "how": "stopping in it is a highway stop, B5"},
+    {"key": "ramp", "label": "Ramp", "type": "enum", "values": ["on", "off", "link", None], "drives": ["B4", "C4"],
+     "how": "stopping on it is a highway stop, B4; wrong way on it is C4; null clears"},
+    {"key": "median_left", "label": "Median on the left", "type": "bool", "drives": ["D4"],
+     "how": "a mid-block U-turn from or into the lane goes through the median, D4"},
+]
+OVERRIDE_KEYS = tuple(a["key"] for a in ROAD_ATTRIBUTES)
 
 
 def _dirs(c: np.ndarray) -> np.ndarray:
@@ -246,19 +273,32 @@ def derive(scene: dict, highway_kmh: float = HIGHWAY_KMH) -> dict:
     return scene
 
 
-def apply_overrides(scene: dict, overrides: list[dict]) -> int:
-    """A profile's road.lane_overrides: set restricted / speed_limit_kmh on lanes whose id matches
-    (exact or glob). Returns how many lanes changed; raises if an entry matches no lane."""
-    n = 0
+def apply_overrides(scene: dict, overrides: list[dict], mark: bool = False) -> int:
+    """A profile's road.lane_overrides: set any OVERRIDE_KEYS attribute on the lanes whose id matches
+    (exact or glob); later entries win; null clears restricted / ramp; note is ignored. Run after
+    derive(), which fills only missing keys, so an override is never recomputed away (nothing else
+    caches these: SceneMap / rules read them per lane). Returns the number of (entry, lane) matches;
+    raises if an entry matches no lane. mark: each lane whose values changed gets "overridden": [keys]."""
+    n, changed = 0, defaultdict(set)
     for o in overrides or []:
         hit = [l for l in scene.get("lanes", []) if fnmatch.fnmatchcase(str(l["id"]), o["lane_id"])]
         if not hit:
             raise ValueError(f"lane override {o['lane_id']!r} matches no lane in scene {scene.get('scene', '')!r}")
         for l in hit:
-            for k in ("restricted", "speed_limit_kmh"):
-                if k in o:
-                    l[k] = o[k]
+            for k in OVERRIDE_KEYS:
+                if k not in o:
+                    continue
+                v = o[k].lower() if isinstance(o[k], str) else o[k]
+                if l.get(k, _READ_AS.get(k)) != v:
+                    changed[l["id"]].add(k)
+                l[k] = v
+                if k == "median_left" and not v:
+                    l.pop("median_gap_m", None)  # no median: no gap
             n += 1
+    if mark:
+        for l in scene.get("lanes", []):
+            if l["id"] in changed:
+                l["overridden"] = sorted(changed[l["id"]])
     return n
 
 

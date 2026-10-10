@@ -1,4 +1,5 @@
-// Login state: the JWT lives in tokenStore; `me` comes from /api/me. A 401 anywhere logs out.
+// Login state: the access + refresh tokens live in tokenStore; `me` comes from /api/me. The client
+// refreshes an expired access token; a 401 that refresh cannot fix logs out.
 
 import { useQueryClient } from '@tanstack/react-query';
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
@@ -19,25 +20,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(!!tokenStore.get());
 
-  const logout = useCallback(() => {
+  // local sign-out (a 401 the refresh token could not fix)
+  const clear = useCallback(() => {
     tokenStore.set(null);
     setMe(null);
     qc.clear();
   }, [qc]);
 
+  // the logout button: revoke both tokens on the server (best effort), then sign out here
+  const logout = useCallback(() => {
+    const rt = tokenStore.refresh();
+    if (tokenStore.get() || rt) void api.logout(rt).catch(() => undefined).finally(clear);
+    else clear();
+  }, [clear]);
+
   useEffect(() => {
-    onUnauthorized(logout);
+    onUnauthorized(clear);
     if (!tokenStore.get()) return;
     api
       .me()
       .then(setMe)
       .catch(() => tokenStore.set(null))
       .finally(() => setLoading(false));
-  }, [logout]);
+  }, [clear]);
 
   const login = useCallback(async (username: string, password: string) => {
     const r = await api.login(username, password);
-    tokenStore.set(r.access_token);
+    tokenStore.set(r.access_token, r.refresh_token ?? null);
     setMe(await api.me());
   }, []);
 

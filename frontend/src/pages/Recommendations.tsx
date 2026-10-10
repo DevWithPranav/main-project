@@ -9,7 +9,8 @@ import {
 import { notifications } from '@mantine/notifications';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
-import { api, TWIN_URL } from '../api';
+import { Link } from 'react-router-dom';
+import { api } from '../api';
 import type { Page, PlannerHistoryEntry, Recommendation } from '../api/types';
 import { useAuth } from '../auth';
 import { fmtDateTime, fmtValue } from '../lib/format';
@@ -53,7 +54,7 @@ function twinLink(r: Recommendation, sessionId: string | null): string | null {
   if (!town) return null;
   const q = new URLSearchParams({ town });
   if (sessionId) q.set('session', sessionId);
-  return `${TWIN_URL}/?${q.toString()}`;
+  return `/twin?${q.toString()}`;
 }
 
 function RecCard({ r, sessionId, onDecide, canDecide }: {
@@ -99,7 +100,7 @@ function RecCard({ r, sessionId, onDecide, canDecide }: {
               <Row k="Where">
                 {[str(loc.scene) || str(sim.town), roads.length ? `road ${roads.join(', ')}` : ''].filter(Boolean).join(', ') || '-'}
                 {loc.radius_m != null && ` · ${fmtValue(loc.radius_m)} m around (${arr(loc.centroid).map((x) => fmtValue(x)).join(', ')})`}
-                {twin && <> · <Anchor href={twin} target="_blank" size="sm">open in twin</Anchor></>}
+                {twin && <> · <Anchor component={Link} to={twin} size="sm">open in twin</Anchor></>}
               </Row>
               <Row k="Evidence">
                 <Stack gap={4}>

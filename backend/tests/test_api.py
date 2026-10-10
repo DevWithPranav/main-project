@@ -65,7 +65,8 @@ def test_import_default_dir_and_reimport(client, auth, imported):
     assert r.status_code == 200, r.text
     assert "violations" in r.json()["import"]["violations_dir"]
     r = client.post("/api/sessions/import", headers=auth("operator"),
-                    json={"flight": FLIGHT, "violations_dir": "violations", "include_anomalies": False})
+                    json={"flight": FLIGHT, "violations_dir": os.getenv("TEST_VIOLATIONS_DIR", "violations"),
+                          "include_anomalies": False})
     assert r.json()["n_events"] == imported["n_events"]
 
 
@@ -98,18 +99,18 @@ def test_evidence_clip_served(client, auth, imported):
     url = next(e["evidence"]["clip_url"] for e in items if e["evidence"].get("clip_url"))
     r = client.get(url, headers={"Range": "bytes=0-99"})
     assert r.status_code == 206 and len(r.content) == 100 and r.headers["content-type"] in ("video/webm", "video/mp4")
-    assert client.get("/api/files/nope/missing.mp4").status_code == 404
+    assert client.get("/api/files/nope/missing.mp4", headers=auth("officer")).status_code == 404
 
 
-def test_clip_served_as_webm_once_made(client):
+def test_clip_served_as_webm_once_made(client, auth):
     """Import uploads the mp4 and transcodes in the background; the WebM wins once it exists."""
     from backend.app import config, storage
     s3 = storage.client()
     s3.put_object(Bucket=config.S3_BUCKET, Key="test/clip.mp4", Body=b"mp4", ContentType="video/mp4")
     try:
-        assert client.get("/api/files/test/clip.mp4").headers["content-type"] == "video/mp4"
+        assert client.get("/api/files/test/clip.mp4", headers=auth("officer")).headers["content-type"] == "video/mp4"
         s3.put_object(Bucket=config.S3_BUCKET, Key="test/clip.webm", Body=b"webm", ContentType="video/webm")
-        r = client.get("/api/files/test/clip.mp4")
+        r = client.get("/api/files/test/clip.mp4", headers=auth("officer"))
         assert r.headers["content-type"] == "video/webm" and r.content == b"webm"
         assert set(client.get("/api/health").json()["clips"]) >= {"queued", "done", "pending"}
     finally:
@@ -132,7 +133,7 @@ def test_event_filters(client, auth, imported):
     c = all_["items"][0]["condition"]
     assert client.get("/api/events", headers=h, params={"condition": c}).json()["total"] >= 1
     page = client.get("/api/events", headers=h, params={"session_id": FLIGHT, "limit": 3, "offset": 2}).json()
-    assert len(page["items"]) == 3 and page["items"][0]["event_id"] == all_["items"][2]["event_id"]
+    assert len(page["items"]) == min(3, all_["total"] - 2) and page["items"][0]["event_id"] == all_["items"][2]["event_id"]
     e0 = all_["items"][0]
     box = f"{e0['x'] - 1},{e0['y'] - 1},{e0['x'] + 1},{e0['y'] + 1}"
     inbox = client.get("/api/events", headers=h, params={"bbox": box}).json()["items"]
