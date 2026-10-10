@@ -184,7 +184,10 @@ class DSConv(nn.Module):
         k2 = self.k * self.k
         drow = raw[:, :k2].cumsum(dim=1)   # accumulated row offsets
         dcol = raw[:, k2:].cumsum(dim=1)   # accumulated col offsets
-        return torch.cat([drow, dcol], dim=1)   # (B, 2*k*k, H_out, W_out)
+        # torchvision deform_conv2d reads offsets as interleaved (dy_i, dx_i) pairs per kernel
+        # point, not [all dy, all dx]; concatenating would pair dy_i with dy_{i+1} (fixed 2026-10-10)
+        b, _, h, w = raw.shape
+        return torch.stack([drow, dcol], dim=2).reshape(b, 2 * k2, h, w)
 
     # ── Forward ───────────────────────────────────────────────────────────────
 
