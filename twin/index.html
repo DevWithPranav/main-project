@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Digital Twin</title>
+  </head>
+  <body>
+    <div id="viewer"></div>
+    <aside id="panel">
+      <header>
+        <strong>3D Digital Twin</strong>
+        <span id="user"></span>
+      </header>
+      <section id="login">
+        <input id="username" placeholder="username" value="planner" />
+        <input id="password" type="password" placeholder="password" />
+        <button id="loginBtn">Log in</button>
+        <div class="err" id="loginErr"></div>
+      </section>
+      <section id="main" hidden>
+        <label>Session <select id="session"></select></label>
+        <label>Town <select id="town"></select></label>
+        <div class="row">
+          <label><input type="radio" name="mode" value="replay" checked /> Replay</label>
+          <label><input type="radio" name="mode" value="live" /> Live</label>
+          <span id="liveStatus" class="muted"></span>
+        </div>
+        <div class="row">
+          <button id="play">▶</button>
+          <input id="time" type="range" min="0" max="1" step="0.1" value="0" />
+          <select id="speed"><option>1</option><option selected>2</option><option>4</option><option>8</option></select>
+        </div>
+        <div class="muted" id="clock"></div>
+        <div class="row">
+          <label><input type="checkbox" id="heat" /> Problem sections (events per lane)</label>
+        </div>
+        <div class="legend">
+          <span style="--c:#40c057">ok</span><span style="--c:#fab005">checking</span><span style="--c:#fa5252">flagged</span>
+          <span style="--c:#7048e8">bridge</span><span style="--c:#4c6ef5">highway</span>
+        </div>
+        <h4>Selected</h4>
+        <div id="selected" class="muted">Click a lane, vehicle or pin.</div>
+        <div id="editor" hidden>
+          <h4>Planner edit</h4>
+          <label>Speed limit (km/h) <input id="limit" type="number" min="5" max="130" /></label>
+          <label>Restricted <select id="restricted"><option value="">none</option><option>bus</option><option>emergency</option></select></label>
+          <label><input type="checkbox" id="roadScope" /> whole road direction</label>
+          <button id="addOverride">Add lane change</button>
+          <hr />
+          <button id="drawZone">Draw zone</button>
+          <select id="zoneType"><option>no_parking</option><option>no_u_turn</option></select>
+          <span id="drawHint" class="muted"></span>
+          <h4>Pending edits</h4>
+          <ul id="pending"></ul>
+          <label>Profile <input id="profileName" placeholder="town03_planner" /></label>
+          <label>Why (logged) <textarea id="note" rows="2"></textarea></label>
+          <button id="save">Validate &amp; save</button>
+          <div class="err" id="saveErr"></div>
+          <h4>Edit history</h4>
+          <ul id="history" class="muted"></ul>
+        </div>
+      </section>
+    </aside>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

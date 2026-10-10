@@ -100,6 +100,21 @@
       },
       "additionalProperties": false
      }
+    },
+    "extra_zones": {
+     "type": "array",
+     "description": "Zones drawn by a planner in the 3D twin (M7), added to the scene like --zones",
+     "items": {
+      "type": "object",
+      "required": ["id", "type", "polygon"],
+      "properties": {
+       "id": {"type": "string"},
+       "type": {"enum": ["no_parking", "no_u_turn"]},
+       "polygon": {"type": "array", "minItems": 3, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}},
+       "source": {"type": "string"}
+      },
+      "additionalProperties": false
+     }
     }
    },
    "additionalProperties": false

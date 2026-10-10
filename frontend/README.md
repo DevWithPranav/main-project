@@ -1,8 +1,27 @@
-# frontend/
+# frontend/: Configuration Dashboard (Build Plan M6)
 
-Web UIs (Build Plan **M6** and **M7**). Not built yet.
+Vite + React 19 + TypeScript, Mantine (UI + charts), TanStack Query, React Router. Talks to the
+backend through the contract in `backend/API.md` (Vite proxies `/api` and the WebSocket to :8000).
 
-- **Configuration Dashboard** (M6, React / Next.js): violation types and conditions on/off with thresholds, model and tracker settings, modules, road configuration, profiles; live monitoring; violation review; statistics and exports.
-- **3D Digital Twin** (M7, CesiumJS): roads built from the OpenDRIVE lane map in map metres at a configurable anchor; live vehicles, violation pins, hotspots; planner edits limited to what CARLA can simulate (Expected Output Section 5.3).
+```powershell
+cd frontend
+npm install            # once
+npm run dev            # http://localhost:5173, needs the backend on :8000
+npm run dev:mock       # no backend: in-browser mock API with generated data
+npm run build          # type-check + production build into dist/
+npm test               # vitest
+```
 
-Forms are driven by `schemas/profile.schema.json` and `schemas/conditions.json`, so the UI and the engine agree on every setting.
+Log in with a dev user (`officer`, `operator`, `planner`, `maintenance`, `admin`; password = name + `123`).
+The UI hides actions a role can't do; the backend enforces them.
+
+| Page | What |
+|---|---|
+| Live monitoring | Vehicles on the lane map (green ok / amber checking / red flagged), event feed, system health. **Live** = WS `/api/ws/live`; **Replay** = an imported session's trajectories with events at their flag time |
+| Violations | Filters (session, kind, type, condition, status, review; kept in the URL), table, detail drawer with evidence clip, values, review (confirm/dismiss + note) |
+| Statistics | Counts by type / condition / status / hour, event density on the map, hotspot ranking; exports PDF/XLSX/CSV/GeoJSON with the same filters |
+| Sessions | Imported flights; import a processed flight |
+| Configuration | Profiles: violations on/off + thresholds, conditions, model/modules/road JSON; validated against `schemas/profile.schema.json` before saving a new version with a note; history. Road configuration: lane map coloured by road features, lane attributes on click |
+| Recommendations | M8 recommendations with every field, planner decision (accept/reject/modify + rationale), planner history |
+
+Code: `src/api/` (typed client, mock), `src/lib/` (filters, formatting, permissions, profiles, stats), `src/components/` (LaneMap SVG, EventDrawer, FilterBar), `src/pages/`.

@@ -292,6 +292,10 @@ def road_scene(scene: dict, args, derive_features: bool = False) -> dict:
     n = apply_overrides(scene, args.road.get("lane_overrides", []))
     if n:
         print(f"[profile] lane overrides applied to {n} lanes")
+    extra = args.road.get("extra_zones", [])  # zones drawn by a planner in the 3D twin (M7)
+    if extra:
+        scene["zones"] = scene.get("zones", []) + extra
+        print(f"[profile] {len(extra)} extra zone(s) from the profile")
     return scene
 
 
