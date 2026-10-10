@@ -103,7 +103,17 @@ def scene_summary(path_str: str, mtime: float) -> dict:
 
 @router.get("/scenes")
 async def list_scenes(_: Principal = Depends(current_user)):
-    return [scene_summary(str(p), p.stat().st_mtime) for p in sorted(config.SCENE_DIR.glob("*.json"))]
+    return [scene_summary(str(p), p.stat().st_mtime) for p in sorted(config.SCENE_DIR.glob("*.json"))
+            if not p.stem.endswith("_objects")]
+
+
+@router.get("/scenes/{town}/objects")
+async def get_scene_objects(town: str, _: Principal = Depends(current_user)):
+    """Static town objects as oriented boxes (export_town_objects.py), for the 3D twin."""
+    p = config.SCENE_DIR / f"{town}_objects.json"
+    if not p.exists():
+        raise HTTPException(404, f"no objects for {town} (run simulation/carla_scripts/export_town_objects.py {town})")
+    return FileResponse(p, media_type="application/json")
 
 
 @router.get("/scenes/{town}")
