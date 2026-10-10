@@ -6,17 +6,23 @@ Reads <RESULTS_DIR>/<flight>/<TRACKER_RUN>/<violations_dir>/:
     kinematics.csv             per-frame x, y, speed_kmh (else trajectories_world.csv wx, wy) -> tracks
 and <RECORDINGS_DIR>/<flight>/metadata.json for the map. violations_dir defaults to the newest
 violations* folder that has a violations.json.
+
+Road-surface anomalies (Build Plan M9) come from <flight>/<TRACKER_RUN>/<anomalies_dir>/:
+    anomalies.json             {"events": [...]} of kind "anomaly" (ml/pothole/detect_anomalies.py)
+    snapshots/*.jpg            evidence crops -> S3 evidence/<flight>/
+anomalies_dir defaults to the newest anomalies* folder that has an anomalies.json (none: no anomalies).
 """
 
 import csv
 import json
 import math
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import HTTPException
 
-from . import config, storage
+from . import config, media, storage
 from .engine_bridge import condition_of, event_errors
 
 
@@ -29,7 +35,7 @@ def flight_dir(flight: str) -> Path:
     return d
 
 
-def pick_violations_dir(fdir: Path, name: str | None) -> Path:
+def pick_violations_dir(fdir: Path, name: str | None, required: bool = True) -> Path | None:
     if name:
         if any(c in name for c in "/\\") or name.startswith("."):
             raise HTTPException(422, "violations_dir must be a folder name inside the flight's results")
@@ -39,8 +45,28 @@ def pick_violations_dir(fdir: Path, name: str | None) -> Path:
         return d
     cands = [d for d in fdir.glob("violations*") if (d / "violations.json").is_file()]
     if not cands:
+        if not required:
+            return None
         raise HTTPException(404, f"no violations*/violations.json under {fdir}")
     return max(cands, key=lambda d: (d / "violations.json").stat().st_mtime)
+
+
+def pick_anomalies_dir(fdir: Path, name: str | None) -> Path | None:
+    """The anomalies folder to import, or None when the flight has none (and none was asked for)."""
+    if name:
+        if any(c in name for c in "/\\") or name.startswith("."):
+            raise HTTPException(422, "anomalies_dir must be a folder name inside the flight's results")
+        d = fdir / name
+        if not (d / "anomalies.json").is_file():
+            raise HTTPException(404, f"no anomalies.json in {d}")
+        return d
+    cands = [d for d in fdir.glob("anomalies*") if (d / "anomalies.json").is_file()]
+    return max(cands, key=lambda d: (d / "anomalies.json").stat().st_mtime) if cands else None
+
+
+def load_anomalies(adir: Path) -> list[dict]:
+    data = json.loads((adir / "anomalies.json").read_text(encoding="utf-8"))
+    return data.get("events", []) if isinstance(data, dict) else data
 
 
 def flight_start(flight: str) -> datetime:
@@ -81,21 +107,25 @@ def validate(events: list[dict]) -> tuple[list[dict], list[str]]:
 
 
 def upload_evidence(events: list[dict], vdir: Path, prefix: str) -> int:
-    """Upload clip / snapshot files named in evidence to S3; record their keys. Returns uploads."""
+    """Upload clip / snapshot files named in evidence to S3; record their keys. Returns uploads.
+    mp4 clips (mp4v, which browsers can't play) are uploaded as VP8 WebM (media.py)."""
     n = 0
-    for e in events:
-        ev = e.get("evidence") or {}
-        for k in ("clip", "snapshot"):
-            rel = ev.get(k)
-            if not rel or "://" in rel:
-                continue
-            p = (vdir / rel).resolve()
-            if not p.is_file() or vdir.resolve() not in p.parents:
-                continue
-            key = f"{prefix}/{e['event_id']}{p.suffix}" if k == "clip" else f"{prefix}/{e['event_id']}_snap{p.suffix}"
-            n += storage.upload(p, key)
-            ev[f"{k}_key"] = key
-        e["evidence"] = ev
+    with tempfile.TemporaryDirectory() as tmp:
+        for e in events:
+            ev = e.get("evidence") or {}
+            for k in ("clip", "snapshot"):
+                rel = ev.get(k)
+                if not rel or "://" in rel:
+                    continue
+                p = (vdir / rel).resolve()
+                if not p.is_file() or vdir.resolve() not in p.parents:
+                    continue
+                if k == "clip" and p.suffix.lower() == ".mp4":
+                    p = media.clip_to_webm(p, Path(tmp)) or p
+                key = f"{prefix}/{e['event_id']}{p.suffix}" if k == "clip" else f"{prefix}/{e['event_id']}_snap{p.suffix}"
+                n += storage.upload(p, key)
+                ev[f"{k}_key"] = key
+            e["evidence"] = ev
     return n
 
 

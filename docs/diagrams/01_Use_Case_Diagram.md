@@ -2,7 +2,8 @@
 ## Autonomous Aerial Surveillance Framework for Traffic Anomaly Detection and Digital Twin-Based Urban Planning
 
 > Companion diagram set for [Product_Requirements_Document.md](../Product_Requirements_Document.md).
-> Notation: `[ Actor ]` = human or external system actor, `(( Use Case ))` = system functionality, subgraph = system boundary.
+> Notation: `[ Actor ]` = human or external system actor · `(( Use Case ))` = system functionality · plain line = association (actor participates in the use case) · dashed arrow `<<include>>` = base use case always performs the included one · dashed arrow `<<extend>>` = optional/conditional behavior · subgraph = system boundary.
+> Data dependencies between pillars (e.g. detection events feeding the twin) are deliberately **not** drawn here — that's data flow, which belongs in the [DFDs](03_DFD_Level_0.md), not a use case relationship. A use case diagram shows actor↔goal associations only.
 
 ---
 
@@ -68,25 +69,22 @@ flowchart LR
 
     end
 
-    FEED --> UC1
-    FEED --> UC3
-    UC1 --> UC2
-    UC1 -.feeds.-> UC5
-    UC3 -.feeds.-> UC5
+    FEED --- UC1
+    FEED --- UC3
+    FEED --- UC8
 
-    MON --> UC2
-    MON --> UC5
-    MON --> UC7
+    MON --- UC2
+    MON --- UC5
+    MON --- UC7
 
-    PLN --> UC4
-    PLN --> UC5
-    PLN --> UC6
-    PLN --> UC7
+    PLN --- UC4
+    PLN --- UC5
+    PLN --- UC6
+    PLN --- UC7
 
-    OPR --> UC8
-    UC8 -.configures.-> FEED
+    OPR --- UC8
 
-    ADM -.elevated access to all pillars.- SYS
+    ADM --- UC9
 ```
 
 ### Use Case Summary Table

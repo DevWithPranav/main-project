@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
 .venv/
 venv/
 venv_*/
@@ -12,6 +13,13 @@ node_modules/
 .next/
 out/
 frontend/.env*.local
+# Vite builds (frontend dashboard, twin) and TypeScript incremental info
+frontend/dist/
+twin/dist/
+*.tsbuildinfo
+# Browser-test output
+test-results/
+playwright-report/
 
 # Env files
 .env
@@ -67,3 +75,6 @@ Thumbs.db
 .idea/
 .claude/
 /CLAUDE.md
+
+# External pothole/crack training datasets
+ml/pothole/external/

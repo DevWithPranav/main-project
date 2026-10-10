@@ -43,6 +43,7 @@ Run in the carlaAir conda env.
 
 import argparse
 import datetime
+import functools
 import json
 import math
 import random
@@ -51,6 +52,8 @@ from pathlib import Path
 
 import carla
 import numpy as np
+
+from occlusion import Occluder
 
 REPO = Path(__file__).resolve().parents[2]
 XODR_DIR = REPO / "CarlaAir-v0.1.7-Windows11-x86_64" / "WindowsNoEditor" / "CarlaUE4" / "Content" / "Carla" / "Maps" / "OpenDrive"
@@ -61,6 +64,9 @@ DT = 0.05  # planned trajectory resolution (s)
 GAP_S = 6.0  # pause between acts
 FRONT_M = 2.3  # Tesla Model 3 centre to front bumper (predicates.HALF_LENGTH_M["car"])
 SPEED_IN_VIEW_S = 2.5  # rules.DEFAULTS speeding: min_track_age_s 1.0 + min_s 0.33, plus margin
+# share of an act's points that may be hidden from the camera by structures (occlusion.py): a moving
+# act may pass under one tree crown; a stop (all its points in one place) must be fully visible
+MAX_HIDDEN_FRAC = 0.1
 
 
 # --- geometry ---------------------------------------------------------------------------------
@@ -164,32 +170,58 @@ class View:
     (flight 20261009_201727: the no-parking spot at the edge was missed; the stager used a circle)."""
 
     def __init__(self, center, yaw_deg: float, altitude_m: float, hfov_deg: float = 90.0,
-                 width: int = 1920, height: int = 1080, margin_m: float = 8.0):
+                 width: int = 1920, height: int = 1080, margin_m: float = 8.0,
+                 cam_z: float | None = None, occluder=None, max_hidden: float = MAX_HIDDEN_FRAC):
         self.c = np.asarray(center[:2], float)
         a = math.radians(yaw_deg)
         self.fwd, self.across = np.array([math.cos(a), math.sin(a)]), np.array([-math.sin(a), math.cos(a)])
-        self.half_across = altitude_m * math.tan(math.radians(hfov_deg) / 2)
-        self.half_along = self.half_across * height / width
+        self.tan_half, self.aspect = math.tan(math.radians(hfov_deg) / 2), height / width
+        self.half_across = altitude_m * self.tan_half
+        self.half_along = self.half_across * self.aspect
         self.margin = margin_m
         self.yaw, self.altitude = yaw_deg, altitude_m
+        self.cam_z, self.occluder, self.max_hidden = None, None, max_hidden
+        if cam_z is not None:
+            self.set_camera(cam_z, occluder)
+
+    def set_camera(self, cam_z: float, occluder=None) -> None:
+        """The camera's world z: points (x, y, z) then get the footprint at their own road level
+        (spot 5, Town05: the stager measured 57.6 m to the raised deck under the drone, goto_spot
+        67.6 m to the street below, and the view shrank for every act), and, with an occluder
+        (occlusion.Occluder), points a structure hides from the camera are out of view."""
+        self.cam_z = float(cam_z)
+        if occluder is not None:  # only the objects that can stand between the camera and this footprint
+            r = float(np.hypot(self.half_along, self.half_across)) * 1.5
+            occluder = occluder.near(self.c - r, self.c + r)
+        self.occluder = occluder
 
     def contains(self, xy) -> bool:
-        """Every point (one (x, y) or many) inside the footprint, margin_m from its edge."""
-        d = np.atleast_2d(np.asarray(xy, float))[:, :2] - self.c
-        return bool(np.all(np.abs(d @ self.fwd) <= self.half_along - self.margin)
-                    and np.all(np.abs(d @ self.across) <= self.half_across - self.margin))
+        """Every point (one (x, y) or many) inside the footprint, margin_m from its edge, and (points
+        with z, camera set) at most max_hidden of them hidden by structures."""
+        pts = np.atleast_2d(np.asarray(xy, float))
+        d = pts[:, :2] - self.c
+        has_z = self.cam_z is not None and pts.shape[1] >= 3
+        half_across = (self.cam_z - pts[:, 2]) * self.tan_half if has_z else self.half_across
+        half_along = half_across * self.aspect
+        if not (np.all(np.abs(d @ self.fwd) <= half_along - self.margin)
+                and np.all(np.abs(d @ self.across) <= half_across - self.margin)):
+            return False
+        if has_z and self.occluder is not None:
+            return float(np.mean(self.occluder.hidden(pts, (*self.c, self.cam_z)))) <= self.max_hidden
+        return True
 
     def describe(self) -> dict:
         return {"center": self.c.round(1).tolist(), "yaw_deg": round(self.yaw, 1), "altitude_m": round(self.altitude, 1),
                 "half_along_m": round(self.half_along, 1), "half_across_m": round(self.half_across, 1),
-                "margin_m": self.margin}
+                "margin_m": self.margin, "camera_z": None if self.cam_z is None else round(self.cam_z, 1),
+                "occlusion": self.occluder is not None}
 
 
 def truth_points(a: dict) -> np.ndarray:
     """The planned positions of an act between its truth marks (the part that is scored)."""
     tr = a["traj"]
     t0, t1 = (tr.marks[k] for k in a["truth"])
-    return np.array([tr.at(t)[0][:2] for t in np.arange(t0, t1 + 1e-9, 0.25)])
+    return np.array([tr.at(t)[0][:3] for t in np.arange(t0, t1 + 1e-9, 0.25)])
 
 
 # --- planning ---------------------------------------------------------------------------------
@@ -230,7 +262,25 @@ def candidates(m, view: View, length, in_view_m: int = 40) -> list:
     return out
 
 
-def plan(m, town: str, view: View, seed: int, world=None, red_light: bool = False) -> dict:
+@functools.lru_cache(maxsize=4)
+def occluder_for(town: str):
+    """The town's structures (configs/scenes/<Town>_objects.json, export_town_objects.py), or None."""
+    occ = Occluder.for_town(town, SCENES_DIR)
+    if occ is None:
+        print(f"[plan] {town}_objects.json missing: structures over the road are not checked "
+              f"(simulation/carla_scripts/export_town_objects.py {town})")
+    return occ
+
+
+def ground_z(m, xy) -> float:
+    """Road height under (x, y) as goto_spot.py measures it (nearest road to z = 0)."""
+    wp = m.get_waypoint(carla.Location(float(xy[0]), float(xy[1]), 0.0), project_to_road=True)
+    return wp.transform.location.z if wp is not None else 0.0
+
+
+def plan(m, town: str, view: View, seed: int, world=None, red_light: bool = False, occlusion: bool = True) -> dict:
+    if view.cam_z is None:  # offline: the camera altitude_m above the road under the spot, as goto_spot puts it
+        view.set_camera(ground_z(m, view.c) + view.altitude, occluder_for(town) if occlusion else None)
     rng = random.Random(seed)
     props = lane_props(town)
     limit = lambda x, y: float(props(x, y)["speed_limit_kmh"])  # noqa: E731
@@ -400,7 +450,8 @@ def plan(m, town: str, view: View, seed: int, world=None, red_light: bool = Fals
         if view.contains(truth_points(a)):
             kept.append(a)
         else:
-            print(f"[plan] dropped {a['type']} ({a['note']}): it leaves the camera view (margin {view.margin:.0f} m)")
+            print(f"[plan] dropped {a['type']} ({a['note']}): it leaves the camera view (margin {view.margin:.0f} m)"
+                  " or a structure hides it")
 
     # A5 last: the bus-lane override holds for the whole session, so the lane must be one no other
     # act drives in (else their cars raise A5 too). Background traffic in it is natural A5.
@@ -781,7 +832,7 @@ def act_condition(a: dict, props) -> str:
     return BASE_CONDITION.get(a["type"], a["type"])
 
 
-def suggest(m, town: str, altitude: float, step: float, margin: float) -> list[dict]:
+def suggest(m, town: str, altitude: float, step: float, margin: float, occlusion: bool = True) -> list[dict]:
     """Drone spots that together stage every condition: plan at every grid centre (step m apart, over
     the town's lanes) and heading 0 / 90, then pick spots greedily, most new conditions first."""
     import contextlib
@@ -796,7 +847,7 @@ def suggest(m, town: str, altitude: float, step: float, margin: float) -> list[d
                 view = View((cx, cy), yaw, altitude, margin_m=margin)
                 with contextlib.redirect_stdout(io.StringIO()):
                     try:
-                        p = plan(m, town, view, 0)
+                        p = plan(m, town, view, 0, occlusion=occlusion)
                     except SystemExit:
                         continue
                 conds = sorted({act_condition(a, props) for a in p["acts"] if a["expected"]})
@@ -997,6 +1048,8 @@ def main() -> None:
     ap.add_argument("--suggest", action="store_true",
                     help="Offline: list the fewest drone spots (centre, heading) that stage every condition in --town")
     ap.add_argument("--step", type=float, default=50.0, help="--suggest grid spacing (m)")
+    ap.add_argument("--no-occlusion", action="store_true",
+                    help="Don't check structures over the road (<Town>_objects.json); the pre-2026-10-10 behaviour")
     args = ap.parse_args()
 
     if args.suggest:
@@ -1004,7 +1057,7 @@ def main() -> None:
             raise SystemExit("--suggest needs --town")
         m = carla.Map(args.town, (XODR_DIR / f"{args.town}.xodr").read_text())
         alt = args.altitude if args.altitude is not None else 67.6
-        chosen = suggest(m, args.town, alt, args.step, args.margin)
+        chosen = suggest(m, args.town, alt, args.step, args.margin, occlusion=not args.no_occlusion)
         print(f"[suggest] {args.town} at {alt:.1f} m: {len(chosen)} spots cover "
               f"{sorted({c for s in chosen for c in s['conditions']})}")
         for s in chosen:
@@ -1040,8 +1093,10 @@ def main() -> None:
         yaw = args.yaw if args.yaw is not None else tf.rotation.yaw
 
     view = View(center, yaw, altitude, margin_m=args.margin)
+    if not args.plan_only and tf is not None and args.altitude is None:  # the camera is where the drone is
+        view.set_camera(tf.location.z, None if args.no_occlusion else occluder_for(town))
     print(f"[view] {view.describe()}")
-    p = plan(m, town, view, args.seed, world, red_light=args.red_light)
+    p = plan(m, town, view, args.seed, world, red_light=args.red_light, occlusion=not args.no_occlusion)
     acts = [a for a in p["acts"] if not args.only or a["type"] in args.only]
     zones = list(p["zones"])
     print(f"[plan] {town} centre ({center[0]:.0f}, {center[1]:.0f}): {len(acts)} acts, {len(zones)} zones")

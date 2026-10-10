@@ -18,6 +18,8 @@ PORT = 8011
 TEST_DB = "aerial_test"
 os.environ["DATABASE_URL"] = f"postgresql+asyncpg://aerial:aerial_dev@localhost:5432/{TEST_DB}"
 BASE = f"http://127.0.0.1:{PORT}"
+TEST_FLIGHT = os.getenv("TEST_FLIGHT", "20261009_201727")  # a processed flight with violations/ + clips
+TEST_VIOLATIONS_DIR = os.getenv("TEST_VIOLATIONS_DIR", "violations")  # its folder with >= 3 events and clips
 
 
 async def _reset_db() -> None:
@@ -31,7 +33,7 @@ async def _reset_db() -> None:
     conn = await asyncpg.connect(f"postgresql://aerial:aerial_dev@localhost:5432/{TEST_DB}")
     try:
         await conn.execute("CREATE EXTENSION IF NOT EXISTS postgis")
-        for t in ("planner_history", "recommendations", "reviews", "profiles", "events", "tracks", "sessions", "users"):
+        for t in ("anomaly_status", "planner_history", "recommendations", "reviews", "profiles", "events", "tracks", "sessions", "users"):
             await conn.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
     finally:
         await conn.close()
@@ -81,8 +83,9 @@ def auth(client):
 
 @pytest.fixture(scope="session")
 def imported(client, auth):
-    """Flight 20261009_201727 imported from its `violations` folder (the one with evidence clips)."""
+    """Flight 20261009_201727 (env TEST_FLIGHT overrides) imported from its `violations` folder (env
+    TEST_VIOLATIONS_DIR overrides; the one with evidence clips); anomalies left out so the violation tests see violations only."""
     r = client.post("/api/sessions/import", headers=auth("operator"),
-                    json={"flight": "20261009_201727", "violations_dir": "violations"})
+                    json={"flight": TEST_FLIGHT, "violations_dir": TEST_VIOLATIONS_DIR, "include_anomalies": False})
     assert r.status_code == 200, r.text
     return r.json()

@@ -2,6 +2,8 @@
 callers run these in a thread (FastAPI sync routes / asyncio.to_thread)."""
 
 import mimetypes
+
+mimetypes.add_type("video/webm", ".webm")  # not in every Windows registry
 from functools import cache
 from pathlib import Path
 

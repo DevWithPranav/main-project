@@ -1,6 +1,7 @@
 """Configuration: profiles (versioned), conditions, scenes (lane maps)."""
 
 import json
+import re
 from datetime import datetime, timezone
 from functools import cache
 
@@ -77,7 +78,19 @@ async def put_profile(name: str, body: ProfilePut, db: AsyncSession = Depends(ge
                 at=datetime.now(timezone.utc), note=body.note)
     db.add(p)
     await db.commit()
-    return meta(p)
+    out = meta(p)
+    out["file"] = write_profile_file(name, doc)
+    return out
+
+
+def write_profile_file(name: str, doc: dict) -> str | None:
+    """Latest version as a file for `--profile` (the engine reads files, not the database)."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name) or name.startswith("."):
+        return None
+    config.PROFILE_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    path = config.PROFILE_OUT_DIR / f"{name}.json"
+    path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+    return path.relative_to(config.REPO).as_posix() if config.REPO in path.parents else str(path)
 
 
 @router.get("/profiles/{name}/history")

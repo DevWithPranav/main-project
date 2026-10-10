@@ -2,7 +2,7 @@
 ## Autonomous Aerial Surveillance Framework for Traffic Anomaly Detection and Digital Twin-Based Urban Planning
 
 > Part of the [Use Case Diagram set](01_Use_Case_Diagram.md) · Companion to [Product_Requirements_Document.md](../Product_Requirements_Document.md)
-> Notation: `[ Actor ]` = human or external system actor, `(( Use Case ))` = system functionality, subgraph = system boundary.
+> Notation: `[ Actor ]` = human or external system actor · `(( Use Case ))` = system functionality · plain line = association · dashed arrow `<<include>>` = base use case always performs the included one · dashed arrow `<<extend>>` = optional/conditional behavior · subgraph = system boundary.
 
 ---
 
@@ -31,27 +31,38 @@ flowchart LR
     MON[Monitoring Authority]
 
     subgraph SYS[Pillar 1 - Traffic Anomaly & Violation Detection]
+        UC1(( Detect & Track<br/>Traffic Violations ))
+        UC2(( Alert & Review<br/>Violation Events ))
+
         D1(( Detect Vehicles<br/>YOLOv26l ))
         D2(( Track Vehicles<br/>DeepSORT ))
         D3(( Convert Pixel<br/>Position to GPS ))
         D4(( Check Against<br/>10 Violation Rules ))
         D5(( Score<br/>Confidence ))
         D6(( Flag Violation<br/>Event ))
+
         D7(( Alert Monitoring<br/>Authority ))
         D8(( Review or Dismiss<br/>Event ))
         D9(( Dispatch Field<br/>Response ))
         D10(( Mark Event<br/>Resolved ))
     end
 
-    FEED --> D1 --> D2 --> D3 --> D4
-    SIG -- "signal state" --> D4
-    D4 --> D5 --> D6 --> D7
-    MON --> D7
-    MON --> D8
-    D8 -.if confirmed.-> D9
-    MON --> D9
-    D9 --> D10
-    MON --> D10
+    UC1 -. "&lt;&lt;include&gt;&gt;" .-> D1
+    UC1 -. "&lt;&lt;include&gt;&gt;" .-> D2
+    UC1 -. "&lt;&lt;include&gt;&gt;" .-> D3
+    UC1 -. "&lt;&lt;include&gt;&gt;" .-> D4
+    UC1 -. "&lt;&lt;include&gt;&gt;" .-> D5
+    UC1 -. "&lt;&lt;include&gt;&gt;" .-> D6
+
+    UC2 -. "&lt;&lt;include&gt;&gt;" .-> D7
+    UC2 -. "&lt;&lt;include&gt;&gt;" .-> D8
+    UC2 -. "&lt;&lt;include&gt;&gt;" .-> D10
+    D9  -. "&lt;&lt;extend&gt;&gt;<br/>(if confirmed)" .-> D8
+
+    FEED --- UC1
+    SIG  --- D4
+    MON  --- UC2
+    MON  --- D9
 ```
 
 ---
@@ -60,6 +71,8 @@ flowchart LR
 
 | Use Case | Description |
 |---|---|
+| **Detect & Track Traffic Violations** (UC1) | Primary use case — includes D1–D6 below |
+| **Alert & Review Violation Events** (UC2) | Primary use case — includes D7, D8, D10 below; D9 extends D8 when the event is confirmed |
 | Detect Vehicles | YOLOv26l runs inference per frame — outputs bounding boxes, class, confidence |
 | Track Vehicles | DeepSORT assigns and maintains a unique Track ID across frames using appearance + Kalman filter prediction |
 | Convert Pixel Position to GPS | Homography + drone telemetry projects each tracked vehicle to a real-world GPS coordinate |

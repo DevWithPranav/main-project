@@ -65,6 +65,9 @@ export interface TwinEvent {
   flag_s?: number;
   end_s?: number | null;
   t_s?: number; // anomalies
+  severity_score?: number; // anomalies (schemas/event.schema.json)
+  severity_band?: "low" | "medium" | "high";
+  area_sq_m?: number;
   lane_id?: string | null;
   zone_id?: string | null;
   x: number;

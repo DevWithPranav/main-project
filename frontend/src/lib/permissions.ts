@@ -12,7 +12,7 @@ export type Action =
 
 const RULES: Record<Action, Role[]> = {
   review_violation: ['OFFICER', 'ADMIN'],
-  review_anomaly: ['OFFICER', 'ADMIN', 'MAINTENANCE'],
+  review_anomaly: ['MAINTENANCE', 'ADMIN'], // API.md: anomalies are reviewed by MAINTENANCE / ADMIN
   import_session: ['OPERATOR', 'ADMIN'],
   edit_profile: ['ADMIN', 'PLANNER'],
   decide_recommendation: ['PLANNER', 'ADMIN'],

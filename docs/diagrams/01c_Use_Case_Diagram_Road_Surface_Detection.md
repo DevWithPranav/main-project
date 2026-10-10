@@ -2,7 +2,7 @@
 ## Autonomous Aerial Surveillance Framework for Traffic Anomaly Detection and Digital Twin-Based Urban Planning
 
 > Part of the [Use Case Diagram set](01_Use_Case_Diagram.md) · Companion to [Product_Requirements_Document.md](../Product_Requirements_Document.md)
-> Notation: `[ Actor ]` = human or external system actor, `(( Use Case ))` = system functionality, subgraph = system boundary.
+> Notation: `[ Actor ]` = human or external system actor · `(( Use Case ))` = system functionality · plain line = association · dashed arrow `<<include>>` = base use case always performs the included one · subgraph = system boundary.
 
 ---
 
@@ -29,26 +29,34 @@ flowchart LR
     PLN[Planner & Maintenance Team]
 
     subgraph SYS[Pillar 2 - Road Surface Detection]
+        UC3(( Detect Road Surface<br/>Anomalies ))
+        UC4(( Maintain Condition<br/>Inventory ))
+
         A1(( Segment Road Surface<br/>YOLOv26l-seg ))
         A2(( Classify Anomaly Type<br/>Pothole / Crack / Water / Debris ))
         A3(( Score<br/>Severity ))
         A4(( Convert Defect Position<br/>to GPS ))
         A5(( Deduplicate Against<br/>Existing Inventory ))
+
         A6(( Update Condition<br/>Inventory ))
         A7(( View Severity-Ranked<br/>Inventory ))
         A8(( Export Work-Order<br/>List ))
         A9(( Update Anomaly Status<br/>Work Order / Repaired ))
     end
 
-    FEED --> A1 --> A2 --> A3
-    A2 --> A4 --> A5
-    A3 --> A5
-    A5 --> A6
-    A6 -.feeds.-> A7
-    PLN --> A7
-    PLN --> A8
-    PLN --> A9
-    A9 -.updates.-> A6
+    UC3 -. "&lt;&lt;include&gt;&gt;" .-> A1
+    UC3 -. "&lt;&lt;include&gt;&gt;" .-> A2
+    UC3 -. "&lt;&lt;include&gt;&gt;" .-> A3
+    UC3 -. "&lt;&lt;include&gt;&gt;" .-> A4
+    UC3 -. "&lt;&lt;include&gt;&gt;" .-> A5
+
+    UC4 -. "&lt;&lt;include&gt;&gt;" .-> A6
+    UC4 -. "&lt;&lt;include&gt;&gt;" .-> A7
+    UC4 -. "&lt;&lt;include&gt;&gt;" .-> A8
+    UC4 -. "&lt;&lt;include&gt;&gt;" .-> A9
+
+    FEED --- UC3
+    PLN  --- UC4
 ```
 
 ---
@@ -57,6 +65,8 @@ flowchart LR
 
 | Use Case | Description |
 |---|---|
+| **Detect Road Surface Anomalies** (UC3) | Primary use case — includes A1–A5 below |
+| **Maintain Condition Inventory** (UC4) | Primary use case — includes A6–A9 below |
 | Segment Road Surface | YOLOv26l-seg produces a pixel-level defect mask per frame |
 | Classify Anomaly Type | Mask classified as pothole, crack, waterlogging, or debris/obstruction |
 | Score Severity | Severity computed from defect area (via Ground Sampling Distance) and class weighting — Low / Medium / High |

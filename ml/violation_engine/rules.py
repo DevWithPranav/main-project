@@ -30,7 +30,7 @@ from collections import defaultdict, deque
 
 from events import Event, EventLog
 from lane_map import SOLID_LINES, Lane, LaneMatch, SceneMap, Zone, angle_diff_deg
-from predicates import (HALF_LENGTH_M, HALF_WIDTH_M, UNMARKED_LINES, Episode, Obs, TrackHistory, along_lane_mps, along_target,
+from predicates import (HALF_LENGTH_M, HALF_WIDTH_M, PEOPLE_CLASSES, UNMARKED_LINES, Episode, Obs, TrackHistory, along_lane_mps, along_target,
                         against_lane_angle, front_point, lane_reachable, line_on_side, on_regular_lane,
                         queue_context, segments_cross, slow, speed_tolerance_kmh, stopped, straddle_overlap)
 from schemas import condition_of
@@ -876,8 +876,9 @@ class RedLightMonitor(Monitor):
 # --- engine -----------------------------------------------------------------------------------
 
 def default_monitors(log: EventLog, params: dict | None = None, stop_lines: list | None = None,
-                     signals=None, lane_index: dict | None = None) -> list[Monitor]:
-    P = {k: dict(v) for k, v in DEFAULTS.items()}
+                     signals=None, lane_index: dict | None = None, scene: SceneMap | None = None) -> list[Monitor]:
+    from zebra_pedestrians import DEFAULTS as PED_DEFAULTS, pedestrian_monitors  # imports this module: here, not on top
+    P = {k: dict(v) for k, v in {**DEFAULTS, **PED_DEFAULTS}.items()}
     for k, v in (params or {}).items():
         P.setdefault(k, {}).update(v)
     pm = {"place_memory": P["place_memory"]}
@@ -895,6 +896,7 @@ def default_monitors(log: EventLog, params: dict | None = None, stop_lines: list
         LaneViolationMonitor(log, P["lane_violation"], lane_index),
         RedLightMonitor(log, P["red_light"], stop_lines or [], signals),
     ]
+    monitors += pedestrian_monitors(log, P, scene)  # F2 / F3 / F5 (Build Plan M3)
     return [m for m in monitors if P[m.type].get("enabled", True)]  # "enabled": false from a profile
 
 
@@ -905,7 +907,7 @@ class Engine:
         disabled_conditions: condition ids (schemas/conditions.json) whose events run() drops."""
         self.scene = scene
         self.log = EventLog(prefix)
-        self.monitors = default_monitors(self.log, params, scene.stop_lines, signals, scene.lane_by_id)
+        self.monitors = default_monitors(self.log, params, scene.stop_lines, signals, scene.lane_by_id, scene)
         self.hist = TrackHistory()
         self.disabled_conditions = set(disabled_conditions or ())
         self._road_zones: dict[str, Zone] = {}
@@ -952,10 +954,12 @@ class Engine:
         return self._road_zones[zid]
 
     def step(self, t: float, frame: int, obs: list[Obs]) -> None:
-        for o in obs:
+        # people (M3) go only to monitors that ask for them, and stay out of the vehicle history
+        vehicles = [o for o in obs if o.cls not in PEOPLE_CLASSES]
+        for o in vehicles:
             self.hist.add(o)
         for m in self.monitors:
-            m.step(t, frame, obs, self.hist)
+            m.step(t, frame, obs if getattr(m, "sees_people", False) else vehicles, self.hist)
 
     def run(self, kin_rows: list[dict]) -> list[Event]:
         by_frame = defaultdict(list)

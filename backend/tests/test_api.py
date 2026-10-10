@@ -6,6 +6,7 @@ Usage:
 
 import io
 import json
+import os
 import time
 import zipfile
 
@@ -13,7 +14,7 @@ import pytest
 from websockets.sync.client import connect
 
 SERVICE = {"Authorization": "Bearer dev-service-token"}
-FLIGHT = "20261009_201727"
+FLIGHT = os.getenv("TEST_FLIGHT", "20261009_201727")
 
 
 # --- auth, health -------------------------------------------------------------------------------
@@ -63,7 +64,7 @@ def test_import_default_dir_and_reimport(client, auth, imported):
     assert r.status_code == 200, r.text
     assert "violations" in r.json()["import"]["violations_dir"]
     r = client.post("/api/sessions/import", headers=auth("operator"),
-                    json={"flight": FLIGHT, "violations_dir": "violations"})
+                    json={"flight": FLIGHT, "violations_dir": "violations", "include_anomalies": False})
     assert r.json()["n_events"] == imported["n_events"]
 
 
@@ -95,7 +96,7 @@ def test_evidence_clip_served(client, auth, imported):
     items = client.get("/api/events", headers=auth("officer"), params={"session_id": FLIGHT}).json()["items"]
     url = next(e["evidence"]["clip_url"] for e in items if e["evidence"].get("clip_url"))
     r = client.get(url, headers={"Range": "bytes=0-99"})
-    assert r.status_code == 206 and len(r.content) == 100 and r.headers["content-type"] == "video/mp4"
+    assert r.status_code == 206 and len(r.content) == 100 and r.headers["content-type"] in ("video/webm", "video/mp4")
     assert client.get("/api/files/nope/missing.mp4").status_code == 404
 
 

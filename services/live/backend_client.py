@@ -5,9 +5,9 @@ the failure is logged (rate-limited) and the pipeline continues; events are also
 events.jsonl by the pipeline, so nothing is lost. Vehicle states are only the newest batch
 (older unsent batches are replaced: a stale position is useless).
 
-Event updates: an event is POSTed when it opens (flag time, "provisional" tag, confidence 0) and
-again when it closes (final status, confidence, end). Both carry the same event_id; the backend
-should upsert on event_id (contract note in services/live/README.md).
+Event updates: an event is POSTed to /api/events when it opens (flag time, "provisional" tag,
+confidence 0) and PUT to /api/live/events/{event_id} when it closes (final status, confidence,
+end); POST /api/events answers 409 for an existing event_id, the PUT replaces it (or creates it).
 
 Usage: imported by services/live/pipeline.py.
 """
@@ -17,13 +17,16 @@ import os
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import deque
 
 
 class BackendClient:
     def __init__(self, base_url: str | None, token: str | None = None, timeout: float = 2.0):
-        self.base = base_url.rstrip("/") if base_url else None
+        # "localhost" tries ::1 first; uvicorn listens on IPv4 only, and on Windows the refused IPv6
+        # attempt costs ~2 s per request (2.11 s vs 0.015 s measured 2026-10-10), so states came at 0.3 Hz
+        self.base = base_url.rstrip("/").replace("//localhost", "//127.0.0.1", 1) if base_url else None
         self.token = token or os.environ.get("SERVICE_TOKEN", "dev-service-token")
         self.timeout = timeout
         self.events: deque = deque()
@@ -65,8 +68,8 @@ class BackendClient:
             self.cv.notify()
         self._thread.join(2.0)
 
-    def _post(self, path: str, body) -> bool:
-        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), method="POST",
+    def _post(self, path: str, body, method: str = "POST") -> bool:
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), method=method,
                                      headers={"Content-Type": "application/json",
                                               "Authorization": f"Bearer {self.token}"})
         try:
@@ -77,7 +80,7 @@ class BackendClient:
         except (urllib.error.URLError, OSError, ValueError) as e:
             self.failed += 1
             if time.time() - self._last_err > 10:
-                print(f"[backend] POST {path} failed ({e}); continuing, events still go to events.jsonl")
+                print(f"[backend] {method} {path} failed ({e}); continuing, events still go to events.jsonl")
                 self._last_err = time.time()
             return False
 
@@ -89,7 +92,8 @@ class BackendClient:
                 ev = self.events.popleft() if self.events else None
                 st, self.states = (self.states, None) if ev is None else (None, self.states)
             if ev is not None:  # events first: they carry the latency target
-                ok = self._post("/api/events", ev[0])
+                ok = (self._post("/api/events", ev[0]) if ev[1] == "open" else
+                      self._post(f"/api/live/events/{urllib.parse.quote(ev[0]['event_id'])}", ev[0], "PUT"))
                 self.posted.append({"event_id": ev[0]["event_id"], "phase": ev[1], "post_wall": time.time(), "ok": ok})
             elif st is not None:
                 self._post("/api/live/state", st)

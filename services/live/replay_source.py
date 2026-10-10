@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import bisect
 import csv
 import json
 import statistics
@@ -41,12 +42,55 @@ def flight_ground_z(flight: Path) -> float:
     return statistics.median(zs) if zs else 0.0
 
 
+MAX_POSE_GAP = 40  # sim ticks, as ground_coords.MAX_POSE_GAP
+
+
+def poses_from_camera_log(flight: Path, rows: list[dict]) -> list[dict]:
+    """Flights before 2026-10-03: no per-frame pose in frame_times.csv, only camera_poses.csv every
+    few ticks. Interpolate each frame's pose there by carla_frame (as ground_coords.FlightCamera.pose,
+    angles linear after unwrapping) and use the wall time as sim_time; frames further than
+    MAX_POSE_GAP ticks from any logged pose are dropped (the offline pipeline gives them no position)."""
+    p = flight / "camera_poses.csv"
+    if not p.exists():
+        raise SystemExit(f"{flight}: no per-frame camera pose in frame_times.csv and no camera_poses.csv")
+    with open(p, newline="") as f:
+        log = [r for r in csv.DictReader(f)]
+    cfs = [int(r["carla_frame"]) for r in log]
+    keys = ("x", "y", "z", "pitch", "yaw", "roll")
+    vals = {k: [float(r[k]) for r in log] for k in keys}
+    for k in ("pitch", "yaw", "roll"):  # unwrap so interpolation never goes the long way round
+        v = vals[k]
+        for i in range(1, len(v)):
+            v[i] = v[i - 1] + ((v[i] - v[i - 1] + 180.0) % 360.0 - 180.0)
+    out = []
+    for r in rows:
+        cf = int(r["carla_frame"])
+        j = bisect.bisect_left(cfs, cf)
+        near = [i for i in (j - 1, j) if 0 <= i < len(cfs)]
+        if not near or min(abs(cf - cfs[i]) for i in near) > MAX_POSE_GAP:
+            continue
+        if j <= 0 or j >= len(cfs):
+            i0 = i1 = near[0]
+        else:
+            i0, i1 = j - 1, j
+        w = 0.0 if i1 == i0 else (cf - cfs[i0]) / (cfs[i1] - cfs[i0])
+        r = dict(r, sim_time=r["time_s"])
+        for k in keys:
+            r[k] = vals[k][i0] + w * (vals[k][i1] - vals[k][i0])
+        out.append(r)
+    return out
+
+
 def load(flight: Path) -> tuple[dict, list[dict]]:
     meta = json.loads((flight / "metadata.json").read_text())
     with open(flight / "frame_times.csv", newline="") as f:
         rows = list(csv.DictReader(f))
-    if not rows or "yaw" not in rows[0]:
-        raise SystemExit(f"{flight}: frame_times.csv has no per-frame camera pose (flights from 2026-10-03 on have it)")
+    if not rows:
+        raise SystemExit(f"{flight}: empty frame_times.csv")
+    if "yaw" not in rows[0]:
+        rows = poses_from_camera_log(flight, rows)
+        print(f"[replay] {flight.name}: no per-frame pose; interpolated from camera_poses.csv "
+              f"({len(rows)} frames kept), wall time used as sim time")
     cam = meta.get("camera", {})
     hello = {"type": "hello", "source": "replay", "flight": flight.name, "map": meta.get("map", ""),
              "width": cam.get("width", 1920), "height": cam.get("height", 1080), "fov": cam.get("fov", 90.0),
