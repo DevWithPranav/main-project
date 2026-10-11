@@ -12,14 +12,14 @@ if (-not $Session) {
     $hb = Get-ChildItem $live -Directory -ErrorAction SilentlyContinue | ForEach-Object { Get-Item (Join-Path $_.FullName "heartbeat.json") -ErrorAction SilentlyContinue } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($hb) { $Session = $hb.Directory.Name }
 }
-$pipes = Matching "services[\/]live[\/]pipeline\.py"
+$pipes = Matching "services.live.pipeline\.py"
 if ($pipes -and $Session) {
     $sd = Join-Path $live $Session
     New-Item -ItemType File -Force (Join-Path $sd "STOP") | Out-Null
     Write-Host "pipeline : asked session '$Session' to finish (STOP file), waiting up to 40 s..."
-    for ($i = 0; $i -lt 40; $i++) { if (-not (Matching "services[\/]live[\/]pipeline\.py")) { break }; Start-Sleep -Seconds 1 }
+    for ($i = 0; $i -lt 40; $i++) { if (-not (Matching "services.live.pipeline\.py")) { break }; Start-Sleep -Seconds 1 }
 }
-foreach ($label in @(@("services[\/]live[\/]watchdog\.py", "watchdog"), @("services[\/]live[\/]pipeline\.py", "pipeline (killed: did not finish in time)"), @("services[\/]live[\/]net_check\.py", "net_check"))) {
+foreach ($label in @(@("services.live.watchdog\.py", "watchdog"), @("services.live.pipeline\.py", "pipeline (killed: did not finish in time)"), @("services.live.net_check\.py", "net_check"))) {
     $procs = Matching $label[0]
     if (-not $procs) { Write-Host ("{0,-10}: not running" -f $label[1].Split(" ")[0]); continue }
     foreach ($p in $procs) { Write-Host "$($label[1]) : stopping pid $($p.ProcessId)"; Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
