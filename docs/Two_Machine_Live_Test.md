@@ -12,6 +12,10 @@ Afif's stream); the network part is still to be run for the first time.
                                                         dashboard :5173  (browser here, optionally on Afif's PC too)
 ```
 
+**This test's addresses (Tailscale, 2026-10-11):** this PC = `pranavp`, **100.72.136.117**; Afif's PC = `zenith`, **100.87.158.6**. First `tailscale ping zenith` went
+via a relay (DERP Bengaluru, 75-125 ms, "direct connection not established"); this PC reports UDP ok and an easy NAT, so a direct path depends mostly on Afif's side
+(see Troubleshooting: "direct connection not established").
+
 Only port **5555** (frames) has to be reachable from Afif's PC. Backend and dashboard stay on this PC unless you add `-Dashboard`.
 
 ---
@@ -124,6 +128,7 @@ Also record from the same run: frames received / processed, `backend_posts_faile
 | Symptom | Likely cause and fix |
 |---|---|
 | `01_check_network.ps1`: "no Tailscale address" | Tailscale is not connected on this PC: tray icon > Connect / sign in. |
+| `tailscale ping` says "direct connection not established" | the PCs cannot punch through to each other. On Afif's PC run `tailscale netcheck` (UDP must be `true`; "MappingVariesByDestIP: true" means a hard NAT), allow `tailscaled` / UDP 41641 in his Windows firewall, make sure no VPN or exit node is active, then run `tailscale ping -c 15 pranavp` from his side: the path often upgrades to direct after some traffic. Two PCs on the same Wi-Fi go direct over the LAN. If it stays relayed, stream at 1280x720, `--jpeg-quality 70` (about 10 Mbit/s); note this changes the input the detector sees, so compare with 1080p numbers carefully. |
 | `tailscale ping` says "via DERP" | relayed path: slow; both PCs need direct connectivity (try again after a minute; same Wi-Fi helps). |
 | `net_check.py ping` cannot connect | `listen` not running, wrong IP, or the firewall rule is missing (step 1.2). |
 | `stream_flight.py` connects and drops | pipeline not listening (`netstat -ano | findstr 5555`), or a firewall prompt was dismissed on this PC. |

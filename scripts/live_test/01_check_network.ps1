@@ -1,6 +1,6 @@
 # Two-machine live test, step 1 (detector PC): is Tailscale up, what is this PC's address, can it see Afif, is the port open?
-#   powershell -ExecutionPolicy Bypass -File scripts\live_test\01_check_network.ps1 [-Peer afif]
-param([string]$Peer = "afif")
+#   powershell -ExecutionPolicy Bypass -File scripts\live_test\01_check_network.ps1 [-Peer zenith]
+param([string]$Peer = "zenith")
 
 $ts = Get-Command tailscale -ErrorAction SilentlyContinue
 if (-not $ts) { $ts = Get-Item "C:\Program Files\Tailscale\tailscale.exe" -ErrorAction SilentlyContinue }
