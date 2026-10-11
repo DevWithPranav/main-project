@@ -206,3 +206,16 @@ def test_traffic_schema_and_configured_traffic(client, auth):
     assert client.get(f"/api/plans/{pid}", headers=h).json()["plan"]["traffic"] == {"preset": "night"}
     pv = client.post("/api/plans/preview", headers=h, json={**d, "traffic": {"background": {"density_per_km": 500}}}).json()
     assert not pv["validation"]["ok"] and any(m["code"] == "traffic" for m in pv["validation"]["errors"])
+
+
+def test_virtual_signal_is_returned_with_its_phases(client, auth):
+    lane = lane_xy(client, auth)["nearest_lane"]["id"]
+    d = doc(name="signal plan", props=[{"id": "s1", "kind": "traffic_signal", "x": -84.0, "y": -144.0, "params": {"cycle_s": 40, "green_s": 15}, "target": {"lane_id": lane}}])
+    r = client.post("/api/plans/traffic", headers=auth("officer"), json={"scene": SCENE, "plan": d, "duration_s": 60}).json()
+    assert r["follows_plan"] is True and r["signals_unplaced"] == []
+    sig = r["signals"][0]
+    assert sig["kind"] == "traffic_signal" and sig["heads"] and sig["timeline"][0][0] == 0.0
+    assert {ph for _, ph in sig["timeline"]} >= {"A", "R"}
+    far = doc(name="far", props=[{"id": "s2", "kind": "traffic_signal", "x": -84.0, "y": -144.0, "params": {}}])
+    far["props"][0]["x"] = 5000.0
+    assert client.post("/api/plans/traffic", headers=auth("officer"), json={"scene": SCENE, "plan": far}).status_code == 422  # outside the map

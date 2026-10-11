@@ -597,6 +597,7 @@ export interface VirtualResult {
   warmup_s: number;
   region: { centre: [number, number] | null; radius_m: number | null };
   notes: string[];
+  signals?: VirtualSignal[];
   metrics: Record<string, VirtualMetric>;
   trajectories: { baseline: Record<string, [number, number, number, number | null][]>; plan: Record<string, [number, number, number, number | null][]> };
 }
@@ -626,6 +627,8 @@ export interface TrafficResult {
   duration_s: number;
   vehicles: number;
   spawned?: Record<string, number>;
+  signals?: VirtualSignal[];
+  stops?: { made: number; prevented: number; in_parking_zones: number };
   config?: Record<string, unknown>;
   description?: string;
   stats?: { mean_speed_kmh: number | null; p85_speed_kmh: number | null; vehicles_in_region: number | null; density_veh_per_km2: number | null; throughput_veh_per_h: number | null; travel_time_s: number | null; queue_max_m: number | null; stopped_share: number | null; delay_s_per_vehicle: number | null };
@@ -656,4 +659,17 @@ export interface TrafficSchema {
   source_mixes: Record<string, Record<string, number>>;
   behaviours: Record<string, Record<string, number>>;
   vehicle_types: string[];
+}
+
+/** A virtual signal / stop sign / crossing / bus stop of a virtual-traffic run: stop-line heads and its phase over the run. */
+export interface VirtualSignal {
+  id: string;
+  kind: 'traffic_signal' | 'stop_sign' | 'crossing' | 'bus_stop';
+  mode: string;
+  x: number;
+  y: number;
+  heads: { x: number; y: number; group: 'A' | 'B' }[];
+  /** [seconds into the run, 'A' | 'B' | 'R' | 'ALL'] at each change: A / B = that group has green, R = all red, ALL = uncontrolled / free */
+  timeline: [number, string][];
+  pedestrian_groups?: number | null;
 }

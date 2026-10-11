@@ -23,6 +23,7 @@ import heapq
 import math
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -39,7 +40,7 @@ MODEL_NOTES = [
     "No lane changes or overtaking: a slow vehicle holds up the vehicles behind it.",
     "Signals are virtual: a plan's signal props stop vehicles on the lanes passing them (two phases with clearance, optional adaptive extension, stop signs); the town's own signals are not in the lane map. Turning movements are not controlled and vehicles still pass through each other inside junctions.",
     "Background traffic keeps a constant number of vehicles per km of lane (vehicles that leave the network are respawned elsewhere).",
-    "Pedestrians are not simulated. Closures, barriers, cones and construction zones block the lane; accidents / breakdowns are stopped vehicles.",
+    "Pedestrians exist only as crossing activity at pedestrian crossings (vehicles yield while someone is on the crossing); other pedestrian crowds are not simulated. Closures, barriers, cones and construction zones block the lane; accidents, breakdowns, custom objects and curb stops are stopped vehicles.",
 ]
 
 # type: length m, width m, max accel m/s2, comfortable decel m/s2, time headway s, min gap m, max speed km/h, share of background
@@ -60,7 +61,7 @@ DEFAULTS = {"duration_s": 120.0, "warmup_s": 20.0, "dt": 0.2, "density_per_km": 
 
 
 class Lane:
-    __slots__ = ("i", "id", "xs", "ys", "cum", "length", "limit", "next", "junction", "closed", "allowed", "cap", "road", "vehs", "rclass")
+    __slots__ = ("i", "id", "xs", "ys", "cum", "length", "limit", "next", "junction", "closed", "allowed", "cap", "road", "vehs", "rclass", "segs")
 
     def __init__(self, i, d):
         pts = np.array(d["centreline"], dtype=float)
@@ -74,7 +75,8 @@ class Lane:
         self.junction = bool(d.get("junction"))
         self.closed = False
         self.allowed: set[str] | None = None  # None = every vehicle type
-        self.cap: float | None = None          # speed cap km/h (speed breaker)
+        self.cap: float | None = None          # speed cap km/h on the whole lane
+        self.segs: list[tuple[float, float, float, float | None]] = []  # (s0, s1, speed multiplier, cap km/h): warning signs, speed breakers
         self.road = d.get("road_id")
         self.rclass = "highway" if d.get("road_class") == "highway" else "urban"
         self.vehs: list["Veh"] = []
@@ -86,6 +88,14 @@ class Lane:
     def heading(self, s: float) -> float:
         a, b = self.pos(max(s - 1.0, 0.0)), self.pos(min(s + 1.0, self.length))
         return math.atan2(b[1] - a[1], b[0] - a[0])
+
+    def limit_at(self, s: float) -> float:
+        """Speed limit (km/h) at arc length s with the lane cap and the sign / breaker segments applied."""
+        lim = min(self.limit, self.cap) if self.cap else self.limit
+        for s0, s1, mult, cap in self.segs:
+            if s0 <= s <= s1:
+                lim = min(lim * mult, cap if cap else lim)
+        return lim
 
     def nearest_s(self, x: float, y: float):
         d = np.hypot(self.xs - x, self.ys - y)
@@ -145,10 +155,17 @@ class Signal:
     adaptive (extends a green while vehicles are approaching), off / flashing (no control), all_red, long_green (A always green),
     stop (a stop sign: every vehicle stops and waits STOP_HOLD_S)."""
 
-    def __init__(self, sid: str, x: float, y: float, kind: str, cycle: float = 90.0, green: float = 40.0, adaptive: bool = False):
+    def __init__(self, sid: str, x: float, y: float, kind: str, cycle: float = 90.0, green: float = 40.0, adaptive: bool = False,
+                 kinds: set[str] | None = None, hold_s: float = STOP_HOLD_S):
         self.id, self.x, self.y, self.kind = sid, x, y, kind
         self.cycle, self.green = float(cycle), float(green)
-        self.mode = "stop" if kind == "stop_sign" else ("adaptive" if adaptive else "normal")
+        self.mode = {"stop_sign": "stop", "bus_stop": "stop", "crossing": "crossing"}.get(kind) or ("adaptive" if adaptive else "normal")
+        self.kinds = kinds              # vehicle types it applies to (bus stop: buses only); None = all
+        self.hold_s = hold_s
+        self.intervals: list[tuple[float, float]] = []  # pedestrian crossing: when pedestrians are on the crossing
+        self.ip = 0
+        self.active = False
+        self.peds = 0
         self.heads: dict[int, tuple[float, str]] = {}  # lane index -> (stop line s, group A / B)
         self.state = "A"
         self.until = 0.0
@@ -164,6 +181,8 @@ class Signal:
             return "ALL"
         if self.mode == "all_red":
             return None
+        if self.mode == "crossing":
+            return None if self.active else "ALL"
         if self.mode == "long_green":
             return "A"
         return self.state if self.state in ("A", "B") else None
@@ -173,6 +192,14 @@ class Signal:
         self.log.append((t, "A"))
 
     def update(self, t: float, world: "World"):
+        if self.mode == "crossing":
+            while self.ip < len(self.intervals) and t >= self.intervals[self.ip][1]:
+                self.ip += 1
+            now = self.ip < len(self.intervals) and self.intervals[self.ip][0] <= t < self.intervals[self.ip][1]
+            if not self.log or now != self.active:
+                self.active = now
+                self.log.append((t, "R" if now else "ALL"))
+            return
         if self.mode in ("off", "flashing", "stop", "all_red", "long_green"):
             if not self.log:
                 self.log.append((t, {"off": "ALL", "flashing": "ALL", "stop": "ALL", "all_red": "R", "long_green": "A"}[self.mode]))
@@ -195,6 +222,9 @@ class World:
         self.rng = np.random.RandomState(seed)
         self.cfg = tc.normalize(cfg)
         self.spawned: dict[str, int] = {}
+        self.stops = {"made": 0, "prevented": 0, "in_parking_zones": 0}
+        self.no_stop_zones: list[tuple[Any, float]] = []   # (polygon, grace_s): a stop longer than the grace is not made there
+        self.parking_zones: list[tuple[Any, float, float, tuple[float, float]]] = []  # (polygon, stops per hour, stay s, centre)
         self.signals: list[Signal] = []
         self.by_lane_signals: dict[int, list[Signal]] = {}
         self.bias_zones: list[tuple[float, float, float, dict]] = []  # (x, y, radius, vehicle mix) inside which new vehicles follow the mix
@@ -417,6 +447,23 @@ class World:
         for i in self.rng.permutation(len(pool))[:n]:
             pool[int(i)].retire = True
 
+    def try_stop(self, x: float, y: float, dur: float, kind: str, in_zone: bool) -> bool:
+        """A curb stop; refused (counted as prevented) inside a no-parking zone when it lasts longer than the zone's grace."""
+        from shapely.geometry import Point as _Pt
+        pt = _Pt(x, y)
+        if any(poly.contains(pt) and dur > grace for poly, grace in self.no_stop_zones):
+            self.stops["prevented"] += 1
+            return False
+        ok = self.stop_vehicle(x, y, dur, kind)
+        if ok:
+            self.stops["made"] += 1
+            self.stops["in_parking_zones"] += int(in_zone)
+        return ok
+
+    def stop_vehicle(self, x: float, y: float, dur: float, kind: str = "car") -> bool:
+        """A vehicle stops in the lane at (x, y) for `dur` s (a curb stop, double parking): it blocks the lane behind it."""
+        return self.obstacle(x, y, self.t + dur, kind, 1) > 0
+
     def obstacle(self, x: float, y: float, until: float, kind="car", n=1, spacing=7.0) -> int:
         """Stopped vehicle(s) in the lane nearest to (x, y), `n` in a row backwards along the lane."""
         near = self.nearest_lane(x, y, 20.0)
@@ -439,7 +486,8 @@ class World:
         return made
 
     # ------------------------------------------------------------- signals
-    def add_signal(self, sid: str, x: float, y: float, kind: str, cycle=90.0, green=40.0, adaptive=False) -> Signal | None:
+    def add_signal(self, sid: str, x: float, y: float, kind: str, cycle=90.0, green=40.0, adaptive=False, kinds=None, hold_s=STOP_HOLD_S,
+                   ped_per_h: float = 0.0, cross_s: float = 9.0, horizon: float = 400.0) -> Signal | None:
         """Control the lanes that pass within SIGNAL_REACH_M of (x, y) with a stop line before the position; None when no lane does."""
         cand = []
         for l in self.lanes:
@@ -452,10 +500,21 @@ class World:
         if not cand:
             return None
         ref = min(cand, key=lambda c: c[0])[3]
-        sig = Signal(sid, x, y, kind, cycle, green, adaptive)
+        sig = Signal(sid, x, y, kind, cycle, green, adaptive, kinds, hold_s)
         for d, l, s, ang in cand:
             diff = abs((ang - ref + 90.0) % 180.0 - 90.0)
-            sig.heads[l.i] = (s - STOP_BACK_M, "A" if (kind == "stop_sign" or diff < 40.0) else "B")
+            sig.heads[l.i] = (s - STOP_BACK_M, "A" if (kind != "traffic_signal" or diff < 40.0) else "B")
+        if kind == "crossing" and ped_per_h > 0:
+            t, ivs = 0.0, []
+            while t < horizon:
+                t += float(self.rng.exponential(3600.0 / ped_per_h))
+                a, b = t, t + cross_s
+                if ivs and a <= ivs[-1][1]:
+                    ivs[-1] = (ivs[-1][0], max(ivs[-1][1], b))
+                else:
+                    ivs.append((a, b))
+                sig.peds += 1
+            sig.intervals = ivs
         self.signals.append(sig)
         for li in sig.heads:
             self.by_lane_signals.setdefault(li, []).append(sig)
@@ -484,13 +543,15 @@ class World:
                 ahead = offset + s_stop - (v.s if k == 0 else 0.0)
                 if ahead < -0.5:
                     continue  # past the line
+                if sig.kinds and v.kind not in sig.kinds:
+                    continue
                 if sig.mode == "stop":
                     done = v.hold.get(sig.id)
                     if done == -1.0:
                         continue
-                    if ahead <= 1.6 and v.v < 0.4:
+                    if ahead - v.L / 2 - 0.5 <= v.s0 + 1.3 and v.v < 0.4:  # standing at the line (bumper within the minimum gap of it)
                         t0 = v.hold.setdefault(sig.id, self.t)
-                        if self.t - t0 >= STOP_HOLD_S:
+                        if self.t - t0 >= sig.hold_s:
                             v.hold[sig.id] = -1.0
                             continue
                     best = min(best, max(ahead - v.L / 2 - 0.5, 0.05))
@@ -499,7 +560,7 @@ class World:
                 if ph == "ALL" or ph == grp:
                     continue
                 brake_dist = v.v * v.v / (2.0 * max(v.b, 1.0))
-                if ahead < brake_dist * 0.8 and ahead < 25.0 and ph is None and sig.state in ("clr1", "clr2"):
+                if ahead < brake_dist * 0.8 and ahead < 25.0 and ph is None:
                     continue  # too close to stop comfortably when the clearance began: carry on
                 best = min(best, max(ahead - v.L / 2 - 0.5, 0.05))
             offset += self.lanes[li].length - (v.s if k == 0 else 0.0) if k == 0 else self.lanes[li].length
@@ -550,7 +611,7 @@ class World:
             if v.obstacle:
                 continue
             lane = self.lanes[v.lane]
-            limit = (min(lane.limit, lane.cap) if lane.cap else lane.limit) / 3.6
+            limit = lane.limit_at(v.s) / 3.6
             v0 = max(min(limit * v.v0 * self.weather, v.vmax), 1.0)
             gap, lv = self.leader(v)
             free = 1.0 - (v.v / v0) ** 4
@@ -664,19 +725,46 @@ def run(scene: dict, plan: dict | None, seed: int = 0, duration_s: float | None 
     skip_ids = {it["id"] for it in sc_items if it.get("kind") in obstacle_kinds}
     patch = [o for o in comp["changes"]["lane_overrides"] if not any(f"plan item {i} " in (o.get("note") or "") for i in skip_ids)]
     w = World(scene, patch, seed, cfg)
-    for it in plan.get("props") or []:
-        if it.get("kind") == "speed_breaker":
-            near = w.nearest_lane(it["x"], it["y"], 15.0)
-            if near:
-                near[1].cap = float((it.get("params") or {}).get("cap_kmh", 20))
     for it in sc_items:
         if it.get("kind") == "weather":
             w.weather = WEATHER.get((it.get("params") or {}).get("preset", "rain"), 1.0)
-    # virtual signals and stop signs, then the timing / operation changes that reach them
-    for it in plan.get("props") or []:
-        if it.get("kind") in ("traffic_signal", "stop_sign"):
-            sp = plans.with_defaults(it["kind"], it.get("params"))
-            w.add_signal(f"sig_{it['id']}", it["x"], it["y"], it["kind"], sp.get("cycle_s", 90), sp.get("green_s", 40), bool(sp.get("adaptive")))
+    # props: virtual signals, stop signs, pedestrian crossings, bus stops, warning signs, speed breakers, parking, objects
+    from shapely.geometry import Polygon as _Poly
+    cross_kinds = {"pedestrian_crossing", "pedestrian_priority"}
+    for it in list(plan.get("props") or []) + list(plan.get("rules") or []):
+        k = it.get("kind")
+        sp = plans.with_defaults(k or "", it.get("params"))
+        if k in ("traffic_signal", "stop_sign"):
+            w.add_signal(f"sig_{it['id']}", it["x"], it["y"], k, sp.get("cycle_s", 90), sp.get("green_s", 40), bool(sp.get("adaptive")))
+        elif k in cross_kinds:
+            across = float(sp.get("length_m", 8))
+            w.add_signal(f"sig_{it['id']}", it["x"], it["y"], "crossing", ped_per_h=float(sp.get("ped_per_h", 240)), cross_s=across / 1.3 + 3.0, horizon=warmup_s + duration_s + 30.0)
+        elif k == "bus_stop":
+            w.add_signal(f"sig_{it['id']}", it["x"], it["y"], "bus_stop", kinds={"bus"}, hold_s=float(sp.get("dwell_s", 15)))
+        elif k == "warning_sign":
+            mult = {"general": 0.9, "pedestrians": 0.8, "school": 0.75, "road_works": 0.75, "curve": 0.8, "slippery": 0.85}.get(sp.get("text"), 0.9)
+            for l in w.lanes:
+                d, s_ = l.nearest_s(it["x"], it["y"])
+                if d <= SIGNAL_REACH_M and s_ >= 8.0:
+                    l.segs.append((max(s_ - 60.0, 0.0), s_, mult, None))
+        elif k == "speed_breaker":
+            for l in w.lanes:
+                d, s_ = l.nearest_s(it["x"], it["y"])
+                if d <= SIGNAL_REACH_M:
+                    l.segs.append((max(s_ - 12.0, 0.0), s_ + 8.0, 1.0, float(sp.get("cap_kmh", 20))))
+        elif k == "custom_object":
+            half = float(sp.get("width_m", 2)) / 2 + 1.7
+            for l in w.lanes:
+                d, s_ = l.nearest_s(it["x"], it["y"])
+                if d <= half and 2.0 <= s_ <= l.length - 2.0:
+                    n_ob = max(int(round(float(sp.get("length_m", 2)) / 5.0)), 1)
+                    w.obstacle(*l.pos(s_), math.inf, "truck" if float(sp.get("length_m", 2)) > 6 else "car", n_ob)
+        elif k in ("no_parking_zone", "no_parking") or (k == "custom_zone_rule" and sp.get("zone_type") == "no_parking"):
+            poly = _Poly(plans.rect_polygon(it["x"], it["y"], it.get("yaw_deg", 0.0), float(sp.get("length_m", 20)), float(sp.get("width_m", 4))))
+            w.no_stop_zones.append((poly, float(sp.get("grace_s", 30))))
+        elif k == "parking_zone":
+            poly = _Poly(plans.rect_polygon(it["x"], it["y"], it.get("yaw_deg", 0.0), float(sp.get("length_m", 20)), float(sp.get("width_m", 4))))
+            w.parking_zones.append((poly, float(sp.get("stops_per_h", 40)), float(sp.get("stay_s", 60)), (it["x"], it["y"])))
     for it in plan.get("rules") or []:
         if it.get("kind") == "signal_timing":
             sp = plans.with_defaults("signal_timing", it.get("params"))
@@ -784,6 +872,19 @@ def run(scene: dict, plan: dict | None, seed: int = 0, duration_s: float | None 
                 rate = max(float(p.get("vph", 600)) * rate_factor(p.get("profile", "constant"), frac), 20.0)
                 next_flow[fi] = t + 3600.0 * nveh / rate
         w.step(dt)
+        curb = cfg["background"].get("curb_stops_per_km_h", 0.0)
+        if (curb > 0 and cfg["background"]["enabled"]) or w.parking_zones:
+            if curb > 0 and cfg["background"]["enabled"]:
+                lanes_c, wts = w.bg_lanes()
+                if lanes_c and w.rng.rand() < curb * float(wts.sum()) / 1000.0 / 3600.0 * dt:
+                    l = lanes_c[int(w.rng.choice(len(lanes_c), p=wts / wts.sum()))]
+                    sp_ = float(w.rng.uniform(8.0, max(l.length - 8.0, 9.0)))
+                    w.try_stop(*l.pos(sp_), float(np.clip(w.rng.lognormal(3.4, 0.5), 10.0, 300.0)), "van" if w.rng.rand() < 0.3 else "car", in_zone=False)
+            for poly, per_h, stay, (zx, zy) in w.parking_zones:
+                if w.rng.rand() < per_h / 3600.0 * dt:
+                    near = w.nearest_lane(zx, zy, SIGNAL_REACH_M)
+                    if near:
+                        w.try_stop(*near[1].pos(near[2]), float(np.clip(w.rng.normal(stay, stay * 0.3), 8.0, 900.0)), "car", in_zone=True)
         # demand controller (every second): keep the background population at base x profile(t)
         if cfg["background"]["enabled"] and base_n and w.t >= next_ctl:
             next_ctl = w.t + 1.0
@@ -808,10 +909,10 @@ def run(scene: dict, plan: dict | None, seed: int = 0, duration_s: float | None 
         heads = [{"x": round(w.lanes[li].pos(ss)[0], 2), "y": round(w.lanes[li].pos(ss)[1], 2), "group": g} for li, (ss, g) in sg.heads.items()]
         tl = [[round(max(t - warmup_s, 0.0), 2), ph] for t, ph in sg.log if t >= warmup_s or ph != sg.log[-1][1]]
         timeline = [[0.0, next((ph for t, ph in reversed(sg.log) if t <= warmup_s), sg.log[0][1] if sg.log else "ALL")]] + [r for r in tl if r[0] > 0]
-        sig_out.append({"id": sg.id, "kind": sg.kind, "mode": sg.mode, "x": sg.x, "y": sg.y, "heads": heads, "timeline": timeline})
+        sig_out.append({"id": sg.id, "kind": sg.kind, "mode": sg.mode, "x": sg.x, "y": sg.y, "heads": heads, "timeline": timeline, "pedestrian_groups": sg.peds if sg.kind == "crossing" else None})
     out = {"seed": seed, "metrics": m, "vehicles_total": w.nid - 1, "spawn_blocked": w.spawn_fail, "spawned": dict(w.spawned),
            "traffic": describe_cfg(cfg), "config": cfg, "signals": sig_out,
-           "signals_unplaced": [it["id"] for it in (plan.get("props") or []) if it.get("kind") in ("traffic_signal", "stop_sign") and f"sig_{it['id']}" not in {sg.id for sg in w.signals}]}
+           "stops": dict(w.stops), "signals_unplaced": [it["id"] for it in (plan.get("props") or []) if it.get("kind") in ("traffic_signal", "stop_sign") and f"sig_{it['id']}" not in {sg.id for sg in w.signals}]}
     if keep_states:
         out["states"] = states
     return out

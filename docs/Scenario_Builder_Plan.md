@@ -100,8 +100,18 @@ baseline without CarlaAir. **It is not CARLA** and says so wherever its numbers 
 - Background traffic keeps a constant number of vehicles per km of lane (7 per km by default); demand scenarios add vehicles
   inside their radius. Plan items act through the compiled lane overrides (speed limits, closed / reserved lanes) and the
   scenarios (spawn group, continuous flow, jam, accident, breakdown, emergency vehicle, weather speed factor, speed breaker cap).
-- Not modelled: lane changes and overtaking, junction conflicts (vehicles pass through each other inside junctions), traffic
-  signals and their timing, pedestrians, bus-stop dwell, diversions. Elements that depend on these are listed as "not simulated".
+- **Props in the virtual model (2026-10-11):** traffic signals (stop lines on the lanes passing the signal, two phases with
+  2 s clearance, cycle and green from the prop, optional adaptive green that extends up to 12 s while vehicles approach; heads drawn
+  green / red on the map), stop signs (3 s hold), pedestrian crossings and pedestrian priority (pedestrians arrive at the set rate;
+  vehicles stop while someone is on the crossing), bus stops (buses dwell in the lane), warning signs (speed reduced over the 60 m
+  before), speed breakers (cap over 12 m before to 8 m after), parking zones (vehicles stop in the lane at the set rate and block
+  it), no-parking zones (curb stops longer than the grace are prevented, counted), custom objects (block the lane), closures and
+  barriers (lane blocked), speed-limit signs (limit on the lanes). The `signal_timing` rule changes the green of signals within its
+  radius; `signal_ops` sets flashing / off, all red or a fixed long green. Curb stops (drop-offs, deliveries) are a setting of the
+  background traffic.
+- Not modelled: lane changes and overtaking, junction conflicts (vehicles pass through each other inside junctions), turning
+  movements at signals, the town's own signals (not in the lane map), pedestrian crowds, diversions. Elements that depend on these
+  are listed as "not simulated".
 - Runs: 5 seeds x (baseline + plan), 120 s after a 20 s warm-up, reproducible (`numpy.random.RandomState(seed)`); per metric the mean
   and 95 % interval (Student t); "different" only when the intervals are apart, else "no difference detected". Metrics (inside the
   area around the plan): average and 85th-percentile speed, vehicles, density, throughput, travel time through the area, queue length,

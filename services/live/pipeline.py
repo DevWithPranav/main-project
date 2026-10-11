@@ -166,6 +166,8 @@ def main() -> None:
     ap.add_argument("--frame-width", type=int, default=960, help="Width of the frames sent to the dashboard")
     ap.add_argument("--session", default=None, help="Session id (default live_<date>_<time>)")
     ap.add_argument("--out", type=Path, default=LIVE_RESULTS)
+    ap.add_argument("--clock-offset", type=float, default=0.0,
+                    help="Seconds to add to the sender's capture times to express them in THIS machine's clock (two-machine runs; measure with net_check.py ping)")
     ap.add_argument("--resume", action="store_true", help="Session folder exists (watchdog restart): append to its files")
     ap.add_argument("--once", action="store_true", help="Exit after the first source ends (default: wait for the next)")
     args = ap.parse_args()
@@ -270,10 +272,15 @@ def main() -> None:
             "wall": now_w, "pid": os.getpid(), "frames_processed": n_proc, "events": len(ie.engine.log.events),
             "backend_degraded": backend.degraded, "backend_buffered": backend.buffered}))
 
+    stop_file = out / "STOP"  # scripts/live_test/04_stop_stack.ps1 creates it: finish cleanly (summary.json is written) instead of being killed
+    stop_file.unlink(missing_ok=True)
     try:
         beat()
         while True:
             beat()
+            if stop_file.exists():
+                print("[live] STOP file found: finishing", flush=True)
+                break
             item = rx.get(1.0)
             if item is None:
                 if rx.ended:
@@ -289,6 +296,7 @@ def main() -> None:
             t_start = time.perf_counter()
             first_wall = first_wall or time.time()
             frame, t = int(h["frame"]), float(h["sim_time"])
+            h["capture_wall"] = h["capture_wall"] + args.clock_offset  # the sender's clock, expressed in this machine's clock
             capture_wall[frame] = h["capture_wall"]
             cw_order.append(frame)
             while len(cw_order) > 5000:

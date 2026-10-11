@@ -58,7 +58,7 @@ DEFAULTS = {
     "background": {
         "enabled": True, "density_per_km": 7.0, "demand_profile": "constant", "road_weight": {"urban": 1.0, "highway": 1.0},
         "mix": dict(SOURCE_MIX["city"]), "speed_factor_mean": 1.0, "speed_factor_sd": 0.10,
-        "behaviour_mix": {"cautious": 20, "normal": 60, "aggressive": 20},
+        "behaviour_mix": {"cautious": 20, "normal": 60, "aggressive": 20}, "curb_stops_per_km_h": 0.0,
     },
 }
 
@@ -77,10 +77,10 @@ PRESETS = {
                       "background": {"density_per_km": 10.0, "mix": {"car": 55, "van": 18, "truck": 22, "bus": 3, "motorcycle": 2}}},
     "event_day": {"label": "Event day", "help": "Demand surges mid-run (about double)", "background": {"density_per_km": 9.0, "demand_profile": "event_surge"}},
     "school_run": {"label": "School run", "help": "Morning peak, cautious drivers, more two-wheelers",
-                   "background": {"density_per_km": 9.0, "demand_profile": "morning_peak", "mix": {"car": 78, "van": 6, "truck": 2, "bus": 6, "motorcycle": 8},
+                   "background": {"density_per_km": 9.0, "curb_stops_per_km_h": 8.0, "demand_profile": "morning_peak", "mix": {"car": 78, "van": 6, "truck": 2, "bus": 6, "motorcycle": 8},
                                   "behaviour_mix": {"cautious": 45, "normal": 45, "aggressive": 10}, "speed_factor_mean": 0.95}},
     "delivery_hours": {"label": "Delivery hours", "help": "Vans and trucks make up about 40 % of the traffic",
-                       "background": {"density_per_km": 8.0, "mix": {"car": 52, "van": 24, "truck": 16, "bus": 6, "motorcycle": 2}}},
+                       "background": {"density_per_km": 8.0, "curb_stops_per_km_h": 6.0, "mix": {"car": 52, "van": 24, "truck": 16, "bus": 6, "motorcycle": 2}}},
     "bus_corridor": {"label": "Bus corridor", "help": "One vehicle in five is a bus",
                      "background": {"density_per_km": 8.0, "mix": {"car": 70, "van": 5, "truck": 3, "bus": 20, "motorcycle": 2}}},
     "two_wheelers": {"label": "Two-wheeler heavy", "help": "A third of the traffic is motorcycles",
@@ -91,7 +91,7 @@ PRESETS = {
     "aggressive_drivers": {"label": "Aggressive drivers", "help": "Short gaps, over the limits (a worst case for speeding and rear-end risk)",
                            "background": {"behaviour_mix": {"cautious": 3, "normal": 27, "aggressive": 70}, "speed_factor_mean": 1.15, "speed_factor_sd": 0.12}},
     "tourist_weekend": {"label": "Tourist weekend", "help": "Slow, cautious drivers unfamiliar with the roads; evening peak",
-                        "background": {"density_per_km": 8.0, "demand_profile": "evening_peak", "speed_factor_mean": 0.88, "speed_factor_sd": 0.12,
+                        "background": {"density_per_km": 8.0, "curb_stops_per_km_h": 4.0, "demand_profile": "evening_peak", "speed_factor_mean": 0.88, "speed_factor_sd": 0.12,
                                        "behaviour_mix": {"cautious": 55, "normal": 40, "aggressive": 5}}},
     "gridlock": {"label": "Gridlock", "help": "25 vehicles per km: expect long queues", "background": {"density_per_km": 25.0}},
     "ghost_town": {"label": "Almost empty", "help": "1 vehicle per km, for checking a single change", "background": {"density_per_km": 1.0}},
@@ -152,6 +152,8 @@ SCHEMA = [
         f("background.enabled", "Background traffic", "bool", True),
         f("background.density_per_km", "Density", "number", 7.0, 0, 40, "veh per km of lane", step=0.5),
         f("background.demand_profile", "Demand over the run", "enum", "constant", options=list(PROFILES), help_="how the density changes during the run"),
+        f("background.curb_stops_per_km_h", "Curb stops (drop-offs, deliveries)", "number", 0.0, 0, 30, "per km of lane per hour", step=0.5,
+          help_="vehicles that stop in the lane for 10-300 s and block it; a no-parking zone prevents the longer ones"),
         f("background.road_weight.urban", "Urban roads weight", "number", 1.0, 0, 3, "x", step=0.1), f("background.road_weight.highway", "Highways weight", "number", 1.0, 0, 3, "x", step=0.1)]},
     {"id": "mix", "title": "Vehicle mix", "help": "Shares of the background traffic (any scale, they are normalised)", "fields": [
         f(f"background.mix.{t}", t.replace("_", " ").capitalize(), "number", DEFAULTS["background"]["mix"].get(t, 0), 0, 100, "%", step=1) for t in VEHICLE_TYPES]},

@@ -134,6 +134,8 @@ export function trafficTabHtml(schema: TrafficSchema, cfg: Cfg | null | undefine
   const run = last ? `<div class="lastrun"><b>Last run</b> <span class="muted">${esc(last.description ?? '')}</span>
       <div class="kv"><span>Vehicles</span><b>${last.vehicles}</b><span>Mean speed</span><b>${last.stats?.mean_speed_kmh ?? '-'} km/h</b>
       <span>Stopped share</span><b>${last.stats?.stopped_share !== null && last.stats?.stopped_share !== undefined ? Math.round(last.stats.stopped_share * 100) + ' %' : '-'}</b><span>Queue (max)</span><b>${last.stats?.queue_max_m ?? '-'} m</b></div>
+      ${last.signals?.length ? `<div class="muted">${last.signals.length} signal${last.signals.length === 1 ? '' : 's'} / crossing${last.signals.length === 1 ? '' : 's'} / stop${last.signals.length === 1 ? '' : 's'} simulated${last.signals.some((q) => q.pedestrian_groups) ? `; ${last.signals.reduce((n, q) => n + (q.pedestrian_groups ?? 0), 0)} pedestrian groups crossed` : ''}</div>` : ''}
+      ${last.stops && (last.stops.made || last.stops.prevented) ? `<div class="muted">Curb stops: ${last.stops.made} made, ${last.stops.prevented} prevented by no-parking zones</div>` : ''}
       ${stackBar(last.spawned ?? {}, TYPE_COLOR)}</div>` : '<p class="muted">Switch “Custom traffic” on to see the traffic and its statistics here.</p>';
   return `<div class="traffic-tab">
     <p class="muted">${esc(describeTraffic(schema, cfg))}</p>

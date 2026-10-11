@@ -454,7 +454,7 @@ async def custom_traffic(body: TrafficReq, _: Principal = Depends(current_user))
         r = ms.run(scene, doc if n_items else None, seed, duration_s=dur, keep_states=True, traffic=cfg)
         m = r["metrics"]
         return {"label": "virtual traffic (simplified model, not CARLA)", "follows_plan": bool(n_items), "plan_items": n_items, "seed": seed, "duration_s": dur,
-                "vehicles": r["vehicles_total"], "spawned": r["spawned"], "config": cfg, "description": r["traffic"], "notes": ms.MODEL_NOTES,
+                "vehicles": r["vehicles_total"], "spawned": r["spawned"], "config": cfg, "signals": r["signals"], "stops": r["stops"], "signals_unplaced": r["signals_unplaced"], "description": r["traffic"], "notes": ms.MODEL_NOTES,
                 "stats": {k: m.get(k) for k in ("mean_speed_kmh", "p85_speed_kmh", "vehicles_in_region", "density_veh_per_km2", "throughput_veh_per_h",
                                                 "travel_time_s", "queue_max_m", "stopped_share", "delay_s_per_vehicle")},
                 "trajectories": ms.trajectories(r["states"])}

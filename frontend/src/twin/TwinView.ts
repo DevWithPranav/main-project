@@ -237,7 +237,7 @@ export class TwinView {
   private redrawZone: ZoneFeature | null = null;
   private builder!: PlanBuilder;
   /** custom (virtual) traffic of the scenario builder: its own layer, looped on the replay clock */
-  private custom: { tracks: Track[]; t0: number; dur: number; ownClock: boolean } | null = null;
+  private custom: { tracks: Track[]; t0: number; dur: number; ownClock: boolean; signals: import("../api/types").VirtualSignal[] } | null = null;
   private readonly customPoints: PointPrimitiveCollection;
   private readonly customLabels: LabelCollection;
   private readonly planPoints: PointPrimitiveCollection;
@@ -1007,14 +1007,14 @@ export class TwinView {
   // ------------------------------------------------------------------ scenario builder (right-click menu, plan markers)
 
   /** Show the vehicle paths of a virtual-traffic run as the custom traffic layer (null: remove it). */
-  private showVirtual(traj: Record<string, [number, number, number, number | null][]> | null) {
+  private showVirtual(traj: Record<string, [number, number, number, number | null][]> | null, signals: import("../api/types").VirtualSignal[] | null = null) {
     if (this.disposed) return;
     const sw = this.$("custom") as HTMLInputElement;
     if (traj) {
       const tracks = parseTrajectories(traj);
       const [a, b] = timeRange(tracks);
       const ownClock = !this.tracks.length; // nothing recorded: the simulation sets the timeline
-      this.custom = { tracks, t0: a, dur: Math.max(b - a, 1), ownClock };
+      this.custom = { tracks, t0: a, dur: Math.max(b - a, 1), ownClock, signals: signals ?? [] };
       if (this.mode !== "replay") this.setMode("replay");
       if (ownClock) {
         this.tMin = a;
@@ -1075,7 +1075,7 @@ export class TwinView {
       if (this.disposed || seq !== this.customSeq || !this.checked("custom")) return;
       const keepT = this.custom ? this.t : null;
       this.lastTraffic = r;
-      this.showVirtual(r.trajectories);
+      this.showVirtual(r.trajectories, r.signals ?? []);
       if (keepT !== null) this.t = keepT; // a re-run for a changed plan keeps the clock where it was
       this.$("customNote").textContent = `(${r.vehicles} vehicles${r.follows_plan ? `, following your plan: ${r.plan_items} item${r.plan_items === 1 ? "" : "s"}` : ""}, ${r.description ?? "plain traffic"})`;
       this.builder.refreshTrafficInfo();
@@ -1101,6 +1101,16 @@ export class TwinView {
     const c = this.custom;
     if (!c || !this.checked("custom")) return;
     const tt = c.t0 + ((((this.t - this.tMin) % c.dur) + c.dur) % c.dur);
+    for (const sg of c.signals) { // signal heads: green / red by the simulated phase, stop signs orange, bus stops purple, crossings red while people cross
+      let ph = sg.timeline[0]?.[1] ?? "ALL";
+      for (const [ts, p] of sg.timeline) if (ts <= tt - c.t0) ph = p;
+      for (const h of sg.heads) {
+        const colour = sg.kind === "stop_sign" ? "#fd7e14" : sg.kind === "bus_stop" ? "#845ef7"
+          : sg.kind === "crossing" ? (ph === "R" ? "#fa5252" : "#ced4da") : (ph === "ALL" || ph === h.group ? "#40c057" : "#fa5252");
+        this.customPoints.add({ position: this.frame.carla(h.x, h.y, this.z(h.x, h.y) + 2.4), pixelSize: 13, color: Color.fromCssColorString(colour), outlineColor: Color.BLACK, outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY });
+      }
+    }
     for (const tr of c.tracks) {
       const st = sampleTrack(tr, tt);
       if (!st) continue;

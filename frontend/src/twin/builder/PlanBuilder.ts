@@ -7,7 +7,7 @@
  * Nothing here invents a number: results come from the backend /api/plans/* and are labelled by where they come from.
  */
 import { api } from '../../api';
-import type { PlanAnalysis, PlanCatalogue, PlanDoc, PlanGroup, PlanItem, PlanKind, PlanLocate, PlanRow, PlanReportRow, PlanRun, TrafficResult, TrafficSchema, VirtualResult } from '../../api/types';
+import type { PlanAnalysis, PlanCatalogue, PlanDoc, PlanGroup, PlanItem, PlanKind, PlanLocate, PlanRow, PlanReportRow, PlanRun, TrafficResult, TrafficSchema, VirtualResult, VirtualSignal } from '../../api/types';
 import './builder.css';
 import { alternativesHtml, bestWorstHtml, compareHtml, compiledHtml, esc, evidenceBadge, messagesHtml, observedHtml, pendingHtml, replayHtml, risksHtml, virtualHtml, type CompareRow } from './recoView';
 import { normalizeTraffic, setPath, trafficIsDefault, trafficProblems, trafficTabHtml, type Cfg } from './trafficUi';
@@ -33,7 +33,7 @@ export interface BuilderHost {
   flyTo(x: number, y: number): void;
   draw(items: DrawnItem[], anchor: [number, number] | null): void;
   /** play the vehicle paths of a virtual-traffic run instead of the recording (null: back to the recording) */
-  showVirtual(traj: VirtualResult['trajectories']['plan'] | null): void;
+  showVirtual(traj: VirtualResult['trajectories']['plan'] | null, signals?: VirtualSignal[] | null): void;
   /** the map's Custom traffic switch (virtual traffic that follows the plan) */
   customTraffic: { isOn(): boolean; set(on: boolean): void };
   /** the last custom-traffic run (statistics for the Traffic tab), or null */
@@ -654,7 +654,7 @@ export class PlanBuilder {
         this.host.showVirtual(null);
       } else {
         this.playing = w as 'baseline' | 'plan';
-        this.host.showVirtual(this.virtual.result.trajectories[w as 'baseline' | 'plan']);
+        this.host.showVirtual(this.virtual.result.trajectories[w as 'baseline' | 'plan'], w === 'plan' ? this.virtual.result.signals ?? null : null);
       }
       return;
     }
@@ -874,7 +874,7 @@ export class PlanBuilder {
       this.virtual = { result: run.result as unknown as VirtualResult, name: doc.name, stale: false };
       this.msg = '';
       this.playing = 'plan';
-      this.host.showVirtual(this.virtual.result.trajectories.plan);
+      this.host.showVirtual(this.virtual.result.trajectories.plan, this.virtual.result.signals ?? null);
     } catch (e) {
       this.msg = `Simulation failed: ${(e as Error).message}`;
     } finally {
