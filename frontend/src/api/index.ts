@@ -131,6 +131,7 @@ export function openLive(
   let retry = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
+  let lastSeen = 0; // ms of the last frame; a reconnect asks the server for what was missed (PRD 29.3, max 60 s)
 
   const connect = () => {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -138,13 +139,16 @@ export function openLive(
     if (sessionId) p.set('session_id', sessionId);
     const t = tokenStore.get();
     if (t) p.set('token', t);
+    if (lastSeen) p.set('catch_up_s', String(Math.min(60, Math.ceil((Date.now() - lastSeen) / 1000) + 2)));
     onStatus('connecting');
     ws = new WebSocket(`${proto}://${location.host}/api/ws/live?${p}`);
     ws.onopen = () => {
+      lastSeen ||= Date.now();
       retry = 0;
       onStatus('open');
     };
     ws.onmessage = (ev) => {
+      lastSeen = Date.now();
       try {
         onMessage(JSON.parse(ev.data as string) as LiveMessage);
       } catch {

@@ -43,10 +43,13 @@ import { profileSummaries, twinApi as api, unwrapProfile } from "./api";
 import { DEFAULT_ANCHOR, Frame, parseAnchor } from "./coords";
 import { buildLaneMeshes, crosswalkZones, emptyMesh, HeightIndex, laneCategory, mergeInto, polygonFan, type Mesh } from "./laneGeometry";
 import { gridHotspots, isAnomaly, LiveTrails, pinStyle, problemSections } from "./layers";
+import { describeItem, FALLBACK_ATTRIBUTES, laneValue, OVERRIDE_KEYS, type AttrValue, type OverrideKey } from "../lib/roadEdits";
+import type { RoadAttribute } from "../api/types";
 import { buildProfile, overrideTarget, validateNote, validateOverride, validateProfileName } from "./planEdits";
 import { eventTime, indexEventsByTrack, parseTrajectories, sampleTrack, statesAt, timeRange, type EventIndex, type Track } from "./replay";
 import type { Lane, LaneOverride, Scene, TwinEvent, VehicleState, Zone } from "./types";
-import { buildRequest, localTime, resultHtml, summaryText } from "./whatif";
+import { localTime } from "./whatif";
+import { PlanBuilder, type BuilderHost, type DrawnItem } from "./builder/PlanBuilder";
 
 export interface TwinOptions {
   username: string;
@@ -88,24 +91,51 @@ const esc = (s: unknown) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&
 const zoneTypeOptions = (Object.keys(ZONE_TYPES) as ZoneType[])
   .map((t) => `<option value="${t}">${esc(ZONE_TYPES[t].label)}</option>`).join("");
 
+/** One row per road attribute in the planner panel (`attr_<key>`), same attributes as Configuration > Road configuration. */
+function attrRowsHtml(): string {
+  return FALLBACK_ATTRIBUTES.map((a) => {
+    const title = esc(`drives ${a.drives.map((d) => d.condition).join(", ")}`);
+    const control = a.type === "number"
+      ? `<input id="attr_${a.key}" type="number" min="5" max="130" />`
+      : `<select id="attr_${a.key}">${a.type === "bool"
+        ? `<option value="true">yes</option><option value="false">no</option>`
+        : (a.values ?? []).map((v) => `<option value="${v ?? ""}">${v ?? "none"}</option>`).join("")}</select>`;
+    return `<label title="${title}">${esc(a.label)} ${control}</label>`;
+  }).join("");
+}
+
+function setAttrControl(el: HTMLElement, _a: RoadAttribute, v: AttrValue) {
+  (el as HTMLInputElement | HTMLSelectElement).value = v === null || v === undefined ? "" : String(v);
+}
+
+/** The control's value as an override value; undefined = empty number box. */
+function readAttrControl(el: HTMLElement, a: RoadAttribute): AttrValue | undefined {
+  const raw = (el as HTMLInputElement | HTMLSelectElement).value;
+  if (a.type === "number") return raw === "" ? undefined : Number(raw);
+  if (a.type === "bool") return raw === "true";
+  return raw === "" ? null : raw;
+}
+
 const PANEL_HTML = `
 <div class="tw-viewer"></div>
 <button id="panelToggle" class="tw-toggle" title="Show / hide the panel">☰</button>
 <aside class="tw-panel">
   <header><strong>3D Digital Twin</strong><span id="user" class="muted"></span></header>
+  <label class="tw-switch" title="Show or hide the vehicles (with their trails and speeds) coming from the video / live feed"><input type="checkbox" id="traffic" checked /><span class="tw-track"></span><span class="tw-switch-text">Traffic from video</span></label>
+  <label class="tw-switch" id="customSw" title="Virtual traffic on the map (blue): plain traffic on its own, and it follows your scenario plan as soon as the plan has items. Simplified model, not CARLA."><input type="checkbox" id="custom" /><span class="tw-track"></span><span class="tw-switch-text">Custom traffic <span class="muted" id="customNote">(off)</span></span><button type="button" class="gear" id="customCfg" title="Configure the custom traffic: density, vehicle mix, drivers, demand over time, sources, groups, zones">⚙</button></label>
   <label>Session <select id="session"></select></label>
   <label>Town <select id="town"></select></label>
-  <div class="row">
+  <div class="row tw-traffic">
     <label><input type="radio" name="tw-mode" value="replay" checked /> Replay</label>
     <label><input type="radio" name="tw-mode" value="live" /> Live</label>
     <span id="liveStatus" class="muted"></span>
   </div>
-  <div class="row">
+  <div class="row tw-traffic">
     <button id="play">▶</button>
     <input id="time" type="range" min="0" max="1" step="0.1" value="0" />
-    <select id="speed"><option>1</option><option selected>2</option><option>4</option><option>8</option></select>
+    <select id="speed"><option>0.5</option><option>1</option><option selected>2</option><option>4</option><option>8</option></select>
   </div>
-  <div class="muted" id="clock"></div>
+  <div class="muted tw-traffic" id="clock"></div>
   <div class="row"><label><input type="checkbox" id="heat" /> Problem sections (events per lane)</label></div>
   <div class="row">
     <label><input type="checkbox" id="hotspots" checked /> Hotspots</label>
@@ -114,46 +144,47 @@ const PANEL_HTML = `
   <div class="row"><label><input type="checkbox" id="zonesOn" checked /> Zones</label><span id="zoneCount" class="muted"></span></div>
   <label>Pins <select id="pinKind"><option value="violation" selected>violations</option><option value="all">violations &amp; road surface</option><option value="anomaly">road surface</option><option value="none">none</option></select></label>
   <div class="legend">
-    <span style="--c:#40c057">ok</span><span style="--c:#fab005">checking</span><span style="--c:#fa5252">flagged</span>
+    <span class="tw-traffic" style="--c:#40c057">ok</span><span class="tw-traffic" style="--c:#fab005">checking</span><span class="tw-traffic" style="--c:#fa5252">flagged</span>
     <span style="--c:#7048e8">bridge</span><span style="--c:#4c6ef5">highway</span>
   </div>
   <details open><summary><strong>Hotspots</strong> <span class="muted">(25 m cells, click to fly)</span></summary><ol id="hotList" class="clicky"></ol></details>
   <details><summary><strong>Problem road sections</strong> <span class="muted">(lanes by events)</span></summary><ol id="sections" class="clicky"></ol></details>
   <h4>Selected</h4>
   <div id="selected" class="muted">Click a lane, vehicle, pin or zone.</div>
-  <div id="zoneActions" hidden>
-    <div class="row"><button id="zoneRedraw">Redraw outline</button><button id="zoneDeactivate">Deactivate</button></div>
-    <ul id="zoneHistory" class="muted"></ul>
-  </div>
-  <div id="editor" hidden>
-    <h4>Planner edit</h4>
-    <div id="laneEdit">
-      <label>Speed limit (km/h) <input id="limit" type="number" min="5" max="130" /></label>
-      <label>Restricted <select id="restricted"><option value="">none</option><option>bus</option><option>emergency</option></select></label>
+</aside>
+<button id="plannerToggle" class="tw-toggle tw-toggle-left" title="Show / hide the planner panel" hidden>&#9998;</button>
+<aside class="tw-panel tw-planner" id="editor" hidden>
+  <div>
+    <header><strong>Planner</strong><span class="muted">select, edit, validate &amp; save</span></header>
+    <div id="plannerHint" class="hint"><strong>Nothing selected</strong><span id="plannerHintText">Click a lane or a zone on the map and its editor appears here.</span></div>
+    <div id="zoneActions" hidden>
+      <h4>Selected zone</h4>
+      <div class="row"><button id="zoneRedraw">Redraw outline</button><button id="zoneDeactivate">Deactivate</button></div>
+      <ul id="zoneHistory" class="muted"></ul>
+    </div>
+    <div id="laneEdit" hidden>
+      <h4>Selected lane</h4>
+      ${attrRowsHtml()}
       <label><input type="checkbox" id="roadScope" /> whole road direction</label>
       <button id="addOverride">Add lane change</button>
       <hr />
     </div>
+    <details id="zoneEditBox"><summary><strong>New zone</strong></summary>
     <div id="zoneEdit">
-      <label>Zone type <select id="zoneType">${zoneTypeOptions}<option value="area">what-if area (not saved)</option></select></label>
+      <label>Zone type <select id="zoneType">${zoneTypeOptions}</select></label>
       <label>Zone name <input id="zoneName" placeholder="e.g. school gate no stopping" /></label>
       <label id="zoneParamRow"><span id="zoneParamLabel">Grace (s)</span> <input id="zoneParam" type="number" min="0" /></label>
       <button id="drawZone">Draw zone</button> <span id="drawHint" class="muted"></span>
     </div>
+    </details>
+    <div id="saveBox" hidden>
     <h4>Pending edits</h4>
     <ul id="pending"></ul>
     <label>Profile (lane changes) <input id="profileName" placeholder="town03_planner" /></label>
     <label>Why (logged) <textarea id="note" rows="2"></textarea></label>
     <button id="save">Validate &amp; save</button>
+    </div>
     <div class="err" id="saveErr"></div>
-    <h4>What-if <span class="muted">(PRD 21.3)</span></h4>
-    <label>Countermeasure <select id="cm"><option value="">none (rules only)</option></select></label>
-    <div id="cmArea" class="muted">area: changed lanes (draw a "what-if area" to set one)</div>
-    <label>Scenario name <input id="scnName" placeholder="e.g. 20 km/h on road 24" /></label>
-    <button id="project">Project impact</button>
-    <div id="scnResult" class="scn"></div>
-    <h4>Saved scenarios</h4>
-    <ul id="scnList" class="muted"></ul>
     <h4>Edit history</h4>
     <ul id="history" class="muted"></ul>
   </div>
@@ -204,7 +235,15 @@ export class TwinView {
   private readonly pendingZones: PendingZone[] = [];
   private drawing: [number, number][] | null = null;
   private redrawZone: ZoneFeature | null = null;
-  private whatifArea: [number, number][] | null = null;
+  private builder!: PlanBuilder;
+  /** custom (virtual) traffic of the scenario builder: its own layer, looped on the replay clock */
+  private custom: { tracks: Track[]; t0: number; dur: number; ownClock: boolean } | null = null;
+  private readonly customPoints: PointPrimitiveCollection;
+  private readonly customLabels: LabelCollection;
+  private readonly planPoints: PointPrimitiveCollection;
+  private readonly planLabels: LabelCollection;
+  private readonly planLines: PolylineCollection;
+  private ctxMenu: HTMLElement | null = null;
   private lastDrawn = 0;
   private last = 0;
   private sessionToken = 0; // bumps on every loadSession: a slower older load must not win
@@ -235,7 +274,44 @@ export class TwinView {
     this.pinLabels = sc.primitives.add(new LabelCollection());
     this.hotLabels = sc.primitives.add(new LabelCollection());
     this.drawn = sc.primitives.add(new PolylineCollection());
+    this.customPoints = sc.primitives.add(new PointPrimitiveCollection());
+    this.customLabels = sc.primitives.add(new LabelCollection());
+    this.planLines = sc.primitives.add(new PolylineCollection());
+    this.planPoints = sc.primitives.add(new PointPrimitiveCollection());
+    this.planLabels = sc.primitives.add(new LabelCollection());
     this.handler = new ScreenSpaceEventHandler(sc.canvas);
+    const host: BuilderHost = {
+      root, role: opts.role, town: () => this.scene?.scene ?? "", sessionId: () => this.val("session"),
+      flyTo: (x, y) => this.flyTo(x, y), draw: (items, anchor) => this.drawPlan(items, anchor),
+      player: {
+        toggle: () => this.setPlaying(!this.playing),
+        reset: () => { this.t = this.tMin; this.render(); },
+        stop: () => { this.setPlaying(false); this.t = this.tMin; this.render(); },
+        seek: (f) => { this.t = this.tMin + (this.tMax - this.tMin) * f; this.render(); },
+        setSpeed: (v) => { (this.$("speed") as HTMLSelectElement).value = String(v); },
+        read: () => ({ t: this.t, tMin: this.tMin, tMax: this.tMax, playing: this.playing }),
+      },
+      showVirtual: (traj) => this.showVirtual(traj),
+      customTraffic: { isOn: () => this.checked("custom"), set: (on) => this.setCustomTraffic(on) },
+      trafficInfo: () => this.lastTraffic,
+      planChanged: () => this.onPlanChanged(),
+      screenshot: () => {
+        try {
+          this.viewer.render();
+          const c = this.viewer.canvas as HTMLCanvasElement;
+          const w = Math.min(c.width, 1100), r = w / c.width;
+          const o = document.createElement("canvas");
+          o.width = w;
+          o.height = Math.max(1, Math.round(c.height * r));
+          o.getContext("2d")!.drawImage(c, 0, 0, o.width, o.height);
+          return o.toDataURL("image/png");
+        } catch {
+          return null;
+        }
+      },
+    };
+    this.builder = new PlanBuilder(host);
+    this.builder.mount();
     this.wire();
     void this.guard(this.start());
   }
@@ -552,6 +628,7 @@ export class TwinView {
     if (this.disposed) return;
     if (this.mode === "replay") {
       this.drawVehicles(statesAt(this.tracks, this.t, this.evIdx));
+      this.drawCustom();
       this.drawPins(this.t);
       const { t, tMin, tMax } = this;
       this.$("clock").textContent = `t = ${t.toFixed(1)} s (${(t - tMin).toFixed(0)} / ${(tMax - tMin).toFixed(0)} s) · ${this.tracks.length} tracks, ${this.lastDrawn} cars shown, ${this.events.length} events`;
@@ -632,7 +709,6 @@ export class TwinView {
     this.t = want != null && Number.isFinite(want) && want >= this.tMin && want <= this.tMax ? want : this.tMin;
     this.refreshEventLayers();
     if (this.mode === "live") this.connectLive(id);
-    if (this.canEditProfile()) void this.loadScenarios();
     this.render();
   }
 
@@ -705,14 +781,17 @@ export class TwinView {
     const id = p?.id as { kind?: string; v?: VehicleState; e?: TwinEvent; f?: ZoneFeature } | string | undefined;
     const box = this.$("selected");
     this.$("zoneActions").hidden = true;
-    this.$("laneEdit").hidden = false;
+    this.$("laneEdit").hidden = true; // the editors appear only once something is selected
+    this.$("plannerHint").hidden = false;
+    this.$("plannerHintText").textContent = "Click a lane or a zone on the map and its editor appears here.";
     if (typeof id === "string" && this.lanesById.has(id)) {
       const l = this.lanesById.get(id)!;
       this.selectedLane = l;
+      this.$("laneEdit").hidden = false;
+      this.$("plannerHint").hidden = true;
       const { centreline: _c, z: _z, next: _n, ...rest } = l;
       box.innerHTML = this.kv(rest as Record<string, unknown>);
-      (this.$("limit") as HTMLInputElement).value = l.speed_limit_kmh != null ? String(l.speed_limit_kmh) : "";
-      (this.$("restricted") as HTMLSelectElement).value = l.restricted ?? "";
+      for (const a of FALLBACK_ATTRIBUTES) setAttrControl(this.$(`attr_${a.key}`), a, laneValue(l as never, a.key as OverrideKey));
     } else if (id && typeof id === "object" && id.kind === "zone" && id.f) {
       const f = id.f;
       this.selectedZone = f;
@@ -720,13 +799,22 @@ export class TwinView {
       box.innerHTML = this.kv({ zone: pr.name, type: ZONE_TYPES[pr.type as ZoneType]?.label ?? pr.type, id: pr.id, source: pr.source,
         grace_s: pr.grace_s, limit_kmh: pr.limit_kmh, version: pr.version, area_m2: pr.area_m2?.toFixed(1),
         updated: pr.updated_at ? `${pr.updated_by ?? "?"}, ${localTime(pr.updated_at)}` : undefined });
-      if (pr.source === "api") void this.showZoneActions(f);
+      if (pr.source === "api") {
+        this.$("plannerHint").hidden = true;
+        void this.showZoneActions(f);
+      } else {
+        this.$("plannerHintText").textContent = "This zone comes from the map file and is read-only. Draw a new zone below to add your own.";
+      }
     } else if (id && typeof id === "object" && id.kind === "vehicle" && id.v) {
       box.innerHTML = this.kv({ track: id.v.track_id, state: id.v.state, speed_kmh: id.v.speed_kmh?.toFixed(1), heading: id.v.heading_deg?.toFixed(0) });
     } else if (id && typeof id === "object" && id.kind === "object") {
       const ob = id as unknown as { label: string; o: { c: number[]; e: number[]; r: number[] } };
       box.innerHTML = this.kv({ object: ob.label, centre: ob.o.c.map((v) => v.toFixed(1)).join(", "),
         size_m: ob.o.e.map((v) => (2 * v).toFixed(1)).join(" × "), top_m: (ob.o.c[2] + ob.o.e[2]).toFixed(1), yaw: ob.o.r[1] });
+    } else if (id && typeof id === "object" && id.kind === "plan") {
+      const pid = (id as unknown as { id: string }).id;
+      this.builder.selectItem(pid);
+      box.textContent = "A plan item: edit it in the scenario builder.";
     } else if (id && typeof id === "object" && id.kind === "event" && id.e) {
       const e = id.e;
       box.innerHTML = isAnomaly(e)
@@ -759,9 +847,10 @@ export class TwinView {
 
   private renderPending() {
     this.$("pending").innerHTML =
-      this.pendingOverrides.map((o) => `<li>lane ${esc(o.lane_id)}: ${o.speed_limit_kmh ? `${o.speed_limit_kmh} km/h ` : ""}${o.restricted ? esc(o.restricted) : ""}</li>`).join("") +
+      this.pendingOverrides.map((o) => `<li>lane ${esc(o.lane_id)}: ${esc(describeItem(o))}</li>`).join("") +
       this.pendingZones.map((zn) => `<li>zone “${esc(zn.name)}” ${esc(zn.type)} (${zn.polygon.length} pts${zn.limit_kmh != null ? `, ${zn.limit_kmh} km/h` : ""}${zn.grace_s != null ? `, grace ${zn.grace_s} s` : ""})</li>`).join("") ||
       "<li class='muted'>none</li>";
+    this.$("saveBox").hidden = !this.pendingOverrides.length && !this.pendingZones.length; // nothing queued: nothing to save
   }
 
   private addOverride() {
@@ -770,13 +859,14 @@ export class TwinView {
       this.$("saveErr").textContent = "Click a lane first";
       return;
     }
-    const lim = this.val("limit");
-    const res = this.val("restricted");
     const o: LaneOverride = { lane_id: overrideTarget(lane.id, this.checked("roadScope") ? "road_dir" : "lane") };
-    if (lim && Number(lim) !== lane.speed_limit_kmh) o.speed_limit_kmh = Number(lim);
-    if ((res || null) !== (lane.restricted ?? null)) o.restricted = (res || null) as LaneOverride["restricted"];
+    const rec = o as unknown as Record<string, unknown>;
+    for (const a of FALLBACK_ATTRIBUTES) {
+      const v = readAttrControl(this.$(`attr_${a.key}`), a);
+      if (v !== undefined && v !== laneValue(lane as never, a.key as OverrideKey)) rec[a.key] = v;
+    }
     const errs = validateOverride(o, scene.lanes);
-    if (o.speed_limit_kmh === undefined && o.restricted === undefined) errs.push("nothing changed");
+    if (!OVERRIDE_KEYS.some((k) => k in o) && !errs.includes("nothing to change")) errs.push("nothing changed");
     this.$("saveErr").textContent = errs.join("\n");
     if (!errs.length) {
       this.pendingOverrides.push(o);
@@ -786,10 +876,9 @@ export class TwinView {
 
   private updateZoneParam() {
     const type = this.val("zoneType");
-    const param = type === "area" ? null : ZONE_TYPES[type as ZoneType]?.param ?? null;
+    const param = ZONE_TYPES[type as ZoneType]?.param ?? null;
     this.$("zoneParamRow").hidden = !param;
-    this.$("zoneName").parentElement!.hidden = type === "area";
-    this.$("zoneParamLabel").textContent = param === "limit_kmh" ? "Limit (km/h, required)" : "Grace (s, optional; short = no stopping)";
+        this.$("zoneParamLabel").textContent = param === "limit_kmh" ? "Limit (km/h, required)" : "Grace (s, optional; short = no stopping)";
   }
 
   private drawPreview() {
@@ -823,11 +912,6 @@ export class TwinView {
       return;
     }
     const type = this.val("zoneType");
-    if (type === "area") { // what-if area, not a rule zone
-      this.whatifArea = poly.length >= 3 ? poly : null;
-      this.$("cmArea").textContent = this.whatifArea ? `area: drawn polygon (${this.whatifArea.length} points)` : "area: needs 3+ points";
-      return;
-    }
     const info = ZONE_TYPES[type as ZoneType];
     const errs: string[] = [];
     const problem = polygonProblem(poly);
@@ -911,62 +995,191 @@ export class TwinView {
     await this.loadZones();
   }
 
-  // ------------------------------------------------------------------ what-if (PRD 21.3)
-
-  private async loadWhatif() {
-    try {
-      const cms = await api.countermeasures();
-      if (this.disposed) return;
-      this.$("cm").innerHTML = `<option value="">none (rules only)</option>` +
-        cms.map((c) => `<option value="${esc(c.key)}">${esc(c.name)}${c.quantified ? "" : " (not quantified)"}</option>`).join("");
-    } catch {
-      /* older backend: rules-only what-if */
-    }
-    await this.loadScenarios();
-  }
-
-  private async loadScenarios() {
-    const sid = this.val("session");
-    if (!sid) return;
-    try {
-      const list = await api.scenarios(sid);
-      if (this.disposed) return;
-      this.$("scnList").innerHTML = list.map((s) => `<li data-id="${esc(s.id)}"><b>${esc(s.name)}</b><br>${summaryText(s)}</li>`).join("") || "<li>none yet</li>";
-    } catch {
-      if (!this.disposed) this.$("scnList").innerHTML = "<li>none yet</li>";
-    }
-  }
-
-  private async projectImpact() {
-    const { body, error } = buildRequest(this.val("session"), this.val("scnName"), this.pendingOverrides, this.pendingZones,
-      this.val("cm") || null, this.whatifArea);
-    const out = this.$("scnResult");
-    if (!body) {
-      out.textContent = error ?? "";
-      return;
-    }
-    try {
-      let s = await api.createScenario(body);
-      out.textContent = "Replaying the recorded traffic with the change (up to a minute or two)…";
-      await this.loadScenarios();
-      while (s.status === "running") {
-        await new Promise((r) => setTimeout(r, 2000));
-        if (this.disposed) return;
-        s = await api.scenario(s.id);
-      }
-      out.innerHTML = resultHtml(s);
-      await this.loadScenarios();
-    } catch (e) {
-      out.textContent = (e as Error).message;
-    }
-  }
-
   private async loadHistory(name: string) {
     try {
       const h = await api.profileHistory(name);
       this.$("history").innerHTML = h.map((r: any) => `<li>v${r.version ?? "?"} · ${esc(r.by ?? "?")} · ${esc(r.at ? localTime(r.at) : "")}<br>${esc(r.note ?? "")}</li>`).join("") || "<li>none</li>";
     } catch {
       this.$("history").innerHTML = "<li>none yet</li>";
+    }
+  }
+
+  // ------------------------------------------------------------------ scenario builder (right-click menu, plan markers)
+
+  /** Show the vehicle paths of a virtual-traffic run as the custom traffic layer (null: remove it). */
+  private showVirtual(traj: Record<string, [number, number, number, number | null][]> | null) {
+    if (this.disposed) return;
+    const sw = this.$("custom") as HTMLInputElement;
+    if (traj) {
+      const tracks = parseTrajectories(traj);
+      const [a, b] = timeRange(tracks);
+      const ownClock = !this.tracks.length; // nothing recorded: the simulation sets the timeline
+      this.custom = { tracks, t0: a, dur: Math.max(b - a, 1), ownClock };
+      if (this.mode !== "replay") this.setMode("replay");
+      if (ownClock) {
+        this.tMin = a;
+        this.tMax = b;
+        const el = this.$("time") as HTMLInputElement;
+        el.min = String(a);
+        el.max = String(b);
+      }
+      this.t = this.tMin;
+      sw.disabled = false;
+      sw.checked = true;
+      this.$("customNote").textContent = `(${tracks.length} vehicles, ${this.builder?.hasItems ? "following your plan" : "plain traffic"})`;
+      this.render();
+      this.setPlaying(true);
+    } else if (this.custom) {
+      if (this.custom.ownClock) {
+        this.tMin = this.tMax = this.t = 0;
+        this.setPlaying(false);
+      }
+      this.custom = null;
+      sw.checked = false;
+      this.$("customNote").textContent = "(off)";
+      this.drawCustom();
+      this.render();
+    }
+  }
+
+  private lastTraffic: import("../api/types").TrafficResult | null = null;
+  private customSeq = 0;
+  private customTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** The Custom traffic switch (info panel or the builder's bottom bar). */
+  private setCustomTraffic(on: boolean) {
+    const sw = this.$("custom") as HTMLInputElement;
+    sw.checked = on;
+    if (on) void this.guard(this.loadCustomTraffic());
+    else {
+      this.customSeq++;
+      this.$("customNote").textContent = "(off)";
+      this.drawCustom();
+    }
+  }
+
+  /** Virtual traffic from the server: plain, or following the plan in the builder; re-run when the plan changes while the switch is on. */
+  private async loadCustomTraffic() {
+    const note = this.$("customNote");
+    const town = this.scene?.scene;
+    if (!town) {
+      note.textContent = "(load a map first)";
+      (this.$("custom") as HTMLInputElement).checked = false;
+      return;
+    }
+    const plan = this.builder.planForTraffic();
+    const seq = ++this.customSeq;
+    note.textContent = this.builder.hasItems ? "(simulating your plan…)" : "(simulating the traffic…)";
+    try {
+      const r = await api.planTraffic(town, plan);
+      if (this.disposed || seq !== this.customSeq || !this.checked("custom")) return;
+      const keepT = this.custom ? this.t : null;
+      this.lastTraffic = r;
+      this.showVirtual(r.trajectories);
+      if (keepT !== null) this.t = keepT; // a re-run for a changed plan keeps the clock where it was
+      this.$("customNote").textContent = `(${r.vehicles} vehicles${r.follows_plan ? `, following your plan: ${r.plan_items} item${r.plan_items === 1 ? "" : "s"}` : ""}, ${r.description ?? "plain traffic"})`;
+      this.builder.refreshTrafficInfo();
+    } catch (e) {
+      if (seq === this.customSeq) {
+        this.$("customNote").textContent = `(${(e as Error).message})`;
+        (this.$("custom") as HTMLInputElement).checked = false;
+      }
+    }
+  }
+
+  /** The plan in the builder changed: with the switch on, the traffic follows it. */
+  private onPlanChanged() {
+    if (!this.checked("custom")) return;
+    clearTimeout(this.customTimer);
+    this.customTimer = setTimeout(() => void this.guard(this.loadCustomTraffic()), 900);
+  }
+
+  /** Custom traffic markers (blue) at the replay clock, looped over the simulation's length; hidden when the switch is off. */
+  private drawCustom() {
+    this.customPoints.removeAll();
+    this.customLabels.removeAll();
+    const c = this.custom;
+    if (!c || !this.checked("custom")) return;
+    const tt = c.t0 + ((((this.t - this.tMin) % c.dur) + c.dur) % c.dur);
+    for (const tr of c.tracks) {
+      const st = sampleTrack(tr, tt);
+      if (!st) continue;
+      const pos = this.frame.carla(st.x, st.y, this.z(st.x, st.y) + 1.2);
+      const stopped = (st.speed_kmh ?? 0) < 1;
+      this.customPoints.add({ position: pos, pixelSize: 10, color: Color.fromCssColorString(stopped ? "#f08c00" : "#339af0"), outlineColor: Color.WHITE, outlineWidth: 1,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY });
+      if (st.speed_kmh != null && !stopped)
+        this.customLabels.add({ position: pos, text: `${Math.round(st.speed_kmh)}`, font: "11px sans-serif", disableDepthTestDistance: Number.POSITIVE_INFINITY, pixelOffset: new Cartesian2(8, -8),
+          style: LabelStyle.FILL_AND_OUTLINE, outlineWidth: 3, outlineColor: Color.BLACK, fillColor: Color.fromCssColorString("#a5d8ff") });
+    }
+  }
+
+  private onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") this.closeContextMenu();
+  };
+
+  private closeContextMenu() {
+    this.ctxMenu?.remove();
+    this.ctxMenu = null;
+  }
+
+  /** Right-click on the map: what is there, and "Add Custom Rules" (opens the scenario builder at that position). */
+  private openContextMenu(pos: Cartesian2) {
+    this.closeContextMenu();
+    const p = this.viewer.camera.pickEllipsoid(pos);
+    if (!p) return;
+    const [x0, y0] = this.frame.toCarla(p);
+    const x = Math.round(x0 * 100) / 100, y = Math.round(y0 * 100) / 100;
+    const canPlan = this.opts.role === "PLANNER" || this.opts.role === "ADMIN";
+    const m = document.createElement("div");
+    m.className = "tw-ctx";
+    const rootBox = this.root.getBoundingClientRect(), vb = (this.viewer.canvas as HTMLCanvasElement).getBoundingClientRect();
+    m.style.left = `${Math.min(pos.x + vb.left - rootBox.left, rootBox.width - 250)}px`;
+    m.style.top = `${Math.min(pos.y + vb.top - rootBox.top, rootBox.height - 150)}px`;
+    m.innerHTML = `<div class="ctx-h"><b>${x.toFixed(1)}, ${y.toFixed(1)}</b><div id="ctxWhere" class="muted">looking up the road…</div></div>
+      <button data-ctx="open" ${canPlan ? "" : "disabled"}>Add Custom Rules</button>
+      ${this.builder.isOpen ? `<button data-ctx="move" ${canPlan ? "" : "disabled"}>Set builder location here</button>` : ""}
+      ${canPlan ? "" : "<div class='ctx-note'>PLANNER role needed to build scenarios.</div>"}`;
+    m.addEventListener("click", (e) => {
+      const act = (e.target as HTMLElement).closest<HTMLElement>("[data-ctx]")?.dataset.ctx;
+      if (!act) return;
+      this.closeContextMenu();
+      void this.guard(this.builder.openAt(x, y));
+    });
+    this.root.appendChild(m);
+    this.ctxMenu = m;
+    void api.planLocate(this.scene?.scene ?? "", x, y).then((loc) => {
+      const el = m.querySelector<HTMLElement>("#ctxWhere");
+      if (!el || this.ctxMenu !== m) return;
+      const n = loc.nearest_lane;
+      el.textContent = loc.on_road && n ? `lane ${n.id} · ${n.lane_type ?? "road"}${n.speed_limit_kmh ? ` · ${n.speed_limit_kmh} km/h` : ""}${loc.junction ? " · junction" : ""}` : "not on a road";
+    }).catch(() => {
+      const el = m.querySelector<HTMLElement>("#ctxWhere");
+      if (el) el.textContent = "";
+    });
+  }
+
+  /** The builder's items on the map: a marker + label per item, footprints for area items, a cross at the builder location. */
+  private drawPlan(items: DrawnItem[], anchor: [number, number] | null) {
+    this.planPoints.removeAll();
+    this.planLabels.removeAll();
+    this.planLines.removeAll();
+    const colour = { prop: "#4c6ef5", rule: "#f08c00", scenario: "#12b886" } as const;
+    for (const it of items) {
+      const c = Color.fromCssColorString(it.level === "error" ? "#fa5252" : it.level === "warning" ? "#fab005" : colour[it.group]);
+      const pos = this.frame.carla(it.x, it.y, this.z(it.x, it.y) + 1.5);
+      this.planPoints.add({ position: pos, pixelSize: it.selected ? 17 : 12, color: c, outlineColor: it.selected ? Color.WHITE : Color.BLACK,
+        outlineWidth: it.selected ? 3 : 1, disableDepthTestDistance: Number.POSITIVE_INFINITY, id: { kind: "plan", id: it.id } });
+      this.planLabels.add({ position: pos, text: it.label, font: "bold 12px sans-serif", disableDepthTestDistance: Number.POSITIVE_INFINITY, pixelOffset: new Cartesian2(11, -14),
+        style: LabelStyle.FILL_AND_OUTLINE, outlineWidth: 3, outlineColor: Color.BLACK, fillColor: Color.WHITE });
+      if (it.footprint) {
+        const ring = [...it.footprint, it.footprint[0]].map(([x, y]) => this.frame.carla(x, y, this.z(x, y) + 0.6));
+        this.planLines.add({ positions: ring, width: it.selected ? 4 : 2, material: Material.fromType("Color", { color: c }) });
+      }
+    }
+    if (anchor) {
+      const pos = this.frame.carla(anchor[0], anchor[1], this.z(anchor[0], anchor[1]) + 1.2);
+      this.planPoints.add({ position: pos, pixelSize: 9, color: Color.WHITE, outlineColor: Color.fromCssColorString("#4c6ef5"), outlineWidth: 3, disableDepthTestDistance: Number.POSITIVE_INFINITY });
     }
   }
 
@@ -984,9 +1197,15 @@ export class TwinView {
         }
         return;
       }
+      this.closeContextMenu();
       this.select(viewer.scene.pick(ev.position));
     }, ScreenSpaceEventType.LEFT_CLICK);
-    handler.setInputAction(() => void this.guard(this.finishDrawing()), ScreenSpaceEventType.RIGHT_CLICK);
+    handler.setInputAction((ev: { position: Cartesian2 }) => {
+      if (this.drawing || this.redrawZone) return void this.guard(this.finishDrawing());
+      this.openContextMenu(ev.position);
+    }, ScreenSpaceEventType.RIGHT_CLICK);
+    this.root.addEventListener("pointerdown", (e) => { if (this.ctxMenu && !this.ctxMenu.contains(e.target as Node)) this.closeContextMenu(); });
+    window.addEventListener("keydown", this.onKey);
 
     const on = (id: string, ev: string, fn: (e: Event) => unknown) =>
       this.$(id).addEventListener(ev, (e) => void this.guard(Promise.resolve().then(() => fn(e))));
@@ -1005,11 +1224,6 @@ export class TwinView {
     on("zoneDeactivate", "click", () => this.deactivateSelectedZone());
     on("zoneType", "change", () => this.updateZoneParam());
     on("addOverride", "click", () => this.addOverride());
-    on("project", "click", () => this.projectImpact());
-    on("scnList", "click", async (e) => {
-      const id = (e.target as HTMLElement).closest("li")?.dataset.id;
-      if (id) this.$("scnResult").innerHTML = resultHtml(await api.scenario(id));
-    });
     on("save", "click", () => this.save());
     on("play", "click", () => this.setPlaying(!this.playing));
     on("time", "input", (e) => {
@@ -1017,6 +1231,17 @@ export class TwinView {
       this.render();
     });
     on("heat", "change", () => this.applyLaneColors());
+    on("custom", "change", () => this.setCustomTraffic(this.checked("custom")));
+    this.$("customCfg").addEventListener("click", (e) => {
+      e.preventDefault(); // the gear sits inside the switch's label: it must not flip the switch
+      e.stopPropagation();
+      void this.guard(this.builder.openTraffic());
+    });
+    on("traffic", "change", () => {
+      const show = this.checked("traffic");
+      this.points.show = this.labels.show = this.trails.show = show;
+      this.root.classList.toggle("traffic-off", !show); // replay / live controls, clock and vehicle-state legend only matter with traffic
+    });
     on("hotspots", "change", () => this.drawHotspots());
     on("zonesOn", "change", () => this.drawZones());
     on("pinKind", "change", () => this.render());
@@ -1032,6 +1257,7 @@ export class TwinView {
       this.flyTo(mid[0], mid[1]);
     });
     on("panelToggle", "click", () => this.root.classList.toggle("collapsed"));
+    on("plannerToggle", "click", () => this.root.classList.toggle("planner-collapsed"));
     on("objects", "change", () => {
       if (this.objectPrim) this.objectPrim.show = this.checked("objects");
     });
@@ -1051,6 +1277,7 @@ export class TwinView {
     this.$("user").textContent = `${o.username} (${o.role})`;
     const editor = this.canEditProfile() || this.canEditZone();
     this.$("editor").hidden = !editor;
+    this.$("plannerToggle").hidden = !editor;
     this.updateZoneParam();
     this.renderPending();
     if (o.t != null && Number.isFinite(o.t)) this.pendingSeek = o.t;
@@ -1075,7 +1302,6 @@ export class TwinView {
       const profiles = profileSummaries(await api.profiles().catch(() => []));
       (this.$("profileName") as HTMLInputElement).placeholder =
         profiles.find((p) => p.name.includes("planner"))?.name ?? `${(this.scene?.scene ?? "town").toLowerCase()}_planner`;
-      void this.loadWhatif();
     }
   }
 
@@ -1084,6 +1310,10 @@ export class TwinView {
     if (this.disposed) return;
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    window.removeEventListener("keydown", this.onKey);
+    clearTimeout(this.customTimer);
+    this.closeContextMenu();
+    this.builder?.dispose();
     this.ws?.close();
     this.ws = null;
     if (!this.handler.isDestroyed()) this.handler.destroy();

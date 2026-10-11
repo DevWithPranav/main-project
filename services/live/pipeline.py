@@ -32,6 +32,7 @@ import argparse
 import csv
 import datetime
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -165,6 +166,7 @@ def main() -> None:
     ap.add_argument("--frame-width", type=int, default=960, help="Width of the frames sent to the dashboard")
     ap.add_argument("--session", default=None, help="Session id (default live_<date>_<time>)")
     ap.add_argument("--out", type=Path, default=LIVE_RESULTS)
+    ap.add_argument("--resume", action="store_true", help="Session folder exists (watchdog restart): append to its files")
     ap.add_argument("--once", action="store_true", help="Exit after the first source ends (default: wait for the next)")
     args = ap.parse_args()
 
@@ -189,7 +191,7 @@ def main() -> None:
     lag = LAG_S if args.lag is None else args.lag
     kin = OnlineKinematics(lag_s=lag, mode=args.kin, relink=not args.no_relink)
     ie = IncrementalEngine(engine)
-    backend = BackendClient(args.backend)
+    backend = BackendClient(args.backend, spool_path=out / "backend_spool.jsonl")
     gpu = GpuSampler()
     gpu.start()
     (out / "run_config.json").write_text(json.dumps({
@@ -199,12 +201,14 @@ def main() -> None:
         "relink": not args.no_relink, "scene": scene_path, "zones": str(args.zones), "profile": str(args.profile),
         "road_surface": surface is not None, "backend": args.backend}, indent=1))
 
-    ev_file = open(out / "events.jsonl", "w")
-    kin_file = open(out / "kinematics.csv", "w", newline="")
+    mode = "a" if args.resume else "w"
+    ev_file = open(out / "events.jsonl", mode)
+    kin_file = open(out / "kinematics.csv", mode, newline="")
     kin_w = None
-    trk_file = open(out / "tracks.csv", "w", newline="")
+    trk_file = open(out / "tracks.csv", mode, newline="")
     trk_w = csv.writer(trk_file)
-    trk_w.writerow(["frame", "time_s", "track_id", "tracker_id", "class", "cx", "cy", "w", "h", "conf", "wx", "wy", "pose_exact"])
+    if trk_file.tell() == 0:
+        trk_w.writerow(["frame", "time_s", "track_id", "tracker_id", "class", "cx", "cy", "w", "h", "conf", "wx", "wy", "pose_exact"])
 
     capture_wall: dict[int, float] = {}
     cw_order: deque = deque()
@@ -244,15 +248,32 @@ def main() -> None:
             if rows:
                 if kin_w is None:
                     kin_w = csv.DictWriter(kin_file, fieldnames=list(rows[0]))
-                    kin_w.writeheader()
+                    if kin_file.tell() == 0:
+                        kin_w.writeheader()
                 kin_w.writerows(rows)
             t0 = time.perf_counter()
             opened, closed = ie.step(t, fr, rows)
             ms["engine"].append((time.perf_counter() - t0) * 1000)
             handle(opened, closed, time.time())
 
+    last_beat = 0.0
+
+    def beat():
+        """Heartbeat file for the watchdog (watchdog.py): rewritten at most every 0.5 s from the main loop,
+        so a hung detector stops it. Also says whether the backend is taking events."""
+        nonlocal last_beat
+        now_w = time.time()
+        if now_w - last_beat < 0.5:
+            return
+        last_beat = now_w
+        (out / "heartbeat.json").write_text(json.dumps({
+            "wall": now_w, "pid": os.getpid(), "frames_processed": n_proc, "events": len(ie.engine.log.events),
+            "backend_degraded": backend.degraded, "backend_buffered": backend.buffered}))
+
     try:
+        beat()
         while True:
+            beat()
             item = rx.get(1.0)
             if item is None:
                 if rx.ended:
@@ -385,6 +406,7 @@ def main() -> None:
             "event_latency_s_capture_to_emit": {k: stats(v) for k, v in latency.items()},
             "event_latency_s_capture_to_post_ok": stats(post_lat),
             "backend_posts_ok": backend.ok, "backend_posts_failed": backend.failed,
+            "backend_events_dropped": backend.dropped, "backend_events_buffered_at_exit": backend.buffered,
             "events_final": len(final_events), "kinematics_stats": dict(kin.stats),
             "gpu_util_pct": stats([s[0] for s in gpu.samples]), "gpu_mem_mib": stats([s[1] for s in gpu.samples]),
         }

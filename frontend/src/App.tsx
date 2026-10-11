@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Alert,
   AppShell,
   Badge,
   Burger,
@@ -13,6 +14,7 @@ import {
   useMantineColorScheme,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
+import { useQuery } from '@tanstack/react-query';
 import {
   IconAdjustments,
   IconBulb,
@@ -26,8 +28,8 @@ import {
   IconSun,
 } from '@tabler/icons-react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { lazy, Suspense } from 'react';
-import { MOCK } from './api';
+import { lazy, Suspense, useState } from 'react';
+import { api, MOCK } from './api';
 import { useAuth } from './auth';
 import { ROLE_COLORS } from './lib/permissions';
 import ConfigPage from './pages/Config';
@@ -54,10 +56,24 @@ const NAV = [
 export default function App() {
   const { me, loading, logout } = useAuth();
   const [opened, { toggle, close }] = useDisclosure();
+  const [deskOpen, setDeskOpen] = useState(() => {
+    try { return localStorage.getItem('nav.desktop') !== 'closed'; } catch { return true; }
+  });
+  const toggleDesk = () => {
+    setDeskOpen((v) => {
+      try { localStorage.setItem('nav.desktop', v ? 'closed' : 'open'); } catch { /* storage unavailable */ }
+      return !v;
+    });
+  };
   const loc = useLocation();
   const nav = useNavigate();
   const { setColorScheme } = useMantineColorScheme();
   const scheme = useComputedColorScheme('light');
+  // PRD 29.2 / 29.5: tell the operator when the database or Redis is down (events are buffered by the pipeline meanwhile)
+  const health = useQuery({ queryKey: ['health'], queryFn: api.health, refetchInterval: 5000, enabled: !!me, retry: false });
+  const degraded = health.isError ? 'Backend not reachable' : health.data
+    ? [health.data.db !== 'ok' && 'Database degraded — events are being buffered', health.data.redis !== 'ok' && 'Redis down — live updates paused'].filter(Boolean).join('; ')
+    : '';
 
   if (loading)
     return (
@@ -68,11 +84,14 @@ export default function App() {
   if (!me) return <LoginPage />;
 
   return (
-    <AppShell header={{ height: 56 }} navbar={{ width: 230, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding="md">
+    <AppShell header={{ height: 56 }} navbar={{ width: 230, breakpoint: 'sm', collapsed: { mobile: !opened, desktop: !deskOpen } }} padding="md">
       <AppShell.Header>
         <Group h="100%" px="md" justify="space-between">
           <Group gap="sm">
-            <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
+            <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
+            <Tooltip label={deskOpen ? 'Hide side bar' : 'Show side bar'}>
+              <Burger opened={deskOpen} onClick={toggleDesk} visibleFrom="sm" size="sm" aria-label="Toggle side bar" />
+            </Tooltip>
             <IconRadar size={22} />
             <Text fw={700}>Aerial Traffic Console</Text>
             {MOCK && (
@@ -114,6 +133,11 @@ export default function App() {
         ))}
       </AppShell.Navbar>
       <AppShell.Main>
+        {degraded && !MOCK && (
+          <Alert color="red" variant="light" mb="sm" title={degraded}>
+            Checked every 5 s; this clears by itself when the service is back.
+          </Alert>
+        )}
         <Routes>
           <Route path="/live" element={<LivePage />} />
           <Route path="/violations" element={<ViolationsPage />} />

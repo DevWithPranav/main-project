@@ -83,3 +83,40 @@ Question: how should the twin answer "what if we change this?" before a CARLA va
 Adopted: two answers kept apart in `ml/planning/whatif.py`: (1) rule replay on the session's kinematics (measured; only
 vehicles within 60 m of the change, baseline and modified on the same rows), (2) projection = affected historical events
 x the catalogue factor ("not quantified" when no factor was retrieved). Scenarios are stored for side-by-side comparison.
+
+## WebSocket catch-up on reconnect (2026-10-11, PRD 29.3)
+
+Searched: WebSocket reconnect / missed-message replay patterns.
+- WebSocket has no built-in resume (unlike EventSource's Last-Event-ID); recovery is an application protocol: ids on messages,
+  a bounded server-side buffer, replay after the client's cursor, a snapshot / reload fallback when the gap is too old, and
+  duplicate-tolerant clients (https://websocket.org/guides/reconnection/,
+  https://oneuptime.com/blog/post/2026-08-15-restore-websocket-subscriptions-resume-events/view).
+
+Adopted (`backend/app/live.py` `Hub.catch_up`): the buffer is the events table itself (no second store); on connect the server
+sends events stored in the last `catch_up_s` (default and max 60 s, PRD 29.3) oldest first with `catch_up: true`, then a
+`catch_up` marker; the client (`openLive`) asks for the time since its last frame and de-duplicates by `event_id`. Not adopted:
+per-message sequence cursors (event ids + a 60 s window are enough for the PRD; a longer gap reloads `GET /api/events`).
+
+## Pipeline failure handling: watchdog, event buffer, offline replay (2026-10-11, PRD 29.1 / 29.2 / Mode 5)
+
+Searched: store-and-forward buffering with backoff and replay; heartbeat watchdog (the search returned nothing useful on
+watchdogs, so that part follows PRD 29.1 directly).
+- Store-and-forward on local disk, bounded size, replay on reconnect, retries with backoff and de-duplication: OpenMeter
+  collector buffer (https://openmeter.io/docs/collectors/buffer), Particle store-and-forward
+  (https://docs.particle.io/firmware/tracker-edge/store-and-forward/). In-memory buffers do not survive a crash and a blocked
+  destination must not back-pressure the producer (https://docs.datadoghq.com/observability_pipelines/scaling_and_performance/buffering_and_backpressure/).
+
+Adopted (`services/live/backend_client.py`, `watchdog.py`, `replay_events.py`, `pipeline.py`):
+- Buffer in the pipeline process with an on-disk spool (`backend_spool.jsonl`), not Redis Streams as the PRD text says: it also covers
+  the Redis-down case the PRD calls a rare dual failure, and needs no new service. Retry 1, 2, 4, 8, 16, 30 s, in order; a 409 on
+  a re-sent open event counts as delivered (idempotent), other 4xx are dropped and counted; buffer capped at 10 000 events.
+- Watchdog = supervisor process around `pipeline.py` that watches `heartbeat.json` (5 s timeout, PRD 29.1), restarts with
+  `--resume` and writes `pipeline gap: <start> to <end>` lines to `pipeline_gaps.jsonl`.
+- `replay_events.py` re-sends `events.jsonl` (Mode 5 offline replay), safe to run twice.
+
+## Interactive scenario builder (2026-10-11)
+
+Searched: CARLA props / traffic-light control / ScenarioRunner; simulation scenario comparison practice.
+- CARLA exposes traffic-light timing (`TrafficLight.set_green_time`, freeze, state) and static props through blueprints; Scenic's CARLA model treats cones etc. as non-moving props (https://scenic-lang.readthedocs.io/en/latest/_modules/scenic/simulators/carla/model.html, https://carla.readthedocs.io/en/0.9.4/python_api/). The exact prop blueprint names on our CarlaAir build were not confirmed by the search: they are marked "verify with list_blueprints" in `docs/Scenario_Builder_Plan.md`. ScenarioRunner / OpenSCENARIO is the standard way to describe such scenarios (https://scenario-runner.readthedocs.io/); not adopted yet, our plan JSON compiles to our own runner.
+- Comparing scenarios: independent replications with different seeds, remove the warm-up before collecting data, report 95 % confidence intervals across replications, and take care with many metrics at once (Bonferroni) (https://sumo.dlr.de/wiki/Simulation/Randomness, https://promodel.com/onlinehelp/ProModel/80/C-03%20-%20Step%204_%20Conducting%20Experiments.htm). To adopt in Phase 2: several seeds per variant, warm-up cut, 95 % intervals, "no difference detected" when intervals overlap. The search did not say how many seeds; the existing validate runner already takes `--seeds`.
+- Adopted now: the split observed / replay (measured) / projected, and a support matrix that refuses to put numbers on elements the evaluators cannot judge.

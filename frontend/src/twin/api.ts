@@ -6,7 +6,7 @@
  */
 import { api, refreshTokens, tokenStore } from "../api";
 import { ApiError, errorDetail } from "../api/client";
-import type { Profile } from "../api/types";
+import type { PlanDoc, Profile } from "../api/types";
 import type { Scene, Session, TownObjects, Trajectories, TwinEvent } from "./types";
 import type { Countermeasure, ScenarioRequest, ScenarioRow } from "./whatif";
 
@@ -52,6 +52,12 @@ export const twinApi = {
     }
     return out;
   },
+
+  /** Virtual traffic for the map (plain, or following a plan). */
+  planTraffic: (scene: string, plan: PlanDoc | null) => api.planTraffic({ scene, plan }),
+
+  /** What is at a map position (scenario builder right-click menu). */
+  planLocate: (scene: string, x: number, y: number) => api.planLocate(scene, x, y),
 
   profiles: () => api.profiles() as unknown as Promise<any[]>,
   profile: (name: string) => api.profile(name) as unknown as Promise<Record<string, any>>,

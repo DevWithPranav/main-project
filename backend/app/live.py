@@ -11,11 +11,16 @@ import contextlib
 import json
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 
 import redis.asyncio as aioredis
 from fastapi import WebSocket
+from sqlalchemy import select
 
 from . import config
+from .db import SessionLocal
+from .events import to_api
+from .models import Event
 
 log = logging.getLogger("backend.live")
 
@@ -98,11 +103,30 @@ class Hub:
                     c.vehicles = msg
                     c.wake.set()
 
-    async def serve(self, ws: WebSocket, session_id: str | None) -> None:
+    async def catch_up(self, conn: Conn, session_id: str | None, window_s: float) -> None:
+        """PRD 29.3: events stored in the last `window_s` s (<= 60), oldest first, then a `catch_up` marker.
+        A socket that reconnects after a drop gets what it missed; one event can arrive twice (stored just
+        as the socket registered), so clients de-duplicate by event_id."""
+        window_s = max(0.0, min(float(window_s), config.WS_CATCH_UP_MAX_S))
+        if window_s <= 0:
+            return
+        since = datetime.now(timezone.utc) - timedelta(seconds=window_s)
+        q = select(Event).where(Event.created_at >= since).order_by(Event.created_at).limit(config.WS_CATCH_UP_MAX_EVENTS)
+        if session_id:
+            q = q.where(Event.session_id == session_id)
+        async with SessionLocal() as db:
+            rows = (await db.execute(q)).scalars().all()
+        for r in rows:
+            conn.events.put_nowait(json.dumps({"type": "event", "event": to_api(r), "catch_up": True}))
+        conn.events.put_nowait(json.dumps({"type": "catch_up", "window_s": window_s, "n": len(rows), "session_id": session_id}))
+        conn.wake.set()
+
+    async def serve(self, ws: WebSocket, session_id: str | None, catch_up_s: float = 60.0) -> None:
         conn = Conn(ws, session_id)
         self.conns.add(conn)
         sender = asyncio.create_task(conn.sender())
         try:
+            await self.catch_up(conn, session_id, catch_up_s)
             snap = await self.snapshot(session_id)
             if snap:
                 conn.vehicles = {"type": "vehicles", "items": snap}

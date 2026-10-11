@@ -51,7 +51,7 @@ Three user-facing components, the same as in the statement:
 
 | Input | What it is | How positions and time are known | Status |
 |---|---|---|---|
-| **CARLA live feed** | Drone camera streamed while the simulation runs | Camera pose and simulator time logged per frame (exact) | ❌ live streaming. Today: record first, process after |
+| **CARLA live feed** | Drone camera streamed while the simulation runs | Camera pose and simulator time logged per frame (exact) | 🟡 live streamer + pipeline built (`services/live`, tested on a replayed flight); a real CarlaAir session is still to be run (2026-10-11) |
 | **CARLA recording** | A recorded flight (frames, poses, vehicle truth, traffic-light states) | Same, plus true vehicle positions for evaluation | ✅ |
 | **External video** | Real drone footage (downloaded or own drone) | Scene stabilisation + site calibration (scale / homography / DJI `.SRT`) and per-frame timestamps | ✅ offline (2 stock clips, 2 UIT-ADrone videos) |
 
@@ -59,13 +59,13 @@ The modes follow PRD §26, adjusted:
 
 | Mode | Use | Status |
 |---|---|---|
-| Simulation (CARLA) | Development, staged violations, planner what-if runs | 🟡 recorded flights work; live mode missing |
+| Simulation (CARLA) | Development, staged violations, planner what-if runs | 🟡 recorded flights and the live pipeline work; planner edits not yet validated in CARLA |
 | Live drone | Real drone stream | ❌ (no drone pipeline yet; external video files stand in) |
-| Playback / review | Re-run a recorded flight or video and review its events | ✅ as scripts; no dashboard yet |
-| Planning | Historical analysis and recommendations, no live feed | ❌ |
-| Offline | Buffer events when the backend is down | ❌ |
+| Playback / review | Re-run a recorded flight or video and review its events | ✅ dashboard Sessions / Violations pages (video, evidence clips, review) |
+| Planning | Historical analysis and recommendations, no live feed | 🟡 built (`ml/planning`, Recommendations page, what-if); CARLA validation of recommendations pending |
+| Offline | Buffer events when the backend is down | 🟡 built 2026-10-11: pipeline buffer + spool, `replay_events.py`, watchdog, dashboard banner; tested with a stand-in backend, not yet with the DB stopped under a live feed |
 
-**Real-time target** (PRD §27.5): an event reaches the dashboard **≤ 3 s** after it happens, and the twin updates vehicle positions at **10 Hz**. Today's pipeline is batch: about 15–20 min of processing per 6–8 min of footage on the RTX 4050.
+**Real-time target** (PRD §27.5): an event reaches the dashboard **≤ 3 s** after it happens, and the twin updates vehicle positions at **10 Hz**. The offline batch pipeline needed about 15–20 min per 6–8 min of footage on the RTX 4050 (earlier measurement); the live pipeline's measured latency and fps are in the tracker (M4 rows), not repeated here.
 
 **Machines** (Section 11, #4): development on one machine; the presentation runs on two (CarlaAir on one, detector + backend + dashboards on the other). The simulator side sends frames with pose and time over the network, so both setups use the same code.
 
@@ -187,10 +187,10 @@ Each event stores:
 
 | Requirement | How | Status |
 |---|---|---|
-| Recreate the road network: roads, lanes, junctions, medians, crossings, ramps | Built from the CARLA town's OpenDRIVE (the same source as the lane map); external sites from their site file | 🟡 lane map exists; no twin view yet |
-| Directions, speed limits, restricted lanes, violation areas | Lane properties + configured zones (Section 4.1) | 🟡 |
-| Mapped to the CARLA map and simulation data | **3D twin in CesiumJS** (decision #5). Twin coordinates = CARLA world metres placed at a configurable anchor point: CARLA towns carry no real-world location (geo-reference at lat 0 / lon 0). Real sites are anchored to their own GPS when calibrated | ❌ |
-| Planners inspect and modify supported aspects | See Section 5.3 | ❌ |
+| Recreate the road network: roads, lanes, junctions, medians, crossings, ramps | Built from the CARLA town's OpenDRIVE (the same source as the lane map); external sites from their site file | ✅ lane map and 3D twin view (Town03, Town05) |
+| Directions, speed limits, restricted lanes, violation areas | Lane properties + configured zones (Section 4.1) | ✅ lane properties editable per profile; zones via the zones API |
+| Mapped to the CARLA map and simulation data | **3D twin in CesiumJS** (decision #5). Twin coordinates = CARLA world metres placed at a configurable anchor point: CARLA towns carry no real-world location (geo-reference at lat 0 / lon 0). Real sites are anchored to their own GPS when calibrated | 🟡 3D twin built in the dashboard (`/twin`, CesiumJS, buildings / trees / poles from CARLA); real-site anchors not done |
+| Planners inspect and modify supported aspects | See Section 5.3 | ✅ planner panel (road attributes, zones, what-if); saved as profile versions / zones with who, when and why |
 
 ### 5.2 Real-time visualisation
 
@@ -198,6 +198,8 @@ Each event stores:
 - Violation pins at their location, filterable by type, date, status and confidence (PRD §18.4).
 - Hotspot / heatmap layer and a list of problem road sections (PRD §18.5).
 - Synchronised with the CARLA feed: the twin and the video show the same moment.
+
+*Status 2026-10-11: replay and live vehicles, violation pins, hotspots and problem sections are in the dashboard twin; the exact colour / 10 Hz target has not been measured in the browser.*
 
 ### 5.3 Planner editing, limited to what CARLA can actually simulate
 
@@ -210,6 +212,8 @@ Each event stores:
 | Road layout (lanes, one-way, closures) | Partly | Edited OpenDRIVE loaded as a generated world; no buildings or props in that mode |
 | New traffic signs | Limited | Only as OpenDRIVE signals in a regenerated map |
 
+*Status 2026-10-11: built for the speed limit, restricted lane, road class, lane type, lane-change rule, one-way, bridge, tunnel, ramp and median attributes (profile `road.lane_overrides`) and for zones (`/api/zones`); invalid edits are refused with the reason. Signal timing, marking edits and layout changes are not built; CARLA validation of an edit is pending.*
+
 Every change is checked against this table before it's accepted. Unsupported changes are refused with a reason. Every change is recorded: who, when, what changed, and why if given.
 
 ---
@@ -220,13 +224,13 @@ Combines PRD §19.1 (Monitoring Dashboard) with the configuration functions the 
 
 | Area | Must provide | Status |
 |---|---|---|
-| **Violation configuration** | Enable / disable each violation type and condition (Section 4.2); thresholds per rule (times, distances, angles, tolerances), as in today's `rules.DEFAULTS` / `--params` file | 🟡 config file only |
-| **Model configuration** | Detector weights, input size, tracker and its config (`tracktrack_ours.yaml` etc.), enable / disable modules | 🟡 command-line only |
-| **Road configuration** | Lane properties, restricted lanes, zones, speed limits per map / site | 🟡 JSON files + `zone_tool.py` |
-| **Profiles** | Saved configuration per CARLA map, road type and scenario | ❌ |
-| **Live monitoring** | CARLA live view with boxes, IDs, trajectories and speeds; processing status and system health (fps, latency, GPU) | ❌ (offline overlay videos exist) |
-| **Violation management** | Event list (type, time, location, vehicle ID), evidence viewer, confirm / dismiss with a note, searchable history | ❌ (events exist as JSON / CSV with clips) |
-| **Statistics** | Counts per type, trends over time, hotspot ranking | ❌ |
+| **Violation configuration** | Enable / disable each violation type and condition (Section 4.2); thresholds per rule (times, distances, angles, tolerances), as in today's `rules.DEFAULTS` / `--params` file | ✅ Configuration > Profiles & thresholds (validated, versioned) |
+| **Model configuration** | Detector weights, input size, tracker and its config (`tracktrack_ours.yaml` etc.), enable / disable modules | 🟡 command-line only (profile modules switch on / off) |
+| **Road configuration** | Lane properties, restricted lanes, zones, speed limits per map / site | ✅ Configuration > Road configuration and Zones (map editor) |
+| **Profiles** | Saved configuration per CARLA map, road type and scenario | ✅ versioned, with history |
+| **Live monitoring** | CARLA live view with boxes, IDs, trajectories and speeds; processing status and system health (fps, latency, GPU) | 🟡 Live page shows footage and model output with boxes / IDs; fps / GPU health panel not checked |
+| **Violation management** | Event list (type, time, location, vehicle ID), evidence viewer, confirm / dismiss with a note, searchable history | ✅ Violations page: list, evidence clips, confirm / dismiss with a note, exports |
+| **Statistics** | Counts per type, trends over time, hotspot ranking | ✅ Statistics page |
 
 Access follows PRD §28 roles: OFFICER reviews events, OPERATOR runs sessions and sees system health, PLANNER edits the twin and runs simulations, ADMIN configures everything.
 
@@ -354,9 +358,9 @@ The project is complete when each item has been demonstrated, with the measured 
 
 | Component | Built | Missing |
 |---|---|---|
-| Detection + tracking | YOLO26l (3 classes), TrackTrack, stitching, offline on recorded flights and videos | Live streaming; pedestrians |
+| Detection + tracking | YOLO26l (3 classes), TrackTrack, stitching; offline and live (`services/live`); measured 2026-10-11: mAP@0.5 0.647 val / 0.695 test, below the PRD's 0.75 (`ml/detection/detection_report.py`) | Pedestrians; mAP and bus / truck AP targets not met |
 | Geometry | CARLA exact pose projection; real-video stabilisation + calibration | GPS output for real sites |
-| Violation engine | 7 rule families, place memory, queue context, static-vehicle check, learned flow direction, evidence clips, 59 unit tests | Conditions marked ❌ in Section 4.2 |
+| Violation engine | rule families per Section 4.2, place memory, queue context, static-vehicle check, learned flow direction, evidence clips, road-attribute overrides; 199 engine tests (tracker, 2026-10-11) | Conditions marked ❌ in Section 4.2 |
 | Evaluation | Staged CARLA scenarios + oracle + scorer (natural events separated); highD / inD and UIT-ADrone tools | More staged repeats per type (PRD: 100 per type) |
-| Backend (FastAPI / PostGIS / Redis / MinIO) | Nothing | All |
-| Dashboards, digital twin, recommendation system | Nothing | All |
+| Backend (FastAPI / PostGIS / Redis / S3) | Auth with 5 roles, sessions, events + review, stats, exports, zones, versioned profiles, audit log, WebSocket live with 60 s catch-up | Zone membership accuracy measured 2026-10-11: 0.994 on one staged CARLA flight (target 0.98), 2 zone types only |
+| Dashboards, digital twin, recommendation system | Dashboard (`frontend/`), 3D twin page, DBSCAN hotspots and recommendations, what-if replay | CARLA validation of recommendations / planner edits (needs the simulator) |

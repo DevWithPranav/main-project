@@ -8,6 +8,7 @@
  * the dashboard twin (TwinView.ts) saves them through /api/zones, which writes the engine's zones
  * file (backend/data/zones/<scene>.json). validateZone / zonesFile stay for the older file flow.
  */
+import { applyRoadOverrides, OVERRIDE_KEYS, validateItem } from "../lib/roadEdits";
 import type { Lane, LaneOverride, Zone } from "./types";
 
 export const MAX_LIMIT_KMH = 130; // input sanity cap, not a legal limit
@@ -86,11 +87,13 @@ export function validateOverride(o: LaneOverride, lanes: Lane[]): string[] {
     const e = validateSpeed(o.speed_limit_kmh);
     if (e) errs.push(e);
   }
-  if (o.restricted !== undefined && ![null, "bus", "emergency", "restricted"].includes(o.restricted)) errs.push("restricted must be bus, emergency, restricted or none");
-  if (o.speed_limit_kmh === undefined && o.restricted === undefined) errs.push("nothing to change");
+  // enum / yes-no attributes (speed is checked above with the planner's own bounds)
+  const { speed_limit_kmh: _s, ...rest } = o;
+  if (OVERRIDE_KEYS.some((k) => k !== "speed_limit_kmh" && k in o)) errs.push(...validateItem(rest as LaneOverride));
+  if (!OVERRIDE_KEYS.some((k) => k in o)) errs.push("nothing to change");
   const hit = matchLanes(o.lane_id, lanes);
   if (!hit.length) errs.push(`${o.lane_id} matches no lane in this scene`);
-  else if (o.restricted && hit.some((l) => (l.lane_type || "driving") !== "driving")) errs.push("only driving lanes can be restricted");
+  else if (o.restricted && hit.some((l) => (o.lane_type ?? l.lane_type ?? "driving") !== "driving")) errs.push("only driving lanes can be restricted");
   return errs;
 }
 
@@ -107,15 +110,7 @@ export function mergeOverrides(existing: LaneOverride[], add: LaneOverride[]): L
 
 /** Scene lanes with overrides applied (preview of what the engine will read). */
 export function applyOverrides(lanes: Lane[], overrides: LaneOverride[]): Lane[] {
-  const out = lanes.map((l) => ({ ...l }));
-  for (const o of overrides) {
-    const re = globToRegExp(o.lane_id);
-    for (const l of out) if (re.test(l.id)) {
-      if (o.speed_limit_kmh !== undefined) l.speed_limit_kmh = o.speed_limit_kmh;
-      if (o.restricted !== undefined) l.restricted = o.restricted;
-    }
-  }
-  return out;
+  return applyRoadOverrides(lanes as never, overrides) as unknown as Lane[];
 }
 
 export function polygonArea(poly: [number, number][]): number {

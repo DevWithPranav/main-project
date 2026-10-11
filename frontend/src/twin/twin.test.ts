@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { carlaToEnu, enuToCarla, parseAnchor } from "./coords";
 import { gridHotspots, LiveTrails, pinStyle, problemSections } from "./layers";
-import { buildProfile, globToRegExp, overrideTarget, validateOverride, validateZone } from "./planEdits";
+import { applyOverrides, buildProfile, globToRegExp, overrideTarget, validateOverride, validateZone } from "./planEdits";
 import { indexEventsByTrack, parseTrajectories, sampleTrack, stateAt, statesAt, timeRange } from "./replay";
 import type { Lane, TwinEvent } from "./types";
 
@@ -64,6 +64,14 @@ describe("planner edits", () => {
     const p = buildProfile({ profile_version: 1, name: "default", road: { lane_overrides: [{ lane_id: "x", speed_limit_kmh: 50 }] } }, "t5", [{ lane_id: "r5_s0_l-1", speed_limit_kmh: 30 }]);
     expect(p.name).toBe("t5");
     expect(p.road.lane_overrides).toHaveLength(2);
+  });
+  it("accepts every road attribute and previews them", () => {
+    expect(validateOverride({ lane_id: "r5_s0_l-1", road_class: "highway", lane_change: "none", bridge: true, ramp: "on" }, lanes)).toEqual([]);
+    expect(validateOverride({ lane_id: "r5_s0_l-1", road_class: "motorway" as never }, lanes)).toHaveLength(1);
+    expect(validateOverride({ lane_id: "r5_s0_l-1", lane_type: "shoulder", restricted: "bus" }, lanes)).toContain("only driving lanes can be restricted");
+    expect(validateOverride({ lane_id: "r5_s0_l-1" }, lanes)).toContain("nothing to change");
+    const out = applyOverrides(lanes, [{ lane_id: "r5_s0_l-1", road_class: "highway", one_way: true }]);
+    expect(out[0]).toMatchObject({ road_class: "highway", one_way: true });
   });
   it("refuses bad zones", () => {
     expect(validateZone({ id: "z1", type: "no_parking", polygon: [[0, 0], [10, 0], [10, 10], [0, 10]] })).toEqual([]);

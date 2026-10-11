@@ -409,4 +409,251 @@ export interface ReportRecord {
 
 export type LiveMessage =
   | { type: 'vehicles'; items: VehicleState[] }
-  | { type: 'event'; event: TrafficEvent };
+  | { type: 'event'; event: TrafficEvent; catch_up?: boolean }
+  | { type: 'catch_up'; window_s: number; n: number; session_id: string | null };
+
+// ---- traffic plans (scenario builder): backend/app/routers/plans.py, ml/planning/plans.py ----
+
+export type PlanGroup = 'prop' | 'rule' | 'scenario';
+
+export interface PlanItem {
+  id: string;
+  kind: string;
+  x: number;
+  y: number;
+  yaw_deg?: number;
+  params?: Record<string, unknown>;
+  target?: { lane_id?: string };
+  schedule?: { from_s?: number | null; to_s?: number | null };
+  priority?: number;
+  note?: string;
+}
+
+export interface PlanDoc {
+  name: string;
+  description: string;
+  scene: string;
+  session_id: string | null;
+  objectives: string[];
+  props: PlanItem[];
+  rules: PlanItem[];
+  scenarios: PlanItem[];
+  /** custom traffic configuration (the Traffic tab); absent = defaults */
+  traffic?: Record<string, unknown> | null;
+}
+
+export interface PlanParam {
+  key: string;
+  label: string;
+  type: 'number' | 'enum' | 'bool' | 'text';
+  default: unknown;
+  min?: number;
+  max?: number;
+  unit?: string;
+  options?: string[];
+  help?: string;
+}
+
+export interface PlanKind {
+  key: string;
+  group: PlanGroup;
+  label: string;
+  target: 'point' | 'lane' | 'area';
+  params: PlanParam[];
+  replay: { mode: string; note: string };
+  carla: { status: 'supported' | 'approximate' | 'unsupported'; how: string };
+  virtual?: { status: 'supported' | 'approximate' | 'unsupported'; how: string };
+}
+
+export interface PlanTemplate {
+  label: string;
+  items: { group: PlanGroup; kind: string; params: Record<string, unknown> }[];
+}
+
+export interface PlanCatalogue {
+  kinds: Record<string, PlanKind>;
+  groups: PlanGroup[];
+  templates: Record<string, PlanTemplate>;
+  evidence_levels: string[];
+}
+
+export interface PlanMessage {
+  level: 'error' | 'warning' | 'conflict' | 'info';
+  item_id: string | null;
+  code: string;
+  message: string;
+}
+
+export interface PlanValidation {
+  ok: boolean;
+  errors: PlanMessage[];
+  warnings: PlanMessage[];
+  conflicts: PlanMessage[];
+  infos: PlanMessage[];
+}
+
+export interface PlanLocate {
+  x: number;
+  y: number;
+  scene: string;
+  on_road: boolean;
+  inside_scene: boolean;
+  nearest_lane: { id: string; road_id: number | string | null; distance_m: number; lane_type: string | null; speed_limit_kmh: number | null; junction: boolean; heading_deg: number } | null;
+  lanes: { id: string; distance_m: number; lane_type: string | null; speed_limit_kmh: number | null; junction: boolean }[];
+  junction: boolean;
+  zones: { id: string; type: string; distance_m: number }[];
+  plan_items: { id: string; group: PlanGroup; kind: string; distance_m: number }[];
+  signals: string;
+}
+
+export interface PlanAlternative {
+  for_item: string;
+  kind: string;
+  title: string;
+  benefit: string;
+  risk: string;
+  tradeoff: string;
+  test: Record<string, unknown> | null;
+  evidence: string;
+  evidence_note: string;
+}
+
+export interface PlanReplayEvent { condition: string | null; type: string; track_ids: number[] | null; flag_s: number | null; x: number | null; y: number | null }
+
+export interface PlanAnalysis {
+  validation: PlanValidation;
+  compiled: {
+    evaluated: { item_id: string; kind: string; group: PlanGroup; what: string; note: string }[];
+    not_evaluated: { item_id: string; kind: string; reason: string }[];
+    changes: { lane_overrides: unknown[]; zones: unknown[] };
+  };
+  risks: { item_id: string; level: string; basis: string; message: string }[];
+  alternatives: PlanAlternative[];
+  pending_metrics: string[];
+  evidence: { level: string; why: string };
+  observed?: {
+    label: string; centre: [number, number]; radius_m: number; duration_s: number; vehicles: number; samples: number;
+    mean_speed_kmh: number | null; p85_speed_kmh: number | null; density_veh_per_km2: number | null; flow_veh_per_h: number | null;
+    queue: { max_m: number; mean_m: number }; travel_time: { vehicles: number; mean_s: number | null; p85_s: number | null };
+    conflicts_ttc: { count: number };
+  };
+  replay?: {
+    label: string; note: string; scope: string; rows: number; tracks: number; seconds: number;
+    baseline: { counted: number; by_type: Record<string, number> };
+    modified: { counted: number; by_type: Record<string, number> };
+    added: PlanReplayEvent[];
+    removed: PlanReplayEvent[];
+  };
+  best_case?: { label: string; count: number; removed: PlanReplayEvent[]; note: string };
+  worst_case?: { label: string; count: number; added: PlanReplayEvent[]; note: string };
+}
+
+export interface PlanRow {
+  id: string;
+  name: string;
+  scene: string;
+  owner: string;
+  created_at: string;
+  updated_at: string;
+  latest_version: number;
+  archived: boolean;
+}
+
+export interface PlanRun {
+  id: string;
+  plan_id: string | null;
+  plan_version: number | null;
+  session_id: string | null;
+  kind: string;
+  by: string;
+  at: string;
+  finished_at: string | null;
+  status: 'running' | 'done' | 'failed';
+  error: string | null;
+  /** while running: the step it is on (the bar in the builder) */
+  progress?: { stage: string; done: number; total: number } | null;
+  plan?: PlanDoc;
+  result?: (PlanAnalysis & Partial<VirtualResult>) | null;
+  evidence?: string | null;
+  replay_counted?: [number, number] | null;
+}
+
+export interface VirtualMetric {
+  label: string;
+  unit: string;
+  better: number;
+  baseline: { mean: number | null; ci95: number | null; n: number };
+  plan: { mean: number | null; ci95: number | null; n: number };
+  diff: number | null;
+  verdict: string;
+  direction: 'better' | 'worse' | 'neutral' | 'none';
+}
+
+/** POST /api/plans/simulate result: the virtual traffic simulator (ml/planning/microsim.py), not CARLA. */
+export interface VirtualResult {
+  label: string;
+  seeds: number;
+  duration_s: number;
+  warmup_s: number;
+  region: { centre: [number, number] | null; radius_m: number | null };
+  notes: string[];
+  metrics: Record<string, VirtualMetric>;
+  trajectories: { baseline: Record<string, [number, number, number, number | null][]>; plan: Record<string, [number, number, number, number | null][]> };
+}
+
+export interface PlanReportRow {
+  id: string;
+  plan_id: string | null;
+  plan_version: number | null;
+  title: string;
+  format: 'pdf' | 'xlsx' | 'csv';
+  filename: string;
+  size_bytes: number;
+  evidence: string | null;
+  session_id: string | null;
+  by: string;
+  at: string;
+  stored: boolean;
+  download_url: string;
+}
+
+/** POST /api/plans/traffic: one virtual-traffic run for the map's "Custom traffic" switch. */
+export interface TrafficResult {
+  label: string;
+  follows_plan: boolean;
+  plan_items: number;
+  seed: number;
+  duration_s: number;
+  vehicles: number;
+  spawned?: Record<string, number>;
+  config?: Record<string, unknown>;
+  description?: string;
+  stats?: { mean_speed_kmh: number | null; p85_speed_kmh: number | null; vehicles_in_region: number | null; density_veh_per_km2: number | null; throughput_veh_per_h: number | null; travel_time_s: number | null; queue_max_m: number | null; stopped_share: number | null; delay_s_per_vehicle: number | null };
+  notes: string[];
+  trajectories: Record<string, [number, number, number, number | null][]>;
+}
+
+export interface TrafficField {
+  key: string;
+  label: string;
+  type: 'number' | 'enum' | 'bool';
+  default: unknown;
+  min?: number;
+  max?: number;
+  unit?: string;
+  options?: string[];
+  help?: string;
+  step?: number;
+}
+
+/** GET /api/plans/traffic/schema */
+export interface TrafficSchema {
+  sections: { id: string; title: string; help: string; fields: TrafficField[] }[];
+  defaults: Record<string, any>;
+  presets: Record<string, { label: string; help: string; config: Record<string, any> }>;
+  scenario_presets: Record<string, { label: string; help: string; traffic: Record<string, any>; items: { kind: string; params: Record<string, unknown>; schedule?: { from_s?: number | null; to_s?: number | null } }[] }>;
+  profiles: Record<string, { label: string; points: [number, number][] }>;
+  source_mixes: Record<string, Record<string, number>>;
+  behaviours: Record<string, Record<string, number>>;
+  vehicle_types: string[];
+}

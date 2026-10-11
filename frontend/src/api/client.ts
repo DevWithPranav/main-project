@@ -8,7 +8,14 @@ import type {
   LoginResponse,
   Me,
   Page,
+  PlanAnalysis,
+  PlanCatalogue,
+  PlanDoc,
+  PlanLocate,
   PlannerHistoryEntry,
+  PlanReportRow,
+  PlanRow,
+  PlanRun,
   Profile,
   ProfileVersion,
   Recommendation,
@@ -22,6 +29,8 @@ import type {
   LiveSource,
   Stats,
   TrafficEvent,
+  TrafficResult,
+  TrafficSchema,
   Trajectories,
   ZoneFeature,
   ZoneInput,
@@ -206,6 +215,30 @@ export function createApiClient(opts: ClientOptions) {
         scene, active: opts.active ?? 'true', ...(opts.withStatic ? { include_static: 'true' } : {}),
       }))}`).then((r) => r.features),
     createZone: (z: ZoneInput) => post<ZoneFeature>('/api/zones', z),
+    // traffic plans (scenario builder)
+    planCatalogue: () => json<PlanCatalogue>('/api/plans/catalogue'),
+    planLocate: (scene: string, x: number, y: number, radius = 40) =>
+      json<PlanLocate>(`/api/plans/locate?${new URLSearchParams({ scene, x: String(x), y: String(y), radius: String(radius) })}`),
+    planPreview: (plan: PlanDoc) => post<PlanAnalysis>('/api/plans/preview', plan),
+    plans: (scene?: string) => json<PlanRow[]>(`/api/plans${scene ? `?scene=${encodeURIComponent(scene)}` : ''}`),
+    plan: (id: string, version?: number) =>
+      json<PlanRow & { version: number; by: string; at: string; note: string | null; plan: PlanDoc }>(`/api/plans/${encodeURIComponent(id)}${version ? `?version=${version}` : ''}`),
+    createPlan: (plan: PlanDoc, note?: string) => post<PlanRow & { plan: PlanDoc }>('/api/plans', { plan, note }),
+    savePlan: (id: string, plan: PlanDoc, baseVersion: number, note?: string) =>
+      json<PlanRow & { plan: PlanDoc }>(`/api/plans/${encodeURIComponent(id)}?base_version=${baseVersion}`, { method: 'PUT', body: JSON.stringify({ plan, note }) }),
+    planVersions: (id: string) =>
+      json<{ version: number; by: string; at: string; note: string | null; items: Record<string, number> }[]>(`/api/plans/${encodeURIComponent(id)}/versions`),
+    deletePlan: (id: string) => json<void>(`/api/plans/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    analyzePlan: (body: { plan_id?: string; version?: number; plan?: PlanDoc; session_id?: string | null }) => post<PlanRun>('/api/plans/analyze', body),
+    simulatePlan: (body: { plan_id?: string; version?: number; plan?: PlanDoc; seeds?: number; duration_s?: number }) => post<PlanRun>('/api/plans/simulate', body),
+    makeReport: (body: Record<string, unknown>) => post<PlanReportRow>('/api/plans/report', body),
+    planReports: (planId: string) => json<PlanReportRow[]>(`/api/plans/${encodeURIComponent(planId)}/reports`),
+    /** The bytes of a stored file (with the login), for a download. */
+    blob: async (path: string) => (await raw(path)).blob(),
+    trafficSchema: () => json<TrafficSchema>('/api/plans/traffic/schema'),
+    planTraffic: (body: { scene: string; plan?: PlanDoc | null; traffic?: Record<string, unknown> | null; seed?: number; duration_s?: number }) => post<TrafficResult>('/api/plans/traffic', body),
+    planRun: (id: string) => json<PlanRun>(`/api/plans/runs/${encodeURIComponent(id)}`),
+    planRuns: (planId: string) => json<PlanRun[]>(`/api/plans/${encodeURIComponent(planId)}/runs`),
     updateZone: (id: string, z: ZoneInput) =>
       json<ZoneFeature>(`/api/zones/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(z) }),
     deactivateZone: (id: string, note?: string) =>

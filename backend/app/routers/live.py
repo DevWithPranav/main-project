@@ -141,12 +141,12 @@ async def live_video(request: Request, session_id: str, kind: str = "raw", token
 
 
 @router.websocket("/ws/live")
-async def ws_live(ws: WebSocket, token: str | None = None, session_id: str | None = None):
+async def ws_live(ws: WebSocket, token: str | None = None, session_id: str | None = None, catch_up_s: float = 60.0):
     if await principal(token) is None:
         await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="invalid token")
         return
     await ws.accept()
     try:
-        await hub.serve(ws, session_id)
+        await hub.serve(ws, session_id, catch_up_s)
     except WebSocketDisconnect:
         pass

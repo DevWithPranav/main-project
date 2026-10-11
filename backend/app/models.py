@@ -209,3 +209,66 @@ class Report(Base):
     by: Mapped[str] = mapped_column(String(64), index=True)
     role: Mapped[str] = mapped_column(String(16))
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class Plan(Base):
+    """A planner's traffic plan (Scenario_Builder_Plan.md): props, rules and scenarios on a town. The document
+    lives in plan_versions (every save is a new version); this row is the handle."""
+    __tablename__ = "plans"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(256), index=True)
+    scene: Mapped[str] = mapped_column(String(64), index=True)
+    owner: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    latest_version: Mapped[int] = mapped_column(Integer, default=1)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+
+class PlanVersion(Base):
+    __tablename__ = "plan_versions"
+    __table_args__ = (UniqueConstraint("plan_id", "version"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("plans.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    doc: Mapped[dict] = mapped_column(JSONType)
+    by: Mapped[str] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PlanRun(Base):
+    """One analysis of a plan on a session's recorded traffic (kind 'replay'; Phase 2 adds 'carla').
+    request = the plan snapshot analysed, result = ml/planning/plans.analyze output. status: running | done | failed."""
+    __tablename__ = "plan_runs"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    plan_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    kind: Mapped[str] = mapped_column(String(16), default="replay")
+    by: Mapped[str] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(16))
+    request: Mapped[dict] = mapped_column(JSONType)
+    result: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PlanReport(Base):
+    """A generated planning report (PDF / XLSX / CSV) of a plan: the file is in S3 under plan-reports/, this row lets it be
+    listed, downloaded again and the scenario reopened from it (plan_id + plan_version)."""
+    __tablename__ = "plan_reports"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    plan_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    title: Mapped[str] = mapped_column(String(256))
+    format: Mapped[str] = mapped_column(String(8))
+    filename: Mapped[str] = mapped_column(String(256))
+    content_type: Mapped[str] = mapped_column(String(128))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    evidence: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    by: Mapped[str] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

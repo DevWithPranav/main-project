@@ -285,7 +285,7 @@ export default function LivePage() {
         }
         for (const k of [...liveTrails.current.keys()]) if (!seen.has(k)) liveTrails.current.delete(k);
         setLiveVehicles(m.items);
-      } else {
+      } else if (m.type === 'event') {
         setLiveEvents((l) => [m.event, ...l.filter((e) => e.event_id !== m.event.event_id)].slice(0, 200));
         qc.invalidateQueries({ queryKey: ['events'] });
         notifications.show({ color: isAnomaly(m.event) ? 'lime' : 'red', title: typeLabel(m.event.type), message: eventSummary(m.event), autoClose: 4000 });

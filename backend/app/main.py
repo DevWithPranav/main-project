@@ -17,7 +17,7 @@ from .audit import AuditMiddleware
 from .auth import seed_users
 from .db import SessionLocal, init_db
 from .live import hub
-from .routers import anomalies, audit, configs, core, events, live, planning, reports, scenarios, sessions, users, zones
+from .routers import anomalies, audit, configs, core, events, live, plans, planning, reports, scenarios, sessions, users, zones
 
 log = logging.getLogger("backend")
 
@@ -42,5 +42,5 @@ app.add_middleware(AuditMiddleware)  # PRD 28.4; added first, so it runs inside 
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"],
                    expose_headers=["Content-Disposition", "X-Event-Count", "X-Event-Total", "X-Export-Seconds", "X-Report-Id"])
-for r in (core, sessions, events, anomalies, configs, planning, scenarios, audit, live, users, zones, reports):
+for r in (core, sessions, events, anomalies, configs, planning, scenarios, plans, audit, live, users, zones, reports):
     app.include_router(r.router, prefix="/api")

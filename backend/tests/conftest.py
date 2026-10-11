@@ -36,7 +36,7 @@ async def _reset_db() -> None:
     conn = await asyncpg.connect(f"postgresql://aerial:aerial_dev@localhost:5432/{TEST_DB}")
     try:
         await conn.execute("CREATE EXTENSION IF NOT EXISTS postgis")
-        for t in ("zone_versions", "zones", "reports", "audit_log", "scenarios", "anomaly_status", "planner_history", "recommendations", "reviews", "profiles", "events", "tracks", "sessions", "users"):
+        for t in ("plan_reports", "plan_runs", "plan_versions", "plans", "zone_versions", "zones", "reports", "audit_log", "scenarios", "anomaly_status", "planner_history", "recommendations", "reviews", "profiles", "events", "tracks", "sessions", "users"):
             await conn.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
     finally:
         await conn.close()

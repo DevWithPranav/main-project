@@ -93,11 +93,8 @@ export interface Session {
 /** GET /api/sessions/{id}/trajectories: {track_id: [[t_s, x, y, speed_kmh], ...]} */
 export type Trajectories = Record<string, [number, number, number, number | null][]>;
 
-export interface LaneOverride {
-  lane_id: string;
-  speed_limit_kmh?: number;
-  restricted?: "bus" | "emergency" | "restricted" | null;
-}
+/** Every road attribute a profile's road.lane_overrides item may set (same type as Configuration > Road configuration). */
+export type { LaneOverride } from "../api/types";
 
 /** export_town_objects.py: c = box centre, e = half extents (CARLA metres), r = [pitch, yaw, roll] deg. */
 export interface TownObjects {
