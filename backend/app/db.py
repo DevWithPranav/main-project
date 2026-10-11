@@ -20,6 +20,8 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
         await conn.run_sync(Base.metadata.create_all)
+        # columns added after a table existed (create_all does not alter tables)
+        await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false"))
         # PRD 28.4: the audit log is immutable for every role, ADMIN included
         await conn.execute(text(
             "CREATE OR REPLACE FUNCTION audit_log_immutable() RETURNS trigger AS $$ "

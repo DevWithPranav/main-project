@@ -9,6 +9,8 @@
       -> rules.Engine stepped frame by frame (online.IncrementalEngine)
       -> POST /api/live/state (<= --state-hz) and POST /api/events (backend_client.py), and
          ml/data/results/live/<session>/events.jsonl
+      -> POST /api/live/frame (<= --frame-hz): the frame as the model got it and with its boxes,
+         track ids, speeds and rule state drawn on, for the dashboard's Live page
 
 Frames that arrive while one is being processed are dropped (latest-frame-wins), so latency stays
 bounded when the GPU is slower than the camera; --all-frames processes every frame instead
@@ -111,6 +113,26 @@ def load_detector(weights: Path):
     return model, vehicle_class_ids(model)
 
 
+STATE_BGR = {"ok": (64, 192, 87), "checking": (5, 176, 250), "flagged": (82, 82, 250)}  # the dashboard's colours
+
+
+def frame_jpegs(img, boxes, width: int, quality: int = 75) -> dict[str, bytes]:
+    """The frame as the model got it (raw) and with its output drawn on (annotated), resized to
+    `width`. boxes: (cx, cy, w, h, label, state) in source pixels."""
+    k = min(1.0, width / img.shape[1])
+    raw = cv2.resize(img, (round(img.shape[1] * k), round(img.shape[0] * k)), interpolation=cv2.INTER_AREA) if k < 1 else img
+    ann = raw.copy()
+    for cx, cy, w, h, label, state in boxes:
+        c = STATE_BGR.get(state, STATE_BGR["ok"])
+        x0, y0, x1, y1 = (round(v * k) for v in (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2))
+        cv2.rectangle(ann, (x0, y0), (x1, y1), c, 2)
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        cv2.rectangle(ann, (x0, y0 - th - 4), (x0 + tw + 4, y0), c, -1)
+        cv2.putText(ann, label, (x0 + 2, y0 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
+    enc = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    return {kind: cv2.imencode(".jpg", im, enc)[1].tobytes() for kind, im in (("raw", raw), ("annotated", ann))}
+
+
 def event_dict(e, session: str, provisional: bool) -> dict:
     d = asdict(e)
     d["session_id"] = session
@@ -139,6 +161,8 @@ def main() -> None:
     ap.add_argument("--params", type=Path, default=None)
     ap.add_argument("--flat-ground", action="store_true")
     ap.add_argument("--state-hz", type=float, default=10.0)
+    ap.add_argument("--frame-hz", type=float, default=10.0, help="Raw + annotated frames to the dashboard per s (0: off)")
+    ap.add_argument("--frame-width", type=int, default=960, help="Width of the frames sent to the dashboard")
     ap.add_argument("--session", default=None, help="Session id (default live_<date>_<time>)")
     ap.add_argument("--out", type=Path, default=LIVE_RESULTS)
     ap.add_argument("--once", action="store_true", help="Exit after the first source ends (default: wait for the next)")
@@ -189,6 +213,7 @@ def main() -> None:
     recent_flag: dict[int, float] = {}
     n_seen = n_proc = 0
     next_state = 0.0  # schedule of vehicle-state posts (--state-hz on average)
+    next_frame = 0.0  # same for camera frames (--frame-hz)
     first_wall = None
     final_events: dict[str, dict] = {}
 
@@ -306,6 +331,21 @@ def main() -> None:
                                    "lane_id": lane, "t_s": s["t_s"],
                                    "state": "flagged" if s["track_id"] in flagged else ("ok" if s["confirmed"] else "checking")})
                 backend.post_states(states)
+            if args.frame_hz > 0 and backend.base and now >= next_frame:
+                period = 1.0 / args.frame_hz
+                next_frame = max(next_frame + period, now - period)
+                t6 = time.perf_counter()
+                flagged = ie.open_track_ids() | {k for k, w in recent_flag.items() if now - w < RECENT_FLAG_S}
+                by_id = {s["track_id"]: s for s in live or []}
+                boxes = []
+                for i, d in enumerate(dets):
+                    tid = src_of.get(d["tracker_id"], -1)
+                    s = by_id.get(tid)
+                    state = "flagged" if tid in flagged else ("ok" if s and s["confirmed"] else "checking")
+                    label = f"{tid if tid >= 0 else '?'} {d['cls']}" + (f" {s['speed_kmh']:.0f} km/h" if s else "")
+                    boxes.append((*xywh[i], label, state))
+                backend.post_frames(session, t, frame_jpegs(img, boxes, args.frame_width))
+                ms["frames_out"].append((time.perf_counter() - t6) * 1000)
             ms["total"].append((time.perf_counter() - t_start) * 1000)
             ms["post_engine"].append((time.perf_counter() - t5) * 1000)
             if n_proc % 200 == 0:

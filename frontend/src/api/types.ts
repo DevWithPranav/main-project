@@ -104,6 +104,9 @@ export interface Session {
 }
 
 /** GET /api/sessions/{id}/video: the overlay video as WebM; frame_t[i] = session time of frame i. */
+/** annotated: the model's output (boxes, IDs, speeds); raw: the footage the model was given. */
+export type VideoKind = 'raw' | 'annotated';
+
 export interface SessionVideo {
   status: 'none' | 'encoding' | 'ready' | 'failed';
   progress?: number;
@@ -113,6 +116,17 @@ export interface SessionVideo {
   frames?: number;
   frame_t?: number[];
   source?: string;
+  kind?: VideoKind;
+  /** status none: whether the backend has footage to prepare this video from */
+  available?: boolean;
+}
+
+/** A live pipeline session that sent camera frames in the last 10 s (GET /api/live/sources). */
+export interface LiveSource {
+  session_id: string;
+  kinds: VideoKind[];
+  t_s: number | null;
+  age_s: number;
 }
 
 export interface VehicleState {
@@ -147,6 +161,9 @@ export interface Me {
 
 export interface LoginResponse {
   access_token: string;
+  /** Single-use; swap it at POST /api/auth/refresh for a new pair. */
+  refresh_token?: string;
+  expires_in?: number;
   role: Role;
 }
 
@@ -232,6 +249,35 @@ export interface Lane {
   ramp?: string | null;
   median_left?: boolean;
   median_gap_m?: number;
+  /** GET /api/scenes/{town}?profile=: the attributes that profile's road.lane_overrides changed */
+  overridden?: string[];
+}
+
+/** A profile road.lane_overrides item (schemas/profile.schema.json): exact lane id or fnmatch glob
+ * ("r46_*", "r46_s0_*"); later items win. */
+export interface LaneOverride {
+  lane_id: string;
+  speed_limit_kmh?: number;
+  restricted?: 'bus' | 'emergency' | 'restricted' | null;
+  road_class?: 'urban' | 'highway';
+  lane_type?: 'driving' | 'shoulder' | 'parking';
+  lane_change?: 'none' | 'left' | 'right' | 'both';
+  one_way?: boolean;
+  bridge?: boolean;
+  tunnel?: boolean;
+  ramp?: 'on' | 'off' | 'link' | null;
+  median_left?: boolean;
+  note?: string;
+}
+
+/** GET /api/road/attributes: what a lane override may set and which conditions it drives. */
+export interface RoadAttribute {
+  key: string;
+  label: string;
+  type: 'enum' | 'bool' | 'number';
+  values?: (string | null)[];
+  drives: { condition: string; label: string }[];
+  how?: string;
 }
 
 export interface Zone {
@@ -239,6 +285,58 @@ export interface Zone {
   type: string;
   polygon: [number, number][];
   source?: string;
+  name?: string;
+}
+
+/** Zone types the violation engine reads (backend routers/zones.py TYPES). */
+export type ZoneType = 'no_parking' | 'crosswalk' | 'highway' | 'speed' | 'no_u_turn';
+
+/** GET /api/zones feature properties: an API zone (editable) or one from the scene / site file (read-only). */
+export interface ZoneProps {
+  id: string;
+  scene: string;
+  name?: string;
+  type: ZoneType | string;
+  grace_s?: number;
+  limit_kmh?: number;
+  active: boolean;
+  version?: number;
+  area_m2?: number;
+  created_by?: string;
+  created_at?: string;
+  updated_by?: string;
+  updated_at?: string;
+  source: 'api' | 'scene_file' | string;
+  editable?: boolean;
+}
+
+export interface ZoneFeature {
+  type: 'Feature';
+  id: string;
+  geometry: { type: 'Polygon'; coordinates: [number, number][][] };
+  properties: ZoneProps;
+  /** create / update responses: the engine zone file the backend rewrote */
+  file?: string | null;
+}
+
+export interface ZoneInput {
+  scene?: string;
+  name?: string;
+  type?: string;
+  polygon?: [number, number][];
+  grace_s?: number | null;
+  limit_kmh?: number | null;
+  active?: boolean;
+  note?: string;
+}
+
+export interface ZoneVersionRow {
+  version: number;
+  action: string;
+  by: string;
+  at: string;
+  note: string | null;
+  zone: ZoneFeature;
 }
 
 export interface Scene {
@@ -249,6 +347,9 @@ export interface Scene {
   lanes: Lane[];
   zones?: Zone[];
   stop_lines?: unknown[];
+  /** set when fetched with ?profile= */
+  profile?: string;
+  overrides_applied?: unknown;
 }
 
 /** Scene list entries: names or small objects, depending on the backend. */
@@ -287,6 +388,23 @@ export interface PlannerHistoryEntry {
   at?: string;
   validation?: unknown;
   [k: string]: unknown;
+}
+
+/** A generated export kept in the report history (GET /api/reports). */
+export interface ReportRecord {
+  id: string;
+  format: 'pdf' | 'xlsx' | 'geojson' | 'csv';
+  filename: string;
+  filters: Record<string, string>;
+  session_id: string | null;
+  n_events: number;
+  n_total: number;
+  size_bytes: number;
+  by: string;
+  role: string;
+  at: string;
+  stored: boolean;
+  download_url: string;
 }
 
 export type LiveMessage =

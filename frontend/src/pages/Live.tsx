@@ -1,18 +1,19 @@
-// Live monitoring: vehicles on the lane map coloured by rule state, the overlay video, the 3D twin,
-// the event feed and system health.
-// "Live" listens to WS /api/ws/live; "Replay" plays an imported session from its trajectories,
-// with events appearing at their flag time, so the page works without a live source.
-// Replay keeps one clock (t, session seconds) for the map, the video and the twin: while the video
-// plays it drives t; a slider seek moves the video; the twin iframe gets t by postMessage.
+// Live monitoring: the camera footage next to the model's output, vehicles on the lane map coloured
+// by rule state, the event feed and system health. (The 3D twin has its own page.)
+// "Live" listens to WS /api/ws/live and shows the pipeline's newest frames (MJPEG, /api/live/video);
+// "Replay" plays an imported session from its trajectories, with events appearing at their flag
+// time, so the page works without a live source.
+// Replay keeps one clock (t, session seconds) for the map and both videos: while the model-output
+// video (else the raw one) plays it drives t and the other follows; a slider seek moves both.
 
-import { ActionIcon, Alert, Badge, Button, Card, Grid, Group, Loader, Progress, ScrollArea, SegmentedControl, Select, Slider, Stack, Tabs, Text, Title } from '@mantine/core';
+import { ActionIcon, Alert, Badge, Button, Card, Grid, Group, Loader, Progress, ScrollArea, SegmentedControl, Select, Slider, Stack, Text, Title } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconCube, IconExternalLink, IconMap, IconPlayerPause, IconPlayerPlay, IconPlayerSkipBack } from '@tabler/icons-react';
+import { IconMap, IconPlayerPause, IconPlayerPlay, IconPlayerSkipBack } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { api, openLive, tokenStore, TWIN_URL, type LiveStatus } from '../api';
-import { eventTime, isAnomaly, type SessionVideo, type TrafficEvent, type VehicleState } from '../api/types';
+import { api, keepMediaUrl, openLive, tokenStore, type LiveStatus } from '../api';
+import { eventTime, isAnomaly, type SessionVideo, type TrafficEvent, type VehicleState, type VideoKind } from '../api/types';
 import { useAuth } from '../auth';
 import EventDrawer from '../components/EventDrawer';
 import LaneMap, { type MapPoint, type Trail } from '../components/LaneMap';
@@ -20,6 +21,7 @@ import { sessionTown, useScene, useSessions } from '../hooks';
 import { eventSummary, fmtSimTime, TYPE_COLORS, typeLabel } from '../lib/format';
 import { can } from '../lib/permissions';
 import { sessionToVideo, trailOf, videoToSession } from '../lib/videoSync';
+import { featureToZone, zoneColor } from '../lib/zones';
 
 const STATE_COLORS = { ok: '#40c057', checking: '#fab005', flagged: '#fa5252' } as const;
 const MANTINE_HEX: Record<string, string> = {
@@ -28,13 +30,6 @@ const MANTINE_HEX: Record<string, string> = {
 };
 const hex = (c: string | undefined) => MANTINE_HEX[c ?? 'gray'] ?? c ?? '#868e96';
 const TRAIL_S = 3; // trail length, seconds (same as the twin)
-const TWIN_ORIGIN = (() => {
-  try {
-    return new URL(TWIN_URL).origin;
-  } catch {
-    return '*';
-  }
-})();
 
 function Health() {
   const q = useQuery({ queryKey: ['health'], queryFn: api.health, refetchInterval: 10_000 });
@@ -75,59 +70,72 @@ function at(samples: [number, number, number, number][], t: number) {
   };
 }
 
-/** The 3D twin in an iframe: logged in with this page's token, kept on the same session and time. */
-function TwinFrame({ sid, t, mode, town }: { sid: string | null; t: number; mode: 'replay' | 'live'; town: string | null }) {
-  const ref = useRef<HTMLIFrameElement>(null);
-  const { me } = useAuth();
-  const [ready, setReady] = useState(false);
-  const post = (msg: unknown) => ref.current?.contentWindow?.postMessage(msg, TWIN_ORIGIN);
-  useEffect(() => {
-    const onMsg = (m: MessageEvent) => {
-      if (m.source !== ref.current?.contentWindow || (TWIN_ORIGIN !== '*' && m.origin !== TWIN_ORIGIN)) return;
-      if ((m.data as { type?: string })?.type === 'twin-ready') {
-        post({ type: 'auth', token: tokenStore.get(), username: me?.username, role: me?.role, session: sid, mode, t });
-        setReady(true);
-      }
-    };
-    window.addEventListener('message', onMsg);
-    return () => window.removeEventListener('message', onMsg);
-  }, [me, sid, mode, t]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (ready && sid) post({ type: 'session', id: sid }); }, [ready, sid]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (ready) post({ type: 'mode', mode }); }, [ready, mode]); // eslint-disable-line react-hooks/exhaustive-deps
-  // seek at <= 10 Hz: the twin redraws every vehicle on each message
-  const lastSent = useRef(0);
-  useEffect(() => {
-    if (!ready || mode !== 'replay') return;
-    const now = performance.now();
-    if (now - lastSent.current < 100) return;
-    lastSent.current = now;
-    post({ type: 'seek', t });
-  }, [ready, t, mode]); // eslint-disable-line react-hooks/exhaustive-deps
-  const src = `${TWIN_URL}/?embed=1${sid ? `&session=${encodeURIComponent(sid)}` : ''}${town ? `&town=${encodeURIComponent(town)}` : ''}`;
-  return <iframe ref={ref} src={src} title="3D digital twin" style={{ width: '100%', height: '62vh', border: 0, borderRadius: 8, background: '#141517' }} />;
+const KIND_TITLE: Record<VideoKind, string> = { raw: 'Camera footage (model input)', annotated: 'Model output' };
+const FRAME_BOX = { aspectRatio: '16 / 9', width: '100%', borderRadius: 8, background: '#000', display: 'block', objectFit: 'contain' } as const;
+
+function Placeholder({ children }: { children: React.ReactNode }) {
+  return <Stack justify="center" align="center" gap={6} style={{ ...FRAME_BOX, padding: 12 }}>{children}</Stack>;
 }
 
-function VideoPanel({ sid, info, videoRef, onRequest, canMake }: {
-  sid: string | null; info: SessionVideo | undefined; videoRef: React.RefObject<HTMLVideoElement | null>;
+/** Replay: a session video (raw or annotated) as WebM, driven by the page clock. */
+function VideoPanel({ kind, sid, info, videoRef, onRequest, canMake }: {
+  kind: VideoKind; sid: string | null; info: SessionVideo | undefined; videoRef: React.RefObject<HTMLVideoElement | null>;
   onRequest: () => void; canMake: boolean;
 }) {
-  if (!sid) return null;
-  if (!info) return <Loader size="sm" />;
+  // a refetch re-signs the URL; keep the current one while it is valid so the <video> does not reload
+  const src = useRef<string | null>(null);
+  src.current = keepMediaUrl(src.current, info?.url ?? null);
+  if (!sid) return <Placeholder><Text size="sm" c="dimmed">Pick a session</Text></Placeholder>;
+  if (!info) return <Placeholder><Loader size="sm" /></Placeholder>;
   if (info.status === 'ready' && info.url)
-    return <video ref={videoRef} src={info.url} muted playsInline preload="auto" style={{ width: '100%', borderRadius: 8, background: '#000', display: 'block' }} />;
+    return <video ref={videoRef} src={src.current ?? info.url} muted playsInline preload="auto" style={FRAME_BOX} />;
   if (info.status === 'encoding')
     return (
-      <Stack gap={4}>
-        <Text size="sm">Preparing the overlay video for the browser…</Text>
-        <Progress value={(info.progress ?? 0) * 100} animated />
-      </Stack>
+      <Placeholder>
+        <Text size="sm" c="gray.4">Preparing the {kind === 'raw' ? 'camera' : 'model output'} video… {Math.round((info.progress ?? 0) * 100)}%</Text>
+        <Progress w="70%" value={(info.progress ?? 0) * 100} animated />
+      </Placeholder>
     );
   return (
-    <Stack gap={6}>
+    <Placeholder>
       {info.status === 'failed' && <Alert color="red" p="xs">Video failed: {info.error}</Alert>}
-      <Text size="sm" c="dimmed">No browser video for this session yet (the pipeline writes mp4v, which browsers can't play).</Text>
-      {canMake && <Button size="xs" variant="light" onClick={onRequest}>Prepare video (WebM, takes a few minutes)</Button>}
-    </Stack>
+      {info.available === false ? (
+        <Text size="sm" c="gray.5" ta="center">{kind === 'raw' ? 'The original footage of this session is not on this machine.' : 'This session has no model output video.'}</Text>
+      ) : (
+        <>
+          <Text size="sm" c="gray.5" ta="center">Not prepared for the browser yet.</Text>
+          {canMake && <Button size="xs" variant="light" onClick={onRequest}>Prepare video (a few minutes)</Button>}
+        </>
+      )}
+    </Placeholder>
+  );
+}
+
+/** Live: the pipeline's newest frames as an MJPEG stream (GET /api/live/video). */
+function LiveFeed({ kind, sid }: { kind: VideoKind; sid: string | null }) {
+  const [state, setState] = useState<'waiting' | 'playing'>('waiting');
+  const [attempt, setAttempt] = useState(0);
+  // the token is read when the stream opens; a refresh later must not reload the <img>
+  const src = useMemo(() => {
+    if (!sid) return null;
+    const p = new URLSearchParams({ session_id: sid, kind });
+    const t = tokenStore.get();
+    if (t) p.set('token', t);
+    return `/api/live/video?${p}`;
+  }, [sid, kind, attempt]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => setState('waiting'), [src]);
+  if (!src) return <Placeholder><Text size="sm" c="dimmed">Pick a session</Text></Placeholder>;
+  return (
+    <div style={{ position: 'relative' }}>
+      <img key={src} src={src} alt={KIND_TITLE[kind]} style={FRAME_BOX} onLoad={() => setState('playing')}
+        onError={() => { setState('waiting'); setTimeout(() => setAttempt((a) => a + 1), 3000); }} />
+      {state === 'waiting' && (
+        <Stack justify="center" align="center" gap={4} style={{ position: 'absolute', inset: 0 }}>
+          <Loader size="sm" color="gray" />
+          <Text size="sm" c="gray.5">Waiting for frames from the live pipeline…</Text>
+        </Stack>
+      )}
+    </div>
   );
 }
 
@@ -140,7 +148,6 @@ export default function LivePage() {
   const setSid = (v: string | null) => setSp(v ? { session: v } : {}, { replace: true });
   const setTown = (v: string | null) => setSp({ ...(sid ? { session: sid } : {}), ...(v ? { town: v } : {}) }, { replace: true });
   const [mode, setMode] = useState<'replay' | 'live'>('replay');
-  const [view, setView] = useState<string | null>('map');
   const [selected, setSelected] = useState<TrafficEvent | null>(null);
   useEffect(() => {
     if (!sid && sessions.data?.length) setSid(sessions.data[0].session_id);
@@ -157,6 +164,14 @@ export default function LivePage() {
   const townScene = useScene(town);
   const siteScene = useQuery({ queryKey: ['sessionScene', sid], queryFn: () => api.sessionScene(sid!), enabled: !!sid && isVideo, staleTime: Infinity });
   const scene = isVideo ? siteScene : townScene;
+  // zones drawn in Configuration > Zones for this town / site, on top of the map file's own (dashed)
+  const zoneScene = isVideo ? sid : town;
+  const apiZones = useQuery({ queryKey: ['zones', zoneScene, 'api-only'], queryFn: () => api.zones(zoneScene!), enabled: !!zoneScene, retry: false });
+  const mapZones = useMemo(() => {
+    const own = scene.data?.zones ?? [];
+    const drawn = (apiZones.data ?? []).map(featureToZone).filter((z) => !own.some((o) => o.id === z.id));
+    return [...own, ...drawn];
+  }, [scene.data, apiZones.data]);
 
   // ---- replay
   const traj = useQuery({ queryKey: ['traj', sid], queryFn: () => api.trajectories(sid!), enabled: !!sid && mode === 'replay' });
@@ -173,28 +188,40 @@ export default function LivePage() {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState('2');
 
-  // ---- video (replay)
-  const video = useQuery({
-    queryKey: ['video', sid],
-    queryFn: () => api.sessionVideo(sid!),
+  // ---- videos (replay): the raw footage and the model output, both on the page clock
+  const videoQuery = (kind: VideoKind) => ({
+    queryKey: ['video', sid, kind],
+    queryFn: () => api.sessionVideo(sid!, kind),
     enabled: !!sid && mode === 'replay',
-    refetchInterval: (q) => (q.state.data?.status === 'encoding' ? 5000 : false),
+    refetchInterval: (q: { state: { data?: SessionVideo } }) => (q.state.data?.status === 'encoding' ? 5000 : false as const),
   });
+  const rawVideo = useQuery(videoQuery('raw'));
+  const annVideo = useQuery(videoQuery('annotated'));
   const makeVideo = useMutation({
-    mutationFn: () => api.makeSessionVideo(sid!),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['video', sid] }),
+    mutationFn: (kind: VideoKind) => api.makeSessionVideo(sid!, kind),
+    onSuccess: (_, kind) => qc.invalidateQueries({ queryKey: ['video', sid, kind] }),
     onError: (e: Error) => notifications.show({ color: 'red', title: 'Video', message: e.message }),
   });
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const vinfo = video.data?.status === 'ready' && video.data.frame_t?.length ? video.data : null;
+  const rawRef = useRef<HTMLVideoElement | null>(null);
+  const annRef = useRef<HTMLVideoElement | null>(null);
+  const readyInfo = (d: SessionVideo | undefined) => (d?.status === 'ready' && d.frame_t?.length ? d : null);
+  const players = useMemo(() => {
+    const ps: { ref: React.RefObject<HTMLVideoElement | null>; info: SessionVideo }[] = [];
+    const a = readyInfo(annVideo.data), r = readyInfo(rawVideo.data);
+    if (a) ps.push({ ref: annRef, info: a });
+    if (r) ps.push({ ref: rawRef, info: r });
+    return ps; // the first one drives the clock
+  }, [annVideo.data, rawVideo.data]);
+  const master = players[0] ?? null;
+  const vinfo = master?.info ?? null;
   const frameT = vinfo?.frame_t ?? [];
   const fps = vinfo?.fps ?? 1;
 
-  // the clock: the video while it plays, else wall time x speed
+  // the clock: the leading video while it plays, else wall time x speed
   const last = useRef<number | null>(null);
   useEffect(() => {
     if (!playing) return;
-    const v = videoRef.current;
+    const v = master?.ref.current;
     if (vinfo && v) {
       v.playbackRate = Number(speed);
       v.currentTime = sessionToVideo(t, frameT, fps);
@@ -202,24 +229,41 @@ export default function LivePage() {
     }
     let raf = 0;
     const step = (now: number) => {
-      const vv = videoRef.current;
+      const vv = master?.ref.current;
       if (vinfo && vv && !vv.paused && !vv.ended) setT(videoToSession(vv.currentTime, frameT, fps));
       else if (last.current != null) setT((x) => Math.min(tMax, x + ((now - last.current!) / 1000) * Number(speed)));
       last.current = now;
       raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
-    return () => { cancelAnimationFrame(raf); last.current = null; videoRef.current?.pause(); };
-  }, [playing, speed, tMax, vinfo]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { cancelAnimationFrame(raf); last.current = null; master?.ref.current?.pause(); };
+  }, [playing, speed, tMax, master]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (t >= tMax && playing) setPlaying(false); }, [t, tMax, playing]);
   useEffect(() => { setT(tMin); setPlaying(false); }, [sid, tMin]);
-  // paused: a seek on the slider moves the video to the same moment
+  // paused: every video shows the clock's moment; playing: the other video follows the leading one
   useEffect(() => {
-    const v = videoRef.current;
-    if (!vinfo || !v || playing) return;
-    const want = sessionToVideo(t, frameT, fps);
-    if (Math.abs(v.currentTime - want) > 0.5 / fps) v.currentTime = want;
-  }, [t, playing, vinfo]); // eslint-disable-line react-hooks/exhaustive-deps
+    players.forEach(({ ref, info }, i) => {
+      const v = ref.current;
+      if (!v || !info.frame_t?.length) return;
+      const f = info.fps ?? 1;
+      const want = sessionToVideo(t, info.frame_t, f);
+      if (!playing) {
+        if (!v.paused) v.pause();
+        if (Math.abs(v.currentTime - want) > 0.5 / f) v.currentTime = want;
+      } else if (i > 0) {
+        // the same session seconds per second as the leader, nudged to close the gap: a seek per tick
+        // lands late (VP8 seeks take a few hundred ms), which left the follower ~0.6 s behind
+        const drift = want - v.currentTime;
+        if (Math.abs(drift) > 2 && !v.seeking) v.currentTime = want;
+        v.playbackRate = Number(speed) * (fps / f) * (1 + Math.max(-0.5, Math.min(0.5, drift * 0.8)));
+        if (v.paused) v.play().catch(() => undefined);
+      }
+    });
+  }, [t, playing, players]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ---- live camera: sessions whose pipeline is sending frames now
+  const liveSources = useQuery({ queryKey: ['liveSources'], queryFn: api.liveSources, enabled: mode === 'live', refetchInterval: 3000 });
+  const sourceIds = (liveSources.data ?? []).map((s) => s.session_id);
 
   // ---- live
   const [liveVehicles, setLiveVehicles] = useState<VehicleState[]>([]);
@@ -289,7 +333,6 @@ export default function LivePage() {
   const pins: MapPoint[] = shownEvents.slice(0, 200).map((e) => ({
     id: e.event_id, x: e.x, y: e.y, color: hex(TYPE_COLORS[e.type]), label: eventSummary(e), shape: isAnomaly(e) ? 'diamond' : 'circle',
   }));
-  const twinLink = `${TWIN_URL}/?${new URLSearchParams({ ...(sid ? { session: sid } : {}), ...(mode === 'replay' ? { t: t.toFixed(1) } : { mode: 'live' }) })}`;
 
   return (
     <Stack>
@@ -300,7 +343,11 @@ export default function LivePage() {
       <Group>
         <Select
           placeholder={sessions.isLoading ? 'Loading sessions…' : 'Pick a session'}
-          data={(sessions.data ?? []).map((s) => ({ value: s.session_id, label: `${s.name || s.session_id} (${s.n_events} events)` }))}
+          data={[
+            // a live pipeline session that has no event yet is not in /api/sessions
+            ...sourceIds.filter((id) => !sessions.data?.some((s) => s.session_id === id)).map((id) => ({ value: id, label: `${id} (live now)` })),
+            ...(sessions.data ?? []).map((s) => ({ value: s.session_id, label: `${s.name || s.session_id} (${s.n_events} events)${sourceIds.includes(s.session_id) ? ' · live now' : ''}` })),
+          ]}
           value={sid}
           onChange={setSid}
           w={340}
@@ -317,26 +364,45 @@ export default function LivePage() {
             <Badge key={k} variant="dot" color={c}>{k}</Badge>
           ))}
         </Group>
-        <Button component="a" href={twinLink} target="_blank" size="xs" variant="subtle" leftSection={<IconExternalLink size={14} />}>Open twin at this moment</Button>
       </Group>
+      {mode === 'live' && !!sourceIds.length && !sourceIds.includes(sid ?? '') && (
+        <Alert color="blue" p="xs">
+          <Group justify="space-between">
+            <Text size="sm">A live pipeline is sending camera frames: {sourceIds[0]}</Text>
+            <Button size="xs" variant="light" onClick={() => setSid(sourceIds[0])}>Watch it</Button>
+          </Group>
+        </Alert>
+      )}
+      <Grid>
+        {(['raw', 'annotated'] as const).map((kind) => {
+          const q = kind === 'raw' ? rawVideo : annVideo;
+          return (
+            <Grid.Col key={kind} span={{ base: 12, md: 6 }}>
+              <Card withBorder p="xs">
+                <Group justify="space-between" mb={6}>
+                  <Text fw={600}>{KIND_TITLE[kind]}</Text>
+                  <Text size="xs" c="dimmed">
+                    {mode === 'live' ? (kind === 'raw' ? 'as received by the detector' : 'detections, track IDs, km/h, rule state')
+                      : readyInfo(q.data) ? `${q.data?.source}${master?.info === q.data ? ', leads the clock' : ', synced'}` : ''}
+                  </Text>
+                </Group>
+                {mode === 'live' ? <LiveFeed kind={kind} sid={sid} /> : (
+                  <VideoPanel kind={kind} sid={sid} info={q.data} videoRef={kind === 'raw' ? rawRef : annRef}
+                    onRequest={() => makeVideo.mutate(kind)} canMake={can(me?.role, 'import_session')} />
+                )}
+              </Card>
+            </Grid.Col>
+          );
+        })}
+      </Grid>
       <Grid>
         <Grid.Col span={{ base: 12, md: 8 }}>
           <Card withBorder p="xs">
-            <Tabs value={view} onChange={setView} keepMounted={false}>
-              <Tabs.List mb="xs">
-                <Tabs.Tab value="map" leftSection={<IconMap size={14} />}>Map</Tabs.Tab>
-                <Tabs.Tab value="twin" leftSection={<IconCube size={14} />}>3D twin</Tabs.Tab>
-              </Tabs.List>
-              <Tabs.Panel value="map">
-                {scene.isLoading ? <Loader m="xl" /> : (
-                  <LaneMap lanes={scene.data?.lanes} zones={scene.data?.zones} vehicles={vehicles} trails={trails} pins={pins}
-                    onPinClick={(id) => setSelected(shownEvents.find((e) => e.event_id === id) ?? null)} height="62vh" />
-                )}
-              </Tabs.Panel>
-              <Tabs.Panel value="twin">
-                <TwinFrame sid={sid} t={t} mode={mode} town={town} />
-              </Tabs.Panel>
-            </Tabs>
+            <Group gap={6} mb="xs"><IconMap size={14} /><Text fw={600}>Map</Text></Group>
+            {scene.isLoading ? <Loader m="xl" /> : (
+              <LaneMap lanes={scene.data?.lanes} zones={mapZones} zoneColor={(z) => zoneColor(z.type)} vehicles={vehicles} trails={trails} pins={pins}
+                onPinClick={(id) => setSelected(shownEvents.find((e) => e.event_id === id) ?? null)} height="62vh" />
+            )}
             {mode === 'replay' && (
               <Group mt="xs" wrap="nowrap">
                 <ActionIcon variant="light" onClick={() => setT(tMin)} aria-label="Back to start"><IconPlayerSkipBack size={16} /></ActionIcon>
@@ -353,19 +419,9 @@ export default function LivePage() {
         </Grid.Col>
         <Grid.Col span={{ base: 12, md: 4 }}>
           <Stack gap="sm" h="100%">
-            <Card withBorder p="xs">
-              <Group justify="space-between" mb={6}>
-                <Text fw={600}>Video {mode === 'replay' && vinfo ? <Text span size="xs" c="dimmed">({vinfo.source}, synced)</Text> : null}</Text>
-              </Group>
-              {mode === 'replay' ? (
-                <VideoPanel sid={sid} info={video.data} videoRef={videoRef} onRequest={() => makeVideo.mutate()} canMake={can(me?.role, 'import_session')} />
-              ) : (
-                <Text size="sm" c="dimmed">The live pipeline sends vehicle states and events; it does not stream video to the dashboard yet.</Text>
-              )}
-            </Card>
             <Card withBorder p="xs" style={{ flex: 1 }}>
               <Text fw={600} mb="xs">Events ({shownEvents.length})</Text>
-              <ScrollArea h={mode === 'replay' && vinfo ? '32vh' : '46vh'}>
+              <ScrollArea h="62vh">
                 <Stack gap={6}>
                   {shownEvents.length === 0 && <Text size="sm" c="dimmed">{mode === 'live' ? 'Waiting for events…' : 'No events yet at this time.'}</Text>}
                   {shownEvents.map((e) => (

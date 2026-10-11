@@ -152,6 +152,13 @@ def make_trainer(mods: dict | None = None):
                       f"{sum(p.numel() for p in model.parameters()) / 1e6:.2f} M params")
             return model
 
+        def final_eval(self):
+            # deterministic mode makes torchvision's CPU deform_conv2d segfault when the reloaded best.pt is
+            # FLOPs-profiled (fuse -> model_info); training stays deterministic, only the final eval is not
+            import torch
+            torch.use_deterministic_algorithms(False)
+            return super().final_eval()
+
     ModifiedSegTrainer.__name__ = "ModifiedSegTrainer"
     return ModifiedSegTrainer
 

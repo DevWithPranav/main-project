@@ -1,10 +1,14 @@
+// SUPERSEDED (2026-10-11): the twin now lives in the dashboard as its /twin page (frontend/src/pages/
+// Twin.tsx + frontend/src/twin/*: same features, the dashboard's login, zones through /api/zones).
+// This standalone app (:5174) is kept for reference only; nothing in the dashboard depends on it.
+//
 // 3D digital twin (Build Plan M7): the lane map in 3D (heights, bridges, markings, crosswalks),
 // vehicles live (WebSocket) or replayed from a session's trajectories, violation pins, problem
 // sections, and planner edits (lane limits / restricted lanes / zones) saved as a new profile version.
 //
 // URL: ?session=<id>&t=<sim s>&town=<Town03>&anchor=lat,lon[,h]&mode=live&embed=1. Embedded in the
 // dashboard (Live page, 3D tab) the twin says {type: "twin-ready"} to its parent and takes
-// {type: "auth", token, username, role, session?, t?, mode?}, {type: "seek", t}, {type: "session", id}
+// {type: "auth", token, username, role, session?, t?, mode?}, {type: "token", token} (refreshed), {type: "seek", t}, {type: "session", id}
 // and {type: "mode", mode} by postMessage, only from the dashboard origin(s) (VITE_DASHBOARD_ORIGINS).
 
 import "cesium/Build/Cesium/Widgets/widgets.css";
@@ -680,7 +684,9 @@ window.addEventListener("message", (m) => {
   // only the dashboard may drive the twin (it also hands over its login token)
   if (m.origin !== location.origin && !DASHBOARD_ORIGINS.includes(m.origin)) return;
   const d = m.data as { type?: string; t?: number; id?: string; token?: string; username?: string; role?: string; session?: string | null; mode?: string };
-  if (d?.type === "auth" && d.token && !started) {
+  if ((d?.type === "token" || d?.type === "auth") && d.token && started) {
+    api.token = d.token; // the dashboard refreshed its access token
+  } else if (d?.type === "auth" && d.token && !started) {
     api.token = d.token;
     api.username = d.username ?? null;
     api.role = d.role ?? null;
@@ -704,6 +710,7 @@ async function start(wantSession: string | null = null, wantMode: typeof mode = 
   $("login").hidden = true;
   $("main").hidden = false;
   $("user").textContent = `${api.username} (${api.role})`;
+  $("logoutBtn").hidden = EMBED; // embedded: the dashboard owns the login
   $("editor").hidden = !api.canEdit();
   renderPending();
   const scenes = (await api.scenes()) as unknown[];
@@ -723,6 +730,11 @@ async function start(wantSession: string | null = null, wantMode: typeof mode = 
   ($("profileName") as HTMLInputElement).placeholder = profiles.find((p) => p.name.includes("planner"))?.name ?? `${(scene?.scene ?? "town").toLowerCase()}_planner`;
   requestAnimationFrame(tick);
 }
+
+$("logoutBtn").onclick = async () => {
+  await api.logout(); // revokes the tokens on the server
+  location.reload();
+};
 
 $("loginBtn").onclick = async () => {
   try {

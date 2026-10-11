@@ -3,7 +3,8 @@
 A background thread drains a queue and POSTs with the service token. If the backend is down,
 the failure is logged (rate-limited) and the pipeline continues; events are also written to
 events.jsonl by the pipeline, so nothing is lost. Vehicle states are only the newest batch
-(older unsent batches are replaced: a stale position is useless).
+(older unsent batches are replaced: a stale position is useless). Camera frames (raw + annotated
+JPEG for the dashboard's Live page) work the same way and go last.
 
 Event updates: an event is POSTed to /api/events when it opens (flag time, "provisional" tag,
 confidence 0) and PUT to /api/live/events/{event_id} when it closes (final status, confidence,
@@ -31,6 +32,7 @@ class BackendClient:
         self.timeout = timeout
         self.events: deque = deque()
         self.states = None
+        self.frames = None  # (session, t_s, {kind: jpeg bytes}); newest only, sent after events and states
         self.cv = threading.Condition()
         self.ok = self.failed = 0
         self.posted: list[dict] = []  # {event_id, phase, post_wall, ok}
@@ -54,6 +56,14 @@ class BackendClient:
             self.states = states
             self.cv.notify()
 
+    def post_frames(self, session: str, t_s: float, jpgs: dict[str, bytes]) -> None:
+        """Camera frames for the dashboard (raw / annotated JPEG); an unsent older set is replaced."""
+        if not self.base:
+            return
+        with self.cv:
+            self.frames = (session, t_s, jpgs)
+            self.cv.notify()
+
     def close(self, timeout: float = 10.0) -> None:
         if not self.base:
             return
@@ -68,9 +78,10 @@ class BackendClient:
             self.cv.notify()
         self._thread.join(2.0)
 
-    def _post(self, path: str, body, method: str = "POST") -> bool:
-        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), method=method,
-                                     headers={"Content-Type": "application/json",
+    def _post(self, path: str, body, method: str = "POST", content_type: str = "application/json") -> bool:
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        req = urllib.request.Request(self.base + path, data=data, method=method,
+                                     headers={"Content-Type": content_type,
                                               "Authorization": f"Bearer {self.token}"})
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
@@ -87,13 +98,21 @@ class BackendClient:
     def _run(self) -> None:
         while not self._stop:
             with self.cv:
-                while not self.events and self.states is None and not self._stop:
+                while not self.events and self.states is None and self.frames is None and not self._stop:
                     self.cv.wait(0.5)
                 ev = self.events.popleft() if self.events else None
                 st, self.states = (self.states, None) if ev is None else (None, self.states)
+                fr = None
+                if ev is None and st is None:
+                    fr, self.frames = self.frames, None
             if ev is not None:  # events first: they carry the latency target
                 ok = (self._post("/api/events", ev[0]) if ev[1] == "open" else
                       self._post(f"/api/live/events/{urllib.parse.quote(ev[0]['event_id'])}", ev[0], "PUT"))
                 self.posted.append({"event_id": ev[0]["event_id"], "phase": ev[1], "post_wall": time.time(), "ok": ok})
             elif st is not None:
                 self._post("/api/live/state", st)
+            elif fr is not None:
+                session, t_s, jpgs = fr
+                for kind, jpg in jpgs.items():
+                    q = urllib.parse.urlencode({"session_id": session, "kind": kind, "t_s": round(t_s, 3)})
+                    self._post(f"/api/live/frame?{q}", jpg, content_type="image/jpeg")

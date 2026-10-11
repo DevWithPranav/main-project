@@ -2,7 +2,7 @@
 
 import { Button, Group, Menu, Select } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconDownload } from '@tabler/icons-react';
+import { IconDownload, IconHistory } from '@tabler/icons-react';
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
@@ -11,6 +11,7 @@ import { VIOLATION_STATUSES, VIOLATION_TYPES } from '../api/types';
 import { useConditions, useSessions } from '../hooks';
 import { activeFilterCount, filtersToParams, paramsToFilters, type EventFilters } from '../lib/filters';
 import { statusLabel, typeLabel } from '../lib/format';
+import ReportHistory, { saveBlob } from './ReportHistory';
 
 export function useFilters(): [EventFilters, (f: EventFilters) => void] {
   const [sp, setSp] = useSearchParams();
@@ -21,6 +22,7 @@ export default function FilterBar({ value, onChange }: { value: EventFilters; on
   const sessions = useSessions();
   const { data: conds } = useConditions();
   const [busy, setBusy] = useState<ExportFormat | null>(null);
+  const [history, setHistory] = useState(false);
   const set = (k: keyof EventFilters) => (v: string | null) => onChange({ ...value, [k]: v || undefined });
 
   const download = async (fmt: ExportFormat) => {
@@ -28,11 +30,7 @@ export default function FilterBar({ value, onChange }: { value: EventFilters; on
     const t0 = performance.now();
     try {
       const { blob, filename } = await api.exportFile(fmt, value);
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(a.href);
+      saveBlob(blob, filename);
       notifications.show({ color: 'green', message: `${filename} ready in ${((performance.now() - t0) / 1000).toFixed(1)} s` });
     } catch (e) {
       notifications.show({ color: 'red', title: 'Export failed', message: (e as Error).message });
@@ -64,8 +62,11 @@ export default function FilterBar({ value, onChange }: { value: EventFilters; on
           {(['pdf', 'xlsx', 'csv', 'geojson'] as ExportFormat[]).map((f) => (
             <Menu.Item key={f} onClick={() => download(f)}>{f.toUpperCase()}</Menu.Item>
           ))}
+          <Menu.Divider />
+          <Menu.Item leftSection={<IconHistory size={14} />} onClick={() => setHistory(true)}>Report history</Menu.Item>
         </Menu.Dropdown>
       </Menu>
+      <ReportHistory opened={history} onClose={() => setHistory(false)} />
     </Group>
   );
 }

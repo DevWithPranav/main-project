@@ -1,11 +1,12 @@
-r"""UI check of the dashboard and the twin in headless Chrome (Build Plan M10 prep, 2026-10-10).
+r"""UI check of the dashboard and its 3D twin page in headless Chrome (Build Plan M10 prep, 2026-10-10).
 
-Logs in (dashboard: the token in localStorage, as its login page stores it; twin: its own login
-form), opens every dashboard page and the twin on one session, and per page records JavaScript
-errors, failed /api requests and the amount of rendered text, plus a screenshot. Chrome DevTools
-Protocol over websockets: no Playwright needed.
+Logs in (the token in localStorage, as the dashboard's login page stores it), opens every dashboard
+page and the /twin page (the 3D digital twin, part of the dashboard since 2026-10-11; the standalone
+twin/ app on :5174 is no longer needed) on one session, and per page records JavaScript errors,
+failed /api requests and the amount of rendered text, plus a screenshot. Chrome DevTools Protocol
+over websockets: no Playwright needed.
 
-Usage (backend :8000, `npm run dev` in frontend/ and twin/, a session imported):
+Usage (backend :8000, `npm run dev` in frontend/, a session imported):
     venv\Scripts\python.exe backend/ui_check.py --session 20261009_201727 --town Town05
 Screenshots: <out>/<page>.png (default ml/data/results/ui_check/<time>/). Exit code 1 if a page
 has a JavaScript error or a failed /api request.
@@ -109,7 +110,6 @@ def main() -> int:
     ap.add_argument("--user", default="admin", help="Dashboard user (admin sees every page)")
     ap.add_argument("--backend", default="http://127.0.0.1:8000")
     ap.add_argument("--dashboard", default="http://localhost:5173")
-    ap.add_argument("--twin", default="http://localhost:5174")
     ap.add_argument("--wait", type=float, default=6.0, help="Seconds per page")
     ap.add_argument("--out", type=Path, default=None)
     a = ap.parse_args()
@@ -151,21 +151,23 @@ def main() -> int:
             rows.append((f"dashboard /{name}", ok, f"at {path}, {text} chars, {len(errs)} JS errors, {len(failed)} failed api"
                          + (f": {(errs + failed)[:2]}" if errs or failed else "")))
 
+        # the 3D twin page (Cesium in the dashboard, same login)
         q = f"?session={a.session}" + (f"&town={a.town}" if a.town else "")
-        pg.goto(f"{a.twin}/{q}", 4)
-        pg.js(f"document.getElementById('username').value = 'planner'; document.getElementById('password').value = 'planner123';"
-              " document.getElementById('loginBtn').click(); true")
-        pg.pump(a.wait * 2.5)
-        info = pg.js("({login: document.getElementById('login').hidden, canvas: document.querySelectorAll('canvas').length,"
-                     " err: (document.getElementById('loginErr') || {}).textContent || '',"
-                     " session: (document.getElementById('session') || {}).value || ''})") or {}
-        pg.shot(out / "twin.png")
+        pg.goto(f"{a.dashboard}/twin{q}", a.wait * 2.5)
+        info = pg.js("(() => { const r = document.querySelector('.twin-root'); const q = (s) => r && r.querySelector(s);"
+                     " const c = q('canvas'); return {root: !!r, canvas: c ? c.width + 'x' + c.height : null,"
+                     " session: (q('#session') || {}).value || '', clock: (q('#clock') || {}).textContent || '',"
+                     " zones: (q('#zoneCount') || {}).textContent || '', hot: r ? r.querySelectorAll('#hotList li').length : 0,"
+                     " err: (q('#saveErr') || {}).textContent || '', path: location.pathname}; })()") or {}
+        pg.shot(out / "dashboard_twin.png")
         errs, failed = pg.reset()
-        ok = bool(info.get("login")) and info.get("canvas", 0) > 0 and not errs and not failed
+        ok = (info.get("path") == "/twin" and bool(info.get("canvas")) and info.get("session") == a.session
+              and "tracks" in info.get("clock", "") and not info.get("err") and not errs and not failed)
         bad += not ok
-        rows.append(("twin", ok, f"logged in {info.get('login')}, session {info.get('session')!r}, {info.get('canvas')} canvas, "
-                     f"{len(errs)} JS errors, {len(failed)} failed api" + (f": {(errs + failed)[:2]}" if errs or failed else "")
-                     + (f", login error {info.get('err')!r}" if info.get("err") else "")))
+        rows.append(("dashboard /twin", ok, f"canvas {info.get('canvas')}, session {info.get('session')!r}, {info.get('clock')!r}, "
+                     f"{info.get('hot')} hotspots, zones {info.get('zones')!r}, {len(errs)} JS errors, {len(failed)} failed api"
+                     + (f": {(errs + failed)[:2]}" if errs or failed else "")
+                     + (f", panel error {info.get('err')!r}" if info.get("err") else "")))
     finally:
         proc.terminate()
         try:

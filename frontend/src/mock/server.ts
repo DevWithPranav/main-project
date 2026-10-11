@@ -221,8 +221,14 @@ export async function mockFetch(input: string, init?: RequestInit): Promise<Resp
   if (path === '/api/auth/login' && method === 'POST') {
     const { username, password } = body ?? {};
     if (!USERS[username] || password !== `${username}123`) return err(401, 'Invalid username or password');
-    return json({ access_token: `mock.${username}`, role: USERS[username] });
+    return json({ access_token: `mock.${username}`, refresh_token: `mockrefresh.${username}`, role: USERS[username] });
   }
+  if (path === '/api/auth/refresh' && method === 'POST') {
+    const name = /^mockrefresh\.(\w+)$/.exec(String(body?.refresh_token ?? ''))?.[1];
+    if (!name || !USERS[name]) return err(401, 'invalid, expired or revoked refresh token');
+    return json({ access_token: `mock.${name}`, refresh_token: `mockrefresh.${name}`, role: USERS[name] });
+  }
+  if (path === '/api/auth/logout' && method === 'POST') return new Response(null, { status: 204 });
   if (path === '/api/health') return json({ db: 'ok', redis: 'ok', s3: 'ok' });
 
   const user = userOf(init);
@@ -267,6 +273,8 @@ export async function mockFetch(input: string, init?: RequestInit): Promise<Resp
     return json(strip(ev));
   }
   if (path === '/api/stats') return json(stats(filtered(s, q)));
+  if (path === '/api/reports') return json({ total: 0, items: [] });  // the mock keeps no report history
+  if (path === '/api/live/sources') return json([]);  // no live camera in the mock
   if (path === '/api/export') {
     const fmt = q.get('format') ?? 'csv';
     if (!['pdf', 'xlsx', 'geojson', 'csv'].includes(fmt)) return err(422, 'format must be pdf, xlsx, geojson or csv');

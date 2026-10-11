@@ -8,7 +8,7 @@ filtering. geom is a Point in map metres (SRID 0).
 from datetime import datetime
 
 from geoalchemy2 import Geometry
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -25,6 +25,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True)
     password_hash: Mapped[str] = mapped_column(String(128))
     role: Mapped[str] = mapped_column(String(16))
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # no login, no refresh
 
 
 class Session(Base):
@@ -156,3 +157,55 @@ class AnomalyStatus(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     by: Mapped[str] = mapped_column(String(64))
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Zone(Base):
+    """A zone polygon (PRD 13.1 / 18.2) for one scene or site, in its map metres (SRID 0). Types and
+    params are the engine's (lane_map.py): no_parking / crosswalk / highway (grace_s), speed (limit_kmh),
+    no_u_turn. Edits bump `version` and append a zone_versions row; DELETE only deactivates."""
+    __tablename__ = "zones"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scene: Mapped[str] = mapped_column(String(128), index=True)
+    name: Mapped[str] = mapped_column(String(256))
+    zone_type: Mapped[str] = mapped_column(String(32), index=True)
+    geom = mapped_column(Geometry("POLYGON", srid=0, spatial_index=True))
+    params: Mapped[dict] = mapped_column(JSONType, default=dict)  # grace_s, limit_kmh, ...
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_by: Mapped[str] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ZoneVersion(Base):
+    """Every saved state of a zone (PRD 18.2: zone edit history kept for audit)."""
+    __tablename__ = "zone_versions"
+    __table_args__ = (UniqueConstraint("zone_id", "version"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    zone_id: Mapped[str] = mapped_column(ForeignKey("zones.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    action: Mapped[str] = mapped_column(String(16))  # create | update | deactivate | reactivate
+    data: Mapped[dict] = mapped_column(JSONType)  # the zone as GET /api/zones/{id} returned it then
+    by: Mapped[str] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Report(Base):
+    """A generated export / report (PRD 13.1 `reports`): the file is kept in S3 under `storage_key`."""
+    __tablename__ = "reports"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    format: Mapped[str] = mapped_column(String(16), index=True)  # pdf | xlsx | geojson | csv
+    filename: Mapped[str] = mapped_column(String(256))
+    content_type: Mapped[str] = mapped_column(String(128))
+    filters: Mapped[dict] = mapped_column(JSONType, default=dict)  # the event filters it was made with
+    session_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    n_events: Mapped[int] = mapped_column(Integer)
+    n_total: Mapped[int] = mapped_column(Integer)
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)  # None: the upload failed
+    seconds: Mapped[float] = mapped_column(Float)
+    by: Mapped[str] = mapped_column(String(64), index=True)
+    role: Mapped[str] = mapped_column(String(16))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

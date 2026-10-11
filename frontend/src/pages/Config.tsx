@@ -1,15 +1,16 @@
 // Configuration: profiles (violation on/off + thresholds, conditions, modules), validated against
-// schemas/profile.schema.json before saving a new version with a note; version history; road view.
+// schemas/profile.schema.json before saving a new version with a note; version history; road configuration editor (components/RoadEditor.tsx).
 
-import { Accordion, Alert, Badge, Button, Card, Code, Grid, Group, JsonInput, NumberInput, Select, SimpleGrid, Stack, Switch, Table, Tabs, Text, Textarea, Title } from '@mantine/core';
+import { Accordion, Alert, Badge, Button, Card, Code, Grid, Group, JsonInput, NumberInput, Select, SimpleGrid, Stack, Switch, Tabs, Text, Textarea, Title } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import type { Lane, Profile, ViolationType } from '../api/types';
+import type { Profile, ViolationType } from '../api/types';
 import { useAuth } from '../auth';
-import LaneMap from '../components/LaneMap';
-import { useConditions, useScene } from '../hooks';
+import RoadEditor from '../components/RoadEditor';
+import ZoneDrawer from '../components/ZoneDrawer';
+import { useConditions } from '../hooks';
 import { fmtDateTime, typeLabel } from '../lib/format';
 import { can } from '../lib/permissions';
 import { cloneProfile, DEFAULT_PROFILE, diffPaths, paramLabel, profileName, unwrapProfile, validateProfile } from '../lib/profiles';
@@ -142,44 +143,6 @@ function ProfileEditor({ name }: { name: string }) {
   );
 }
 
-function RoadView() {
-  const scenes = useQuery({ queryKey: ['scenes'], queryFn: api.scenes });
-  const names = (scenes.data ?? []).map((s) => (typeof s === 'string' ? s : String(s.town ?? s.scene ?? s.name ?? ''))).filter(Boolean).map((s) => s.replace(/\.json$/, ''));
-  const [town, setTown] = useState<string | null>(null);
-  useEffect(() => { if (!town && names.length) setTown(names.includes('Town03') ? 'Town03' : names[0]); }, [names, town]);
-  const scene = useScene(town);
-  const [lane, setLane] = useState<Lane | null>(null);
-  const colour = (l: Lane) => (l.restricted ? '#fd7e14' : l.one_way ? '#15aabf' : l.ramp ? '#e64980' : l.road_class === 'highway' ? '#4c6ef5' : null);
-  return (
-    <Grid>
-      <Grid.Col span={{ base: 12, md: 8 }}>
-        <Group mb="xs">
-          <Select data={names} value={town} onChange={setTown} w={200} />
-          <Group gap={4}>
-            {[['highway', '#4c6ef5'], ['ramp', '#e64980'], ['one-way', '#15aabf'], ['restricted', '#fd7e14'], ['bridge', '#7048e8']].map(([l, c]) => <Badge key={l} variant="dot" color={c}>{l}</Badge>)}
-          </Group>
-        </Group>
-        <LaneMap lanes={scene.data?.lanes} zones={scene.data?.zones} laneColor={colour} selectedLane={lane?.id} onLaneClick={setLane} height="65vh" />
-      </Grid.Col>
-      <Grid.Col span={{ base: 12, md: 4 }}>
-        <Card withBorder>
-          <Text fw={600} mb="xs">{lane ? `Lane ${lane.id}` : 'Click a lane'}</Text>
-          {lane && (
-            <Table withRowBorders={false} verticalSpacing={2}>
-              <Table.Tbody>
-                {Object.entries(lane).filter(([k]) => !['centreline', 'z'].includes(k)).map(([k, v]) => (
-                  <Table.Tr key={k}><Table.Td><Text size="xs" c="dimmed">{k}</Text></Table.Td><Table.Td><Text size="xs">{Array.isArray(v) ? v.join(', ') : String(v)}</Text></Table.Td></Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
-          )}
-          <Text size="xs" c="dimmed" mt="sm">Road attributes come from the lane map (export_lane_map.py); site overrides via zone_tool.py or the 3D twin.</Text>
-        </Card>
-      </Grid.Col>
-    </Grid>
-  );
-}
-
 export default function ConfigPage() {
   const list = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const names = (list.data ?? []).map(profileName);
@@ -192,12 +155,14 @@ export default function ConfigPage() {
         <Tabs.List>
           <Tabs.Tab value="profiles">Profiles & thresholds</Tabs.Tab>
           <Tabs.Tab value="road">Road configuration</Tabs.Tab>
+          <Tabs.Tab value="zones">Zones</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="profiles" pt="md">
           <Group mb="md"><Select label="Profile" data={names} value={name} onChange={setName} w={240} /></Group>
           {name && <ProfileEditor key={name} name={name} />}
         </Tabs.Panel>
-        <Tabs.Panel value="road" pt="md"><RoadView /></Tabs.Panel>
+        <Tabs.Panel value="road" pt="md"><RoadEditor /></Tabs.Panel>
+        <Tabs.Panel value="zones" pt="md"><ZoneDrawer /></Tabs.Panel>
       </Tabs>
     </Stack>
   );

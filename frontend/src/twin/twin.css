@@ -1,0 +1,41 @@
+/* The twin page (pages/Twin.tsx): the Cesium view fills the page, the panel floats on the right.
+   Scoped to .twin-root; follows the dashboard's light / dark scheme. */
+.twin-root {
+  --tw-fg: #212529; --tw-muted: #868e96; --tw-card: #ffffffee; --tw-border: #dee2e6;
+  position: relative; overflow: hidden; color: var(--tw-fg); font: 13px system-ui, sans-serif;
+  border-radius: var(--mantine-radius-md, 8px); background: #dfe5df;
+}
+[data-mantine-color-scheme="dark"] .twin-root { --tw-fg: #e9ecef; --tw-muted: #909296; --tw-card: #25262bee; --tw-border: #373a40; background: #141517; }
+.twin-root .tw-viewer { position: absolute; inset: 0; }
+.twin-root .tw-viewer .cesium-viewer, .twin-root .tw-viewer .cesium-widget { width: 100%; height: 100%; }
+.twin-root .cesium-widget-credits { display: none !important; } /* no Cesium ion assets are used */
+.twin-root .tw-panel { position: absolute; top: 50px; right: 10px; width: 310px; max-height: calc(100% - 60px); overflow: auto; background: var(--tw-card);
+  border: 1px solid var(--tw-border); border-radius: 10px; padding: 10px 12px; box-sizing: border-box; }
+.twin-root.collapsed .tw-panel { display: none; }
+.twin-root .tw-toggle { position: absolute; top: 10px; right: 10px; z-index: 2; width: 32px; height: 32px; border-radius: 8px;
+  border: 1px solid var(--tw-border); background: var(--tw-card); color: var(--tw-fg); cursor: pointer; font-size: 16px; }
+.twin-root .tw-panel header { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.twin-root .tw-panel label { display: block; margin: 6px 0; }
+.twin-root .tw-panel input:not([type=radio]):not([type=checkbox]), .twin-root .tw-panel select, .twin-root .tw-panel textarea { width: 100%; box-sizing: border-box; margin-top: 2px; }
+.twin-root .tw-panel .row { display: flex; gap: 6px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+.twin-root .tw-panel .row label { display: inline; margin: 0; }
+.twin-root .tw-panel .row input[type=range] { flex: 1; width: auto; min-width: 0; }
+.twin-root .tw-panel .row select { width: auto; flex: none; }
+.twin-root .tw-panel h4 { margin: 12px 0 4px; }
+.twin-root .tw-panel ul { padding-left: 16px; margin: 4px 0; }
+.twin-root .tw-panel ol { padding-left: 22px; margin: 4px 0; }
+.twin-root .tw-panel details { margin: 6px 0; }
+.twin-root .tw-panel button { cursor: pointer; }
+.twin-root .tw-panel [hidden] { display: none !important; }
+.twin-root .muted { color: var(--tw-muted); }
+.twin-root .tag { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: #495057; color: #fff; }
+.twin-root .scn p { margin: 4px 0; font-size: 12px; }
+.twin-root #scnList li { cursor: pointer; margin-bottom: 4px; }
+.twin-root .err { color: #fa5252; white-space: pre-wrap; }
+.twin-root .ok { color: #40c057; }
+.twin-root .legend span { display: inline-flex; align-items: center; margin-right: 8px; }
+.twin-root .legend span::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--c); margin-right: 4px; }
+.twin-root table.kv td { padding: 1px 4px; vertical-align: top; word-break: break-word; }
+.twin-root table.kv td:first-child { color: var(--tw-muted); }
+.twin-root ol.clicky li { cursor: pointer; }
+.twin-root ol.clicky li:hover { text-decoration: underline; }
