@@ -949,18 +949,24 @@ def _merge_boxes(a: list, b: list) -> list:
     return [[round(x0, 2), round(y0, 2)], [round(x1, 2), round(y0, 2)], [round(x1, 2), round(y1, 2)], [round(x0, 2), round(y1, 2)]]
 
 
-def _crosswalk_near(m, center, radius):
-    """(driving waypoint at the crosswalk centre, polygon) for the crosswalk nearest the centre."""
-    pts = [(p.x, p.y, p.z) for p in m.get_crosswalks()]
+def crosswalk_polygons(m) -> list:
+    """Every crosswalk of the map as a list of (x, y, z) points (Map.get_crosswalks returns them as one
+    flat list, each polygon closed by repeating its first point)."""
     polys, cur = [], []
-    for p in pts:
+    for p in m.get_crosswalks():
+        p = (p.x, p.y, p.z)
         if cur and math.hypot(p[0] - cur[0][0], p[1] - cur[0][1]) < 1e-3 and len(cur) >= 3:
             polys.append(cur)
             cur = []
         else:
             cur.append(p)
+    return polys
+
+
+def _crosswalk_near(m, center, radius):
+    """(driving waypoint at the crosswalk centre, polygon) for the crosswalk nearest the centre."""
     best = None
-    for poly in polys:
+    for poly in crosswalk_polygons(m):
         c = np.mean(np.array(poly), axis=0)
         d = math.hypot(c[0] - center[0], c[1] - center[1])
         if d > radius:
@@ -1054,6 +1060,28 @@ def run_act(world, bp_lib, act: dict) -> dict:
     return out
 
 
+def plan_entry(a: dict) -> dict:
+    """An act as a --plan-only log entry: its planned paths sampled at 10 Hz, so `run_violations.py --plan`
+    can dry-run the rules on them (also used by pedestrian_violations.py)."""
+    pts = np.array(a["traj"].p)
+    ts = np.arange(0.0, a["traj"].duration, 0.1)
+    samples = [[round(float(t), 2)] + a["traj"].at(t)[0][:2].round(3).tolist() for t in ts]
+    entry = {"type": a["type"], "condition": a.get("condition"), "cls": a.get("cls", "car"),
+             "also": a.get("also", []), "expected": a["expected"], "note": a["note"],
+             # the whole act, walkers and lead car included (run_act waits for all of them)
+             "duration_s": round(max([a["traj"].duration] + [w.duration for w in a.get("walkers", [])]
+                                     + ([a["lead"].duration] if "lead" in a else [])), 1), "truth_s": [a["traj"].marks[k] for k in a["truth"]],
+             "path_start": pts[0, :2].round(1).tolist(), "path_end": pts[-1, :2].round(1).tolist(),
+             "samples": samples}
+    if "lead" in a:
+        entry["lead_samples"] = [[round(float(t), 2)] + a["lead"].at(t)[0][:2].round(3).tolist()
+                                 for t in np.arange(0.0, a["lead"].duration, 0.1)]
+    if a.get("walkers"):  # M3: run_violations.py --plan adds them as pedestrian tracks
+        entry["walker_samples"] = [[[round(float(t), 2)] + w.at(t)[0][:2].round(3).tolist()
+                                    for t in np.arange(0.0, w.duration, 0.1)] for w in a["walkers"]]
+    return entry
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="localhost")
@@ -1138,24 +1166,8 @@ def main() -> None:
            # rule settings the acts need (run_violations.py --zones <log> applies them)
            **{k: p[k] for k in ("lane_overrides", "engine_params") if k in p}}
     if args.plan_only:
-        # planned paths sampled at 10 Hz, so `run_violations.py --plan` can dry-run the rules on them
         for a in acts:
-            pts = np.array(a["traj"].p)
-            ts = np.arange(0.0, a["traj"].duration, 0.1)
-            samples = [[round(float(t), 2)] + a["traj"].at(t)[0][:2].round(3).tolist() for t in ts]
-            entry = {"type": a["type"], "condition": a.get("condition"), "cls": a.get("cls", "car"),
-                     "also": a.get("also", []), "expected": a["expected"], "note": a["note"],
-                     # the whole act, walkers and lead car included (run_act waits for all of them)
-                     "duration_s": round(max([a["traj"].duration] + [w.duration for w in a.get("walkers", [])]
-                                             + ([a["lead"].duration] if "lead" in a else [])), 1), "truth_s": [a["traj"].marks[k] for k in a["truth"]],
-                     "path_start": pts[0, :2].round(1).tolist(), "path_end": pts[-1, :2].round(1).tolist(),
-                     "samples": samples}
-            if "lead" in a:
-                entry["lead_samples"] = [[round(float(t), 2)] + a["lead"].at(t)[0][:2].round(3).tolist()
-                                         for t in np.arange(0.0, a["lead"].duration, 0.1)]
-            if a.get("walkers"):  # M3: run_violations.py --plan adds them as pedestrian tracks
-                entry["walker_samples"] = [[[round(float(t), 2)] + w.at(t)[0][:2].round(3).tolist()
-                                            for t in np.arange(0.0, w.duration, 0.1)] for w in a["walkers"]]
+            entry = plan_entry(a)
             if "signal" in a:  # the dry run's signal schedule and stop line (live runs: record_flight.py logs both)
                 entry["signal"] = a["signal"]
                 if all(sl["id"] != a["stop_line"]["id"] for sl in log.setdefault("stop_lines", [])):
