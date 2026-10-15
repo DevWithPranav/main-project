@@ -57,15 +57,23 @@ def main() -> None:
     folder = args.out / session
     folder.mkdir(parents=True, exist_ok=True)
     beat_file, gaps_file = folder / "heartbeat.json", folder / "pipeline_gaps.jsonl"
-    beat_file.unlink(missing_ok=True)  # a heartbeat left by an earlier run of this session would read as an instantly stale one
+    stop_file = folder / "STOP"  # 04_stop_stack.ps1 asks the pipeline to finish: it then writes its results without beating
     cmd = [sys.executable, str(HERE / "pipeline.py"), *passthrough, "--session", session, "--out", str(args.out)]
+    stop_file.unlink(missing_ok=True)  # left by an earlier run of this session: not a request to this one
     restarts, last_beat_wall, gap_start, reason, gap_reason = 0, None, None, "", ""
     while True:
+        # the previous process's last heartbeat (an earlier run of this session, or the one just killed) would read as the
+        # new one's first, already stale: each restart was killed at once until the restart limit (2026-10-15)
+        beat_file.unlink(missing_ok=True)
         proc = subprocess.Popen(cmd + (["--resume"] if restarts else []))
         print(f"[watchdog] pipeline pid {proc.pid} (start {restarts})", flush=True)
-        seen_beat = False
+        seen_beat = stopping = False
         while proc.poll() is None:
             time.sleep(0.5)
+            if stop_file.exists():
+                stopping = True
+            if stopping:  # finishing on request: no heartbeat while it writes summary.json; 04_stop_stack.ps1 kills it after 40 s
+                continue
             beat = read_beat(beat_file)
             now = time.time()
             if beat and (not seen_beat or float(beat["wall"]) > (last_beat_wall or 0)):
@@ -80,8 +88,8 @@ def main() -> None:
                 proc.wait()
                 break
         code = proc.returncode
-        if code == 0:
-            print("[watchdog] pipeline finished", flush=True)
+        if code == 0 or stopping:
+            print("[watchdog] pipeline finished" + (" (stop requested)" if stopping else ""), flush=True)
             return
         reason = reason or f"pipeline exited with code {code}"
         if restarts >= args.max_restarts:

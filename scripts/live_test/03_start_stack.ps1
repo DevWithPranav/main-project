@@ -53,7 +53,7 @@ else {
 Write-Host "`n== 4. Live pipeline under the watchdog (:5555) ==" -ForegroundColor Cyan
 if (Listening 5555) { Write-Host "something already listens on 5555 (a pipeline from an earlier run?). Run 04_stop_stack.ps1 first." -ForegroundColor Yellow }
 else {
-    $a = @("services\live\watchdog.py", "--backend", "http://127.0.0.1:8000", "--session", $Session, "--imgsz", "$Imgsz")
+    $a = @("services\live\watchdog.py", "--backend", "http://127.0.0.1:8000", "--session", $Session, "--imgsz", "$Imgsz", "--tracker", "tracktrack_live")
     if ($Zones) { $a += @("--zones", (Resolve-Path $Zones).Path) }
     if ($ClockOffset -ne 0.0) { $a += @("--clock-offset", "$ClockOffset") }
     Start-Process -FilePath $py -ArgumentList $a -WorkingDirectory $repo -WindowStyle Hidden `

@@ -60,3 +60,46 @@ def test_stale_heartbeat_from_an_earlier_run_is_ignored(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["watchdog.py", "--timeout", "1", "--out", str(tmp_path / "res"), "--session", "s2"])
     watchdog.main()  # a restart on the stale file would hit the 20-restart limit and sys.exit(1)
     assert not (old / "pipeline_gaps.jsonl").exists()
+
+
+def test_restart_does_not_read_the_killed_pipelines_heartbeat(tmp_path, monkeypatch):
+    """The first start beats and hangs; each restart takes 2 s before its first beat (model loading) and then exits 0.
+    The killed process's last beat must not get the restart killed before it beats (it was, 20 times in a row)."""
+    fake = tmp_path / "pipeline.py"
+    fake.write_text(
+        "import json, sys, time\n"
+        "from pathlib import Path\n"
+        "a = sys.argv\n"
+        "out = Path(a[a.index('--out') + 1]) / a[a.index('--session') + 1]\n"
+        "out.mkdir(parents=True, exist_ok=True)\n"
+        "if '--resume' in a:\n"
+        "    time.sleep(2)\n"
+        "    (out / 'heartbeat.json').write_text(json.dumps({'wall': time.time()}))\n"
+        "    sys.exit(0)\n"
+        "(out / 'heartbeat.json').write_text(json.dumps({'wall': time.time()}))\n"
+        "time.sleep(60)\n"
+    )
+    monkeypatch.setattr(watchdog, "HERE", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["watchdog.py", "--timeout", "1", "--max-restarts", "3", "--out", str(tmp_path / "res"), "--session", "s3"])
+    watchdog.main()  # restarted once, then finished; a kill loop would end in sys.exit(1)
+    gaps = (tmp_path / "res" / "s3" / "pipeline_gaps.jsonl").read_text().splitlines()
+    assert len(gaps) == 1
+
+
+def test_stop_request_is_not_a_hang(tmp_path, monkeypatch):
+    """After the STOP file the pipeline writes its results without beating: no kill, no restart."""
+    fake = tmp_path / "pipeline.py"
+    fake.write_text(
+        "import json, sys, time\n"
+        "from pathlib import Path\n"
+        "a = sys.argv\n"
+        "out = Path(a[a.index('--out') + 1]) / a[a.index('--session') + 1]\n"
+        "(out / 'heartbeat.json').write_text(json.dumps({'wall': time.time()}))\n"
+        "(out / 'STOP').touch()\n"
+        "time.sleep(3)  # 'writing summary.json', longer than the timeout\n"
+        "sys.exit(3)\n"
+    )
+    monkeypatch.setattr(watchdog, "HERE", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["watchdog.py", "--timeout", "1", "--out", str(tmp_path / "res"), "--session", "s4"])
+    watchdog.main()
+    assert not (tmp_path / "res" / "s4" / "pipeline_gaps.jsonl").exists()

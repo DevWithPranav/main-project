@@ -37,6 +37,7 @@ import ultralytics
 import yaml
 from ultralytics import YOLO
 
+import buffered_tracktrack  # noqa: F401  (registers TrackTrack with the iou_buffer option; stock without it)
 from detection_filters import DetectionFilter
 from extract_trajectories import BEST_PT
 from stitch_tracklets import print_stats, stitch

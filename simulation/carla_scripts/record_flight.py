@@ -107,10 +107,14 @@ class KeyboardControl:
         self.use_gamepad = use_gamepad
         # False in fly_drone.py: there Esc / Start belong to the separate recorder, not the flight controls
         self.allow_quit = allow_quit
-        self.keys_pressed: set = set()
+        # key -> when it was last seen down. A held key keeps arriving as auto-repeat presses, so one not seen for
+        # STALE_KEY_S has had its release lost (see _key) and is dropped instead of steering the drone until pressed again.
+        self.keys_pressed: dict = {}
         self.running = True
         self.airborne = False
         self.listener = kb.Listener(on_press=self._on_press, on_release=self._on_release)
+
+    STALE_KEY_S = 1.5  # above Windows' longest auto-repeat delay (1 s), so a key really held down is never dropped
 
     def start(self) -> None:
         self.listener.start()
@@ -118,24 +122,41 @@ class KeyboardControl:
     def stop(self) -> None:
         self.listener.stop()
 
-    def _on_press(self, key) -> None:
-        try:
-            k = key.char
-        except AttributeError:
-            if key == kb.Key.space:
-                self.keys_pressed.add(kb.Key.space)
-            elif key in (kb.Key.shift, kb.Key.shift_l, kb.Key.shift_r):
-                self.keys_pressed.add(kb.Key.shift)
-            elif key == kb.Key.esc and self.allow_quit:
-                self.running = False
-            return
+    @staticmethod
+    def _key(key):
+        """One name per physical key. The press and release of a key can carry different chars ('e' down, Shift
+        down, 'E' up): matched as is, the release missed and 'e' stayed held, the drone spinning on its own and
+        overriding the gamepad until 'e' was pressed again. Ctrl+letter arrives as a control char (Ctrl+E = '\\x05')."""
+        if key in (kb.Key.shift, kb.Key.shift_l, kb.Key.shift_r):
+            return kb.Key.shift
+        if key == kb.Key.space:
+            return kb.Key.space
+        ch = getattr(key, "char", None)
+        if not ch:
+            return None
+        if len(ch) == 1 and ord(ch) < 32:
+            ch = chr(ord(ch) + 96)
+        return ch.lower()
 
+    def held(self) -> set:
+        now = time.monotonic()
+        for k, t in list(self.keys_pressed.items()):  # one C-level copy: the listener thread writes the dict
+            if now - t <= self.STALE_KEY_S:
+                continue
+            self.keys_pressed.pop(k, None)
+        return set(self.keys_pressed)
+
+    def _on_press(self, key) -> None:
+        if key == kb.Key.esc and self.allow_quit:
+            self.running = False
+            return
+        k = self._key(key)
         if k == "t":
             self.take_off()
         elif k == "l":
             self.land()
-        else:
-            self.keys_pressed.add(k)
+        elif k is not None:
+            self.keys_pressed[k] = time.monotonic()
 
     def take_off(self) -> None:
         if not self.airborne:
@@ -150,13 +171,7 @@ class KeyboardControl:
             self.client.landAsync()
 
     def _on_release(self, key) -> None:
-        try:
-            self.keys_pressed.discard(key.char)
-        except AttributeError:
-            if key == kb.Key.space:
-                self.keys_pressed.discard(kb.Key.space)
-            elif key in (kb.Key.shift, kb.Key.shift_l, kb.Key.shift_r):
-                self.keys_pressed.discard(kb.Key.shift)
+        self.keys_pressed.pop(self._key(key), None)
 
     def control_loop(self) -> None:
         """Run in its own thread. Polls pressed keys at 10Hz but only issues
@@ -181,21 +196,22 @@ class KeyboardControl:
 
         while self.running:
             vx = vy = vz = yaw = 0.0
-            if "w" in self.keys_pressed:
+            held = self.held()
+            if "w" in held:
                 vx = self.speed
-            if "s" in self.keys_pressed:
+            if "s" in held:
                 vx = -self.speed
-            if "d" in self.keys_pressed:
+            if "d" in held:
                 vy = self.speed
-            if "a" in self.keys_pressed:
+            if "a" in held:
                 vy = -self.speed
-            if kb.Key.space in self.keys_pressed:
+            if kb.Key.space in held:
                 vz = -self.speed
-            if kb.Key.shift in self.keys_pressed:
+            if kb.Key.shift in held:
                 vz = self.speed
-            if "q" in self.keys_pressed:
+            if "q" in held:
                 yaw = -self.yaw_rate
-            if "e" in self.keys_pressed:
+            if "e" in held:
                 yaw = self.yaw_rate
 
             if gamepad is not None:
