@@ -11,6 +11,10 @@
          ml/data/results/live/<session>/events.jsonl
       -> POST /api/live/frame (<= --frame-hz): the frame as the model got it and with its boxes,
          track ids, speeds and rule state drawn on, for the dashboard's Live page
+      -> traffic lights (CARLA sources that stream them, transport.py "signals"): passed on to
+         POST /api/live/signals as they arrive, stamped with CARLA's sim time (the vehicles' t_s
+         clock), and saved as <session>/traffic_lights.json; with --red-light (or the profile's
+         red_light module) the red-light rule runs on them (signals.LiveSignalLog)
 
 Frames that arrive while one is being processed are dropped (latest-frame-wins), so latency stays
 bounded when the GPU is slower than the camera; --all-frames processes every frame instead
@@ -88,13 +92,16 @@ class GpuSampler(threading.Thread):
             time.sleep(self.every)
 
 
-def build_engine(args, map_name: str, session: str):
-    """Scene, profile and rule settings exactly as run_violations.py builds them for a flight."""
+def build_engine(args, map_name: str, session: str, lights: list[dict] | None = None, signal_log=None):
+    """Scene, profile and rule settings exactly as run_violations.py builds them for a flight. The red-light
+    rule runs when it is asked for (--red-light or the profile) and the source streams its traffic lights:
+    their stop lines join the scene's, the states come from signal_log (signals.LiveSignalLog)."""
     from ground_coords import RoadSurface
     from lane_map import SceneMap
     from rules import Engine
     from run_violations import engine_config, extra_params, merge_zones, road_scene
-    ns = Namespace(profile=args.profile, params=args.params, red_light=False, learn_flow=False,
+    from signals import stop_lines
+    ns = Namespace(profile=args.profile, params=args.params, red_light=getattr(args, "red_light", False), learn_flow=False,
                    scene=args.scene, zones=args.zones)
     params, disabled = engine_config(ns)
     scene_path = ns.scene or SCENES / f"{Path(map_name).name or 'Town05'}.json"
@@ -102,7 +109,17 @@ def build_engine(args, map_name: str, session: str):
         raise SystemExit(f"no lane map {scene_path}; give --scene")
     scene_data = road_scene(merge_zones(json.loads(Path(scene_path).read_text()), ns.zones), ns)
     surface = None if args.flat_ground else RoadSurface.from_scene(scene_data)
-    engine = Engine(SceneMap(scene_data), extra_params(params, ns.zones), prefix=session, disabled_conditions=disabled)
+    signals = None
+    if ns.red_light:
+        if lights and signal_log is not None:
+            have = {sl["id"] for sl in scene_data.get("stop_lines", [])}
+            scene_data["stop_lines"] = scene_data.get("stop_lines", []) + [sl for sl in stop_lines(lights) if sl["id"] not in have]
+            signals = signal_log
+            print(f"[live] red-light rule on: {len(lights)} lights, {len(scene_data['stop_lines'])} stop lines")
+        else:
+            print("[live] red-light rule asked for, but the source sends no traffic lights: off")
+    engine = Engine(SceneMap(scene_data), extra_params(params, ns.zones), prefix=session, signals=signals,
+                    disabled_conditions=disabled)
     return engine, surface, str(scene_path)
 
 
@@ -161,6 +178,7 @@ def main() -> None:
     ap.add_argument("--profile", type=Path, default=None)
     ap.add_argument("--params", type=Path, default=None)
     ap.add_argument("--flat-ground", action="store_true")
+    ap.add_argument("--red-light", action="store_true", help="Run the red-light rule on the streamed traffic lights")
     ap.add_argument("--state-hz", type=float, default=10.0)
     ap.add_argument("--frame-hz", type=float, default=10.0, help="Raw + annotated frames to the dashboard per s (0: off)")
     ap.add_argument("--frame-width", type=int, default=960, help="Width of the frames sent to the dashboard")
@@ -175,6 +193,7 @@ def main() -> None:
     from kinematics import edge_mask
     from online import LAG_S, IncrementalEngine, LiveCamera, OnlineKinematics
     from process_recorded_flight import DETECT_CONF, TRACKER_CONFIGS
+    from signals import LiveSignalLog
 
     model, classes = load_detector(args.weights)
     tracker_cfg = TRACKER_CONFIGS[args.tracker]
@@ -186,9 +205,15 @@ def main() -> None:
     session = args.session or f"live_{datetime.datetime.now():%Y%m%d_%H%M%S}"
     out = args.out / session
     out.mkdir(parents=True, exist_ok=True)
-    print(f"[live] source: {hello}; session {session} -> {out}")
+    hello_log = {k: v for k, v in hello.items() if k != "signals"}  # the light list is long: in traffic_lights.json
+    print(f"[live] source: {hello_log}; session {session} -> {out}")
 
-    engine, surface, scene_path = build_engine(args, hello.get("map", ""), session)
+    sig_log = LiveSignalLog()
+    hello_lights = (hello.get("signals") or {}).get("lights")
+    if not hello_lights and getattr(args, "red_light", False):  # the list may follow the hello as the first "signal" message
+        rx.wait_signals(5.0)
+        hello_lights = next((m["lights"] for m in list(rx.signals) if m.get("lights")), None)
+    engine, surface, scene_path = build_engine(args, hello.get("map", ""), session, hello_lights, sig_log)
     cam = LiveCamera(hello["width"], hello["height"], hello.get("fov", 90.0), float(hello.get("ground_z", 0.0)))
     lag = LAG_S if args.lag is None else args.lag
     kin = OnlineKinematics(lag_s=lag, mode=args.kin, relink=not args.no_relink)
@@ -198,7 +223,7 @@ def main() -> None:
     gpu.start()
     (out / "run_config.json").write_text(json.dumps({
         "date": datetime.datetime.now().isoformat(timespec="seconds"), "command": " ".join(sys.argv),
-        "hello": hello, "weights": str(args.weights), "imgsz": args.imgsz, "conf": DETECT_CONF,
+        "hello": hello_log, "weights": str(args.weights), "imgsz": args.imgsz, "conf": DETECT_CONF,
         "tracker": tracker_cfg, "skip": args.skip, "all_frames": args.all_frames, "kin": args.kin, "lag_s": lag,
         "relink": not args.no_relink, "scene": scene_path, "zones": str(args.zones), "profile": str(args.profile),
         "road_surface": surface is not None, "backend": args.backend}, indent=1))
@@ -211,6 +236,33 @@ def main() -> None:
     trk_w = csv.writer(trk_file)
     if trk_file.tell() == 0:
         trk_w.writerow(["frame", "time_s", "track_id", "tracker_id", "class", "cx", "cy", "w", "h", "conf", "wx", "wy", "pose_exact"])
+
+    # traffic lights: everything the source streamed (record_flight.py's traffic_lights.json format)
+    lights_doc = {"lights": [], "changes": []}
+    seen_changes: set = set()
+    lights_dirty = False
+    lights_written = 0.0
+
+    def drain_signals(force_write: bool = False):
+        nonlocal lights_dirty, lights_written
+        for m in rx.take_signals():
+            if m.get("lights"):
+                lights_doc["lights"] = m["lights"]
+            new = []
+            for c in m.get("changes", []):
+                key = (int(c[0]), str(c[2]), str(c[3]))
+                if key in seen_changes:
+                    continue
+                seen_changes.add(key)
+                lights_doc["changes"].append(c)
+                sig_log.add_change(c[2], float(c[1]), str(c[3]))
+                new.append(c)
+            if new or m.get("lights"):
+                backend.post_signals(session, m.get("lights") or None, new)
+                lights_dirty = True
+        if lights_dirty and (force_write or time.time() - lights_written > 2.0):
+            (out / "traffic_lights.json").write_text(json.dumps(lights_doc))
+            lights_dirty, lights_written = False, time.time()
 
     capture_wall: dict[int, float] = {}
     cw_order: deque = deque()
@@ -278,6 +330,7 @@ def main() -> None:
         beat()
         while True:
             beat()
+            drain_signals()
             if stop_file.exists():
                 print("[live] STOP file found: finishing", flush=True)
                 break
@@ -296,6 +349,7 @@ def main() -> None:
             t_start = time.perf_counter()
             first_wall = first_wall or time.time()
             frame, t = int(h["frame"]), float(h["sim_time"])
+            sig_log.add_frame(frame, t)
             h["capture_wall"] = h["capture_wall"] + args.clock_offset  # the sender's clock, expressed in this machine's clock
             capture_wall[frame] = h["capture_wall"]
             cw_order.append(frame)
@@ -385,6 +439,7 @@ def main() -> None:
     except KeyboardInterrupt:
         print("[live] stopping")
     finally:
+        drain_signals(force_write=True)
         run_engine(kin.flush())
         opened, closed = ie.finish()
         handle(opened, closed, time.time())
@@ -407,7 +462,8 @@ def main() -> None:
             if p["phase"] == "open" and p["ok"] and opens.get(p["event_id"]):
                 post_lat.append(p["post_wall"] - opens[p["event_id"]])
         summary = {
-            "session": session, "source": hello, "elapsed_s": round(elapsed, 1),
+            "session": session, "source": hello_log,
+            "traffic_lights": {"lights": len(lights_doc["lights"]), "changes": len(lights_doc["changes"])}, "elapsed_s": round(elapsed, 1),
             "frames_received": rx.received, "frames_dropped_latest_wins": rx.dropped, "frames_seen": n_seen,
             "frames_processed": n_proc, "fps_processed": round(n_proc / elapsed, 2) if elapsed else None,
             "ms_per_stage": {k: stats(v) for k, v in ms.items()},

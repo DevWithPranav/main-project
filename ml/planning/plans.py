@@ -2,7 +2,7 @@
 changes, check risks, and analyse it on a session's recorded traffic.
 
 A plan is plain JSON: {name, description, scene, session_id, objectives[], props[], rules[], scenarios[]}; every item has
-{id, kind, x, y, yaw_deg?, params{}, target{lane_id?}, schedule{from_s,to_s}?, priority?, note?}. Kinds and parameters:
+{id, kind, x, y, yaw_deg?, params{}, target{lane_id?, junction_id?, approach_id?}, schedule{from_s,to_s}?, priority?, note?}. Kinds and parameters:
 plan_catalogue.py. Pure functions on dicts (scene = the lane-map JSON), no I/O except `analyze`, so it runs in the
 backend and in tests.
 
@@ -29,6 +29,7 @@ for q in (HERE, REPO / "ml" / "violation_engine", REPO / "simulation" / "plannin
         sys.path.insert(0, str(q))
 
 from plan_catalogue import GROUPS, KINDS  # noqa: E402
+from junctions import junction_at  # noqa: E402
 
 GROUP_KEY = {"prop": "props", "rule": "rules", "scenario": "scenarios"}
 LANE_ID = re.compile(r"^r(-?\d+)_s(\d+)_l(-?\d+)(_p\d+)?$")
@@ -146,8 +147,29 @@ def locate(scene: dict, x: float, y: float, radius: float = 40.0, plan: dict | N
             "inside_scene": ix.bbox[0] - SCENE_MARGIN_M <= x <= ix.bbox[2] + SCENE_MARGIN_M and ix.bbox[1] - SCENE_MARGIN_M <= y <= ix.bbox[3] + SCENE_MARGIN_M,
             "nearest_lane": lanes[0] if lanes else None, "lanes": lanes,
             "junction": any(l["junction"] for l in lanes if l["distance_m"] <= 25),
+            "junction_info": junction_info(scene, x, y),
             "zones": zones, "plan_items": items,
             "signals": "traffic-light positions are not part of the lane map; shown only when a recorded session carries them"}
+
+
+JUNCTION_PICK_M = 25.0  # a click this close to a junction centre (outside its outline) still picks it
+
+
+def junction_info(scene: dict, x: float, y: float) -> dict | None:
+    """The junction at a position (inside its outline, else centre within JUNCTION_PICK_M): outline and approaches."""
+    j = junction_at(scene, x, y, JUNCTION_PICK_M)
+    if j is None:
+        return None
+    return {"id": j["id"], "centre": j["centre"], "polygon": j["polygon"],
+            "approaches": [{k: a[k] for k in ("id", "road_id", "x", "y", "heading_deg", "stop_line", "lanes")} for a in j["approaches"]]}
+
+
+def approach_of(scene: dict, junction_id: str, approach_id: str | None) -> list[dict]:
+    """The approaches a junction-targeted item acts on: the named one, or all of the junction's when approach_id is None."""
+    for j in scene.get("junctions") or []:
+        if j["id"] == junction_id:
+            return [a for a in j["approaches"] if approach_id is None or a["id"] == approach_id]
+    return []
 
 
 # ---------------------------------------------------------------------------- compile (plan -> engine changes)
@@ -374,7 +396,17 @@ def validate(plan: dict, scene: dict) -> dict:
 def risk_checks(plan: dict, scene: dict) -> list[dict]:
     ix = index_of(scene)
     risks = []
-    sig = [it for _, it in items_of(plan) if it.get("kind") == "traffic_signal"]
+    # one controller per junction: the signals on a junction's approaches share it, so they are compared as one
+    sig, seen_j = [], set()
+    for _, it in items_of(plan):
+        if it.get("kind") != "traffic_signal":
+            continue
+        jid = (it.get("target") or {}).get("junction_id")
+        if jid in seen_j:
+            continue
+        if jid:
+            seen_j.add(jid)
+        sig.append(it)
     for i, a in enumerate(sig):
         for b in sig[i + 1:]:
             d = math.hypot(a["x"] - b["x"], a["y"] - b["y"])

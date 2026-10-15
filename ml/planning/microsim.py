@@ -38,7 +38,7 @@ import traffic_config as tc  # noqa: E402  (global traffic settings: presets, pr
 MODEL_NOTES = [
     "Simplified microscopic model (IDM car-following on the lane graph); not CARLA and not calibrated to this town's traffic.",
     "No lane changes or overtaking: a slow vehicle holds up the vehicles behind it.",
-    "Signals are virtual: a plan's signal props stop vehicles on the lanes passing them (two phases with clearance, optional adaptive extension, stop signs); the town's own signals are not in the lane map. Turning movements are not controlled and vehicles still pass through each other inside junctions.",
+    "Signals are virtual: a plan's signal props stop vehicles on the lanes passing them, or, placed on a junction's approaches, at the junction's edge with the approaches phased together by axis (two phases with clearance, optional adaptive extension, stop signs); the town's own signals are not in the lane map. Turning movements are not controlled and vehicles still pass through each other inside junctions.",
     "Background traffic keeps a constant number of vehicles per km of lane (vehicles that leave the network are respawned elsewhere).",
     "Pedestrians exist only as crossing activity at pedestrian crossings (vehicles yield while someone is on the crossing); other pedestrian crowds are not simulated. Closures, barriers, cones and construction zones block the lane; accidents, breakdowns, custom objects and curb stops are stopped vehicles.",
 ]
@@ -520,6 +520,29 @@ class World:
             self.by_lane_signals.setdefault(li, []).append(sig)
         return sig
 
+    def add_junction_signal(self, sid: str, kind: str, centre, approaches: list[dict], cycle=90.0, green=40.0, adaptive=False) -> Signal | None:
+        """One controller for the given approaches of a junction (scene "junctions", junctions.py): a stop line at the end of
+        each incoming lane (the junction's edge); a traffic signal gives green by axis (A = the first approach's axis and the
+        opposite one, B = the crossing roads). None when no approach lane is in the model."""
+        by_id = {l.id: l for l in self.lanes}
+        sig = Signal(sid, float(centre[0]), float(centre[1]), kind, cycle, green, adaptive)
+        ref = None
+        for a in approaches:
+            ax = float(a["heading_deg"]) % 180.0
+            ref = ax if ref is None else ref
+            diff = abs((ax - ref + 90.0) % 180.0 - 90.0)
+            for lid in a["lanes"]:
+                l = by_id.get(lid)
+                if l is None or l.closed or l.length < 2.0:
+                    continue
+                sig.heads[l.i] = (max(l.length - 1.0, 0.5), "A" if (kind != "traffic_signal" or diff < 40.0) else "B")
+        if not sig.heads:
+            return None
+        self.signals.append(sig)
+        for li in sig.heads:
+            self.by_lane_signals.setdefault(li, []).append(sig)
+        return sig
+
     def demand_upstream(self, sig: Signal, group: str) -> bool:
         """A vehicle of the green group is within 35 m before its stop line (or queued behind it): worth extending the green."""
         for li, (s_stop, g) in sig.heads.items():
@@ -731,11 +754,17 @@ def run(scene: dict, plan: dict | None, seed: int = 0, duration_s: float | None 
     # props: virtual signals, stop signs, pedestrian crossings, bus stops, warning signs, speed breakers, parking, objects
     from shapely.geometry import Polygon as _Poly
     cross_kinds = {"pedestrian_crossing", "pedestrian_priority"}
+    placed: set[str] = set()   # signal / stop-sign items that control at least one lane
+    at_junction: dict[tuple[str, str], list[dict]] = {}  # (kind, junction id) -> items placed on its approaches
     for it in list(plan.get("props") or []) + list(plan.get("rules") or []):
         k = it.get("kind")
         sp = plans.with_defaults(k or "", it.get("params"))
-        if k in ("traffic_signal", "stop_sign"):
-            w.add_signal(f"sig_{it['id']}", it["x"], it["y"], k, sp.get("cycle_s", 90), sp.get("green_s", 40), bool(sp.get("adaptive")))
+        jid = (it.get("target") or {}).get("junction_id")
+        if k in ("traffic_signal", "stop_sign") and jid:
+            at_junction.setdefault((k, jid), []).append(it)
+        elif k in ("traffic_signal", "stop_sign"):
+            if w.add_signal(f"sig_{it['id']}", it["x"], it["y"], k, sp.get("cycle_s", 90), sp.get("green_s", 40), bool(sp.get("adaptive"))):
+                placed.add(it["id"])
         elif k in cross_kinds:
             across = float(sp.get("length_m", 8))
             w.add_signal(f"sig_{it['id']}", it["x"], it["y"], "crossing", ped_per_h=float(sp.get("ped_per_h", 240)), cross_s=across / 1.3 + 3.0, horizon=warmup_s + duration_s + 30.0)
@@ -765,6 +794,18 @@ def run(scene: dict, plan: dict | None, seed: int = 0, duration_s: float | None 
         elif k == "parking_zone":
             poly = _Poly(plans.rect_polygon(it["x"], it["y"], it.get("yaw_deg", 0.0), float(sp.get("length_m", 20)), float(sp.get("width_m", 4))))
             w.parking_zones.append((poly, float(sp.get("stops_per_h", 40)), float(sp.get("stay_s", 60)), (it["x"], it["y"])))
+    # signals / stop signs on junction approaches: one controller per junction (its approaches phased together)
+    for (k, jid), its in at_junction.items():
+        sp = plans.with_defaults(k, its[0].get("params"))
+        appr, seen = [], set()
+        for it in its:
+            for a in plans.approach_of(scene, jid, (it.get("target") or {}).get("approach_id")):
+                if a["id"] not in seen:
+                    seen.add(a["id"])
+                    appr.append(a)
+        centre = next((j["centre"] for j in scene.get("junctions") or [] if j["id"] == jid), (its[0]["x"], its[0]["y"]))
+        if appr and w.add_junction_signal(f"sig_{its[0]['id']}", k, centre, appr, sp.get("cycle_s", 90), sp.get("green_s", 40), bool(sp.get("adaptive"))):
+            placed.update(it["id"] for it in its)
     for it in plan.get("rules") or []:
         if it.get("kind") == "signal_timing":
             sp = plans.with_defaults("signal_timing", it.get("params"))
@@ -912,7 +953,7 @@ def run(scene: dict, plan: dict | None, seed: int = 0, duration_s: float | None 
         sig_out.append({"id": sg.id, "kind": sg.kind, "mode": sg.mode, "x": sg.x, "y": sg.y, "heads": heads, "timeline": timeline, "pedestrian_groups": sg.peds if sg.kind == "crossing" else None})
     out = {"seed": seed, "metrics": m, "vehicles_total": w.nid - 1, "spawn_blocked": w.spawn_fail, "spawned": dict(w.spawned),
            "traffic": describe_cfg(cfg), "config": cfg, "signals": sig_out,
-           "stops": dict(w.stops), "signals_unplaced": [it["id"] for it in (plan.get("props") or []) if it.get("kind") in ("traffic_signal", "stop_sign") and f"sig_{it['id']}" not in {sg.id for sg in w.signals}]}
+           "stops": dict(w.stops), "signals_unplaced": [it["id"] for it in (plan.get("props") or []) if it.get("kind") in ("traffic_signal", "stop_sign") and it["id"] not in placed]}
     if keep_states:
         out["states"] = states
     return out

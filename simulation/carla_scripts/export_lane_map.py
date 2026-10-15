@@ -8,6 +8,9 @@ ml/violation_engine/lane_map.py loads:
              direction, width, lane type (driving / shoulder / parking), junction flag,
              left/right line type (CARLA LaneMarkingType, seen in the driving direction),
              speed limit
+  junctions  per OpenDRIVE junction: outline polygon, centre, member lanes and approaches
+             (incoming lanes per road and direction, with a stop line across their ends);
+             junction lanes carry junction_id (ml/violation_engine/junctions.py)
   zones      crosswalk polygons (Map.get_crosswalks), and with --highway-kmh a "highway"
              zone over every non-junction lane with a limit >= that value
 
@@ -50,6 +53,7 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "ml" / "violation_engine"))
 from road_features import HIGHWAY_KMH, derive, summary  # noqa: E402  (numpy only, shared with the engine)
+import junctions  # noqa: E402  (numpy only)
 
 XODR_DIR = REPO / "CarlaAir-v0.1.7-Windows11-x86_64" / "WindowsNoEditor" / "CarlaUE4" / "Content" / "Carla" / "Maps" / "OpenDrive"
 OUT_DIR = REPO / "ml" / "violation_engine" / "configs" / "scenes"
@@ -213,6 +217,8 @@ def main() -> None:
                 "speed_limit_kmh": lim[a],
                 "bridge": struct[a][0], "tunnel": struct[a][1],
             }
+            if mid.is_junction:
+                lane["junction_id"] = str(mid.get_junction().id)
             if mid.lane_type in RAMP_LANE_TYPES:
                 lane["ramp"] = RAMP_LANE_TYPES[mid.lane_type]
             if mid.lane_type == carla.LaneType.Restricted:
@@ -260,6 +266,7 @@ def main() -> None:
              "note": "speed sign values used as km/h (CARLA labels them mph)",
              "lanes": list(lanes.values()), "zones": zones, "stop_lines": []}
     derive(scene, args.highway_kmh or HIGHWAY_KMH)
+    js = junctions.build(scene)
     out.write_text(json.dumps(scene))
     print(f"[road features] {json.dumps(summary(scene))}")
     kinds = defaultdict(int)
@@ -268,7 +275,8 @@ def main() -> None:
     limits = defaultdict(int)
     for lane in lanes.values():
         limits[lane["speed_limit_kmh"]] += 1
-    print(f"[lane map] {len(lanes)} lanes {dict(kinds)}, limits {dict(limits)}, {len(zones)} zones -> {out}")
+    print(f"[lane map] {len(lanes)} lanes {dict(kinds)}, limits {dict(limits)}, {len(zones)} zones, "
+          f"{len(js)} junctions ({sum(len(j['approaches']) for j in js)} approaches) -> {out}")
 
 
 if __name__ == "__main__":

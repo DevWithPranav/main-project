@@ -12,6 +12,14 @@ then one "frame" message per camera image (payload = JPEG bytes):
      "capture_wall": unix time when the frame was captured (latency is measured from it)}
 and a final {"type": "end"}.
 
+Traffic lights (CARLA only, optional): the hello may carry
+    "signals": {"lights": [{"id", "stop_lines": [{"id", "signal_id", "line", "dir"}]}],
+                "states": [[carla_frame, sim_time, id, state], ...]}   # every light's latest change
+and each tick that changes lights sends {"type": "signal", "changes": [[carla_frame, sim_time, id, state], ...]}
+(the first one may also carry "lights", so the list arrives even if the hello was sent before it was known)
+(no payload). Signal messages are never dropped (their own queue, sent before frames); the hello is
+rebuilt with the latest states (set_hello), so a reconnect starts from the current state of every light.
+
 Latest-frame-wins on both sides, so a slow detector never builds up latency (the pattern
 imagezmq recommends for PUB/SUB; docs/research/M4_live.md): the sender keeps a queue of at most
 `queue` frames and drops the oldest; the receiver's IO thread reads every message off the socket
@@ -102,6 +110,7 @@ class FrameSender:
         self.addr = (host, port)
         self.hello = hello or {"type": "hello"}
         self.q: deque = deque(maxlen=queue)
+        self.ctrl: deque = deque(maxlen=100000)  # signal messages: never dropped for a newer frame
         self.cv = threading.Condition()
         self.reconnect_s = reconnect_s
         self.sent = self.dropped = 0
@@ -117,6 +126,16 @@ class FrameSender:
                 self.dropped += 1
             self.q.append((header, payload))
             self.cv.notify()
+
+    def send_control(self, header: dict) -> None:
+        """A small message that must arrive (traffic-light changes): its own queue, sent before frames."""
+        with self.cv:
+            self.ctrl.append((header, b""))
+            self.cv.notify()
+
+    def set_hello(self, hello: dict) -> None:
+        """The hello sent on the next (re)connect."""
+        self.hello = hello
 
     def close(self, timeout: float = 5.0) -> None:
         """Send what is queued, then an "end" message, and stop."""
@@ -142,10 +161,11 @@ class FrameSender:
         sock = None
         while not self._stop:
             with self.cv:
-                while not self.q and not self._end:
+                while not self.q and not self.ctrl and not self._end:
                     self.cv.wait(0.5)
-                item = self.q.popleft() if self.q else None
-                ending = self._end and not self.q and item is None
+                ctrl = bool(self.ctrl)
+                item = self.ctrl.popleft() if ctrl else (self.q.popleft() if self.q else None)
+                ending = self._end and not self.q and not self.ctrl and item is None
             while sock is None and not self._stop:
                 sock = self._connect()
                 if sock is None:
@@ -157,12 +177,16 @@ class FrameSender:
             try:
                 if item is not None:
                     sock.sendall(pack(*item))
-                    self.sent += 1
+                    if not ctrl:
+                        self.sent += 1
                 if ending:
                     sock.sendall(pack({"type": "end"}))
                     sock.close()
                     return
             except OSError:
+                if ctrl and item is not None:  # the hello of the reconnect has the states; keep the change anyway
+                    with self.cv:
+                        self.ctrl.appendleft(item)
                 sock = None
                 self.connected = False
 
@@ -180,6 +204,7 @@ class FrameReceiver:
         self.q: deque = deque(maxlen=1 if mode == "latest" else max_queue)
         self.cv = threading.Condition()
         self.hello: dict | None = None
+        self.signals: deque = deque()  # {"lights"?: [...], "changes": [...]} from hellos and "signal" messages
         self.received = self.dropped = 0
         self.ended = False
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -207,6 +232,14 @@ class FrameReceiver:
                     with self.cv:
                         if h.get("type") == "hello":
                             self.hello = h
+                            sig = h.get("signals")
+                            if sig:
+                                self.signals.append({"lights": sig.get("lights") or [], "changes": sig.get("states") or []})
+                        elif h.get("type") == "signal":
+                            m = {"changes": h.get("changes") or []}
+                            if h.get("lights"):
+                                m["lights"] = h["lights"]
+                            self.signals.append(m)
                         elif h.get("type") == "end":
                             self.ended = True
                         elif h.get("type") == "frame":
@@ -226,6 +259,18 @@ class FrameReceiver:
         with self.cv:
             self.cv.wait_for(lambda: self.hello is not None, timeout)
             return self.hello
+
+    def wait_signals(self, timeout: float) -> bool:
+        """Wait until a traffic-light message is queued (or timeout); True if one is."""
+        with self.cv:
+            return self.cv.wait_for(lambda: bool(self.signals), timeout)
+
+    def take_signals(self) -> list[dict]:
+        """Traffic-light messages received since the last call, in order."""
+        with self.cv:
+            out = list(self.signals)
+            self.signals.clear()
+        return out
 
     def get(self, timeout: float = 1.0) -> tuple[dict, bytes] | None:
         """Next frame, or None if nothing arrived within timeout (check .ended for end of stream)."""

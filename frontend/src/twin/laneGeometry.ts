@@ -9,6 +9,7 @@
  * right-handed ENU frame (coords.ts) the left normal of direction (de, dn) is (-dn, de).
  */
 import { carlaToEnu, type Vec3 } from "./coords";
+import type { JunctionInfo } from "../api/types";
 import type { Lane, Zone } from "./types";
 
 export interface Mesh {
@@ -17,7 +18,9 @@ export interface Mesh {
 }
 
 // Lifts above the road height, so overlapping layers don't z-fight (visual only).
-export const LIFT = { shoulder: 0.02, parking: 0.03, driving: 0.05, crosswalk: 0.07, marking: 0.09, median: 0.15 };
+export const LIFT = { shoulder: 0.02, parking: 0.03, driving: 0.05, junction: 0.06, crosswalk: 0.07, marking: 0.09, median: 0.15 };
+export const JUNCTION_EDGE_W = 0.3; // junction outline (curb line) width, m (visual only)
+export const STOP_LINE_W = 0.4; // stop line width, m (typical; visual only)
 export const MARK_W = 0.15; // painted line width, m (typical road marking width; visual only)
 export const DOUBLE_GAP = 0.15; // gap between the two lines of a double marking, m (visual only)
 export const DASH_M = 3.0; // broken line: dash and gap lengths, m (visual only)
@@ -308,4 +311,31 @@ export function laneHeightNear(lane: Lane, x: number, y: number): number | null 
 
 export function crosswalkZones(zones: Zone[] | undefined): Zone[] {
   return (zones || []).filter((z) => z.type === "crosswalk" && z.polygon?.length >= 3);
+}
+
+export interface JunctionMeshes {
+  surface: Mesh;
+  edge: Mesh;
+  stops: Mesh;
+}
+
+/** One junction at height z: its surface (a fan from the centre: the outline is star-shaped from it, junctions.py),
+ * its outline as a thin strip and the approaches' stop lines. Covers the criss-crossing ribbons of the junction lanes. */
+export function junctionMeshes(j: JunctionInfo, z: number): JunctionMeshes {
+  const out: JunctionMeshes = { surface: emptyMesh(), edge: emptyMesh(), stops: emptyMesh() };
+  const ring = j.polygon.map(([x, y]) => carlaToEnu(x, y, z));
+  if (ring.length >= 3) {
+    const [ce, cn] = carlaToEnu(j.centre[0], j.centre[1]);
+    out.surface.positions.push(ce, cn, z + LIFT.junction);
+    for (const [e, n] of ring) out.surface.positions.push(e, n, z + LIFT.junction);
+    for (let i = 0; i < ring.length; i++) out.surface.indices.push(0, 1 + i, 1 + ((i + 1) % ring.length));
+    // carlaToEnu mirrors y, so the ring runs the other way round in ENU: offset to both sides of the line
+    addStrip(out.edge, [...ring, ring[0]], JUNCTION_EDGE_W / 2, -JUNCTION_EDGE_W / 2, LIFT.marking);
+  }
+  for (const a of j.approaches) {
+    if (a.stop_line.length < 2) continue;
+    const line = a.stop_line.map(([x, y]) => carlaToEnu(x, y, z));
+    addStrip(out.stops, line, STOP_LINE_W / 2, -STOP_LINE_W / 2, LIFT.marking);
+  }
+  return out;
 }

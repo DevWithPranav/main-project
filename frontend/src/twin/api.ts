@@ -8,6 +8,7 @@ import { api, refreshTokens, tokenStore } from "../api";
 import { ApiError, errorDetail } from "../api/client";
 import type { PlanDoc, Profile } from "../api/types";
 import type { Scene, Session, TownObjects, Trajectories, TwinEvent } from "./types";
+import type { SessionSignals } from "./signals";
 import type { Countermeasure, ScenarioRequest, ScenarioRow } from "./whatif";
 
 async function twinJson<T>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
@@ -38,7 +39,11 @@ export const twinApi = {
   sessionScene: (id: string) => api.sessionScene(id) as unknown as Promise<Scene>,
   /** Static town objects as oriented boxes (export_town_objects.py); 404 when not exported. */
   objects: (town: string) => twinJson<TownObjects>("GET", `/scenes/${enc(town)}/objects`),
+  /** CARLA's traffic lights of a session on its replay time axis (empty lists when none were recorded) */
+  sessionSignals: (id: string) => twinJson<SessionSignals>("GET", `/sessions/${enc(id)}/signals`),
   sessions: () => api.sessions() as unknown as Promise<Session[]>,
+  /** live streams that sent a frame in the last 10 s (a live session is stored only once it has an event) */
+  liveSources: () => api.liveSources(),
   session: (id: string) => api.session(id) as unknown as Promise<Session>,
   trajectories: (id: string) => api.trajectories(id) as unknown as Promise<Trajectories>,
 

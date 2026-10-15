@@ -12,6 +12,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import microsim as ms  # noqa: E402
 import plan_catalogue as cat  # noqa: E402
+import plans  # noqa: E402
+import junctions  # noqa: E402  (ml/violation_engine, on the path once plans is imported)
 
 NO_BG = {"background": {"enabled": False}}
 
@@ -194,3 +196,75 @@ def test_every_prop_is_simulated_by_the_virtual_model():
 def test_a_signal_far_from_any_lane_is_reported_not_silently_dropped():
     r = run(plan(props=[item("s", "traffic_signal", x=900.0, y=900.0)], scenarios=[flow("fa", -280, 0, vph=300)]), duration_s=40)
     assert r["signals"] == [] and r["signals_unplaced"] == ["s"]
+
+
+def junction_scene():
+    """The same crossing with a junction: lanes run in to its edge at +-10 m, junction lanes (junction_id "1") cross it."""
+    def ln(lid, road, pts, nxt, junction=False):
+        d = {"id": lid, "road_id": road, "centreline": pts, "lane_type": "driving", "speed_limit_kmh": 50, "junction": junction, "next": nxt, "width_m": 3.5}
+        if junction:
+            d["junction_id"] = "1"
+        return d
+    sc = {"scene": "T", "zones": [], "lanes": [
+        ln("r1_s0_l-1", "1", [[-300, 0], [-150, 0], [-10, 0]], ["r3_s0_l-1"]),
+        ln("r3_s0_l-1", "3", [[-10, 0], [0, 0], [10, 0]], ["r5_s0_l-1"], junction=True),
+        ln("r5_s0_l-1", "5", [[10, 0], [150, 0], [300, 0]], []),
+        ln("r2_s0_l-1", "2", [[0, -300], [0, -150], [0, -10]], ["r4_s0_l-1"]),
+        ln("r4_s0_l-1", "4", [[0, -10], [0, 0], [0, 10]], ["r6_s0_l-1"], junction=True),
+        ln("r6_s0_l-1", "6", [[0, 10], [0, 150], [0, 300]], [])]}
+    junctions.build(sc)
+    return sc
+
+
+def test_junction_outline_and_approaches():
+    sc = junction_scene()
+    (j,) = sc["junctions"]
+    assert j["id"] == "J1" and sorted(j["lanes"]) == ["r3_s0_l-1", "r4_s0_l-1"]
+    by_road = {a["road_id"]: a for a in j["approaches"]}
+    assert set(by_road) == {"1", "2"}  # the exits are not approaches
+    a = by_road["1"]
+    assert a["lanes"] == ["r1_s0_l-1"] and abs(a["heading_deg"]) < 1 and (a["x"], a["y"]) == (-10, 0)
+    assert sorted(p[1] for p in a["stop_line"]) == [-1.75, 1.75] and all(p[0] == -10 for p in a["stop_line"])
+    assert junctions.junction_at(sc, 0, 0)["id"] == "J1" and junctions.junction_at(sc, 0, 8)["id"] == "J1"
+    assert junctions.junction_at(sc, 40, 40) is None and junctions.junction_at(sc, 8, 8) is None  # a corner off the lanes
+    info = plans.locate(sc, 1, 1)["junction_info"]
+    assert info["id"] == "J1" and len(info["approaches"]) == 2
+
+
+def test_signal_on_every_junction_approach_is_one_controller():
+    sc = junction_scene()
+    appr = sc["junctions"][0]["approaches"]
+    props = [{**item(f"s{k}", "traffic_signal", a["x"], a["y"], cycle_s=40, green_s=14), "target": {"junction_id": "J1", "approach_id": a["id"]}}
+             for k, a in enumerate(appr)]
+    r = run(plan(props=props, scenarios=TWO_FLOWS), scene=sc)
+    assert len(r["signals"]) == 1 and r["signals_unplaced"] == []
+    sig = r["signals"][0]
+    assert {h["group"] for h in sig["heads"]} == {"A", "B"} and len(sig["heads"]) == 2
+    assert all(abs(h["x"]) == 11 or abs(h["y"]) == 11 for h in sig["heads"])  # 1 m before the junction edge
+    ca, cb = crossings(r, "x"), crossings(r, "y")
+    assert len(ca) >= 5 and len(cb) >= 5
+    gx = next(h["group"] for h in sig["heads"] if h["y"] == 0)  # the group of the x road (the first approach by angle is A)
+    gy = "B" if gx == "A" else "A"
+    # the centre is 11 m past the stop line: a vehicle over the line at the end of its green is there ~2 s later, so the
+    # check is at 1 s before the crossing (it was then on the line or past it, in its own green or the clearance)
+    assert not [t for t in ca if phase_at(sig["timeline"], t - 1.0) == gy] and not [t for t in cb if phase_at(sig["timeline"], t - 1.0) == gx]
+    assert stopped_near(r, "x", -25.0, -9.0) > 20 and stopped_near(r, "y", -25.0, -9.0) > 20
+
+
+def test_stop_sign_on_one_approach_controls_only_that_road():
+    sc = junction_scene()
+    a = next(a for a in sc["junctions"][0]["approaches"] if a["road_id"] == "1")
+    st = {**item("st", "stop_sign", a["x"], a["y"]), "target": {"junction_id": "J1", "approach_id": a["id"]}}
+    r = run(plan(props=[st], scenarios=TWO_FLOWS), scene=sc, duration_s=90)
+    (sig,) = r["signals"]
+    assert sig["kind"] == "stop_sign" and len(sig["heads"]) == 1 and sig["heads"][0]["y"] == 0
+    assert stopped_near(r, "x", -25.0, -9.0) >= 12 and stopped_near(r, "y", -25.0, -9.0) == 0
+
+
+def test_signals_on_one_junction_are_not_flagged_as_uncoordinated():
+    sc = junction_scene()
+    props = [{**item(f"s{k}", "traffic_signal", a["x"], a["y"]), "target": {"junction_id": "J1", "approach_id": a["id"]}}
+             for k, a in enumerate(sc["junctions"][0]["approaches"])]
+    assert not [r for r in plans.risk_checks(plan(props=props), sc) if "coordinated" in r["message"]]
+    loose = [item("a", "traffic_signal", -10, 0), item("b", "traffic_signal", 0, -10)]  # two separate signals 14 m apart
+    assert [r for r in plans.risk_checks(plan(props=loose), sc) if "coordinated" in r["message"]]

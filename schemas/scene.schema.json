@@ -3,7 +3,7 @@
  "$id": "aerial-surveillance/scene.schema.json",
  "title": "Scene (lane map)",
  "description": "A lane map as ml/violation_engine/lane_map.py loads it: CARLA exports (export_lane_map.py) and real sites in metres (real_geometry.Site.scene). Road-feature fields are Build Plan M1 (road_features.py); all are optional, and a lane without them reads as an ordinary urban lane.",
- "version": "1.1",
+ "version": "1.2",
  "type": "object",
  "required": ["lanes"],
  "properties": {
@@ -14,7 +14,8 @@
   "note": {"type": "string"},
   "lanes": {"type": "array", "items": {"$ref": "#/$defs/lane"}},
   "zones": {"type": "array", "items": {"$ref": "#/$defs/zone"}},
-  "stop_lines": {"type": "array"}
+  "stop_lines": {"type": "array"},
+  "junctions": {"type": "array", "items": {"$ref": "#/$defs/junction"}}
  },
  "$defs": {
   "point": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
@@ -29,6 +30,7 @@
     "width_m": {"type": "number", "exclusiveMinimum": 0},
     "lane_type": {"enum": ["driving", "shoulder", "parking"]},
     "junction": {"type": "boolean"},
+    "junction_id": {"type": ["string", "null"]},
     "left_line": {"$ref": "#/$defs/line"},
     "right_line": {"$ref": "#/$defs/line"},
     "speed_limit_kmh": {"type": ["number", "null"]},
@@ -44,6 +46,29 @@
     "median_left": {"type": "boolean"},
     "median_gap_m": {"type": ["number", "null"], "minimum": 0},
     "restricted": {"enum": ["bus", "emergency", "restricted", null]}
+   },
+   "additionalProperties": true
+  },
+  "junction": {
+   "description": "ml/violation_engine/junctions.py: outline, member lanes and approaches (incoming lanes of one road and direction, a stop line across their ends).",
+   "type": "object",
+   "required": ["id", "centre", "polygon", "approaches"],
+   "properties": {
+    "id": {"type": "string"},
+    "centre": {"$ref": "#/$defs/point"},
+    "polygon": {"type": "array", "items": {"$ref": "#/$defs/point"}},
+    "lanes": {"type": "array", "items": {"type": "string"}},
+    "approaches": {"type": "array", "items": {
+     "type": "object",
+     "required": ["id", "lanes", "x", "y", "heading_deg", "stop_line"],
+     "properties": {
+      "id": {"type": "string"},
+      "road_id": {"type": ["string", "null"]},
+      "lanes": {"type": "array", "items": {"type": "string"}},
+      "x": {"type": "number"}, "y": {"type": "number"}, "heading_deg": {"type": "number"},
+      "stop_line": {"type": "array", "items": {"$ref": "#/$defs/point"}, "minItems": 2, "maxItems": 2}
+     }
+    }}
    },
    "additionalProperties": true
   },

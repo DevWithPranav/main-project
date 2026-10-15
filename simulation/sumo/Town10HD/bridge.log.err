@@ -1,0 +1,6 @@
+INFO: Starting new sumo server...
+D:\Main-Project\main-project\simulation\sumo\bridge\sumo_integration\sumo_simulation.py:297: FutureWarning: This search incorrectly ignores the root element, and will be fixed in a future version.  If you rely on the current behaviour, change it to './/net-file'
+  tag = tree.find('//net-file')
+WARNING: Landmark 956 is not linked to any traffic light
+WARNING: Landmark 955 is not linked to any traffic light
+Warning: Vehicle '0' performs emergency braking on lane '2_3' with decel=9.00, wished=4.50, severity=1.00, time=0.10.

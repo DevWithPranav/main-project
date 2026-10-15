@@ -30,6 +30,7 @@ const MANTINE_HEX: Record<string, string> = {
 };
 const hex = (c: string | undefined) => MANTINE_HEX[c ?? 'gray'] ?? c ?? '#868e96';
 const TRAIL_S = 3; // trail length, seconds (same as the twin)
+const SHOW_MAP_AND_EVENTS = false; // map + event feed hidden on this page (docs/Live_Page_Changes.md)
 
 function Health() {
   const q = useQuery({ queryKey: ['health'], queryFn: api.health, refetchInterval: 10_000 });
@@ -395,7 +396,23 @@ export default function LivePage() {
           );
         })}
       </Grid>
-      <Grid>
+      {/* Replay transport: lives outside the (hidden) map card so the videos can still be driven */}
+      {mode === 'replay' && (
+        <Card withBorder p="xs">
+          <Group wrap="nowrap">
+            <ActionIcon variant="light" onClick={() => setT(tMin)} aria-label="Back to start"><IconPlayerSkipBack size={16} /></ActionIcon>
+            <ActionIcon variant="filled" onClick={() => setPlaying((p) => !p)} disabled={!tMax} aria-label={playing ? 'Pause' : 'Play'}>
+              {playing ? <IconPlayerPause size={16} /> : <IconPlayerPlay size={16} />}
+            </ActionIcon>
+            <Slider style={{ flex: 1 }} min={tMin} max={Math.max(tMax, tMin + 1)} step={0.1} value={t} onChange={(v) => { setPlaying(false); setT(v); }} label={fmtSimTime} />
+            <Text size="sm" w={110} ta="right">{fmtSimTime(t)} / {fmtSimTime(tMax)}</Text>
+            <Select w={80} data={['1', '2', '4', '8']} value={speed} onChange={(v) => setSpeed(v ?? '1')} aria-label="Speed" />
+          </Group>
+          {traj.isFetching && <Text size="xs" c="dimmed">loading trajectories…</Text>}
+        </Card>
+      )}
+      {/* Map + events are hidden, not removed: set SHOW_MAP_AND_EVENTS to true to bring them back */}
+      <Grid hidden={!SHOW_MAP_AND_EVENTS}>
         <Grid.Col span={{ base: 12, md: 8 }}>
           <Card withBorder p="xs">
             <Group gap={6} mb="xs"><IconMap size={14} /><Text fw={600}>Map</Text></Group>
@@ -403,18 +420,6 @@ export default function LivePage() {
               <LaneMap lanes={scene.data?.lanes} zones={mapZones} zoneColor={(z) => zoneColor(z.type)} vehicles={vehicles} trails={trails} pins={pins}
                 onPinClick={(id) => setSelected(shownEvents.find((e) => e.event_id === id) ?? null)} height="62vh" />
             )}
-            {mode === 'replay' && (
-              <Group mt="xs" wrap="nowrap">
-                <ActionIcon variant="light" onClick={() => setT(tMin)} aria-label="Back to start"><IconPlayerSkipBack size={16} /></ActionIcon>
-                <ActionIcon variant="filled" onClick={() => setPlaying((p) => !p)} disabled={!tMax} aria-label={playing ? 'Pause' : 'Play'}>
-                  {playing ? <IconPlayerPause size={16} /> : <IconPlayerPlay size={16} />}
-                </ActionIcon>
-                <Slider style={{ flex: 1 }} min={tMin} max={Math.max(tMax, tMin + 1)} step={0.1} value={t} onChange={(v) => { setPlaying(false); setT(v); }} label={fmtSimTime} />
-                <Text size="sm" w={110} ta="right">{fmtSimTime(t)} / {fmtSimTime(tMax)}</Text>
-                <Select w={80} data={['1', '2', '4', '8']} value={speed} onChange={(v) => setSpeed(v ?? '1')} aria-label="Speed" />
-              </Group>
-            )}
-            {mode === 'replay' && traj.isFetching && <Text size="xs" c="dimmed">loading trajectories…</Text>}
           </Card>
         </Grid.Col>
         <Grid.Col span={{ base: 12, md: 4 }}>

@@ -43,6 +43,8 @@ DEV_USERS = {"officer": "OFFICER", "operator": "OPERATOR", "planner": "PLANNER",
 
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174").split(",")
 LIVE_TTL_MS = 2000      # API.md: vehicle state lives 2 s in Redis
+SIGNALS_TTL_S = 6 * 3600  # API.md: a live session's traffic lights and their latest states stay this long in Redis
+LIVE_RESULTS_DIR = Path(os.getenv("LIVE_RESULTS_DIR", REPO / "ml" / "data" / "results" / "live"))  # services/live/pipeline.py --out
 WS_CATCH_UP_MAX_S = 60.0       # PRD 29.3: a reconnecting socket is sent the events of the last 60 s
 WS_CATCH_UP_MAX_EVENTS = 500
 WS_MIN_PERIOD_S = 0.1   # API.md: vehicles pushed at <= 10 Hz per socket

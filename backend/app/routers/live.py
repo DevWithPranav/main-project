@@ -1,5 +1,5 @@
-"""Live vehicle state and camera frames in (service token), live event updates, and the live
-WebSocket and MJPEG video out."""
+"""Live vehicle state, traffic lights and camera frames in (service token), live event updates, and
+the live WebSocket and MJPEG video out."""
 
 import asyncio
 import time
@@ -43,6 +43,31 @@ async def live_state(states: list[VehicleState] = Body(...), _: Principal = Depe
         raise HTTPException(422, "empty list")
     n = await hub.publish_states([s.model_dump() for s in states])
     return {"received": n}
+
+
+class SignalsIn(BaseModel):
+    """Traffic lights of a CARLA source (services/live/pipeline.py): the light list (stop lines per light,
+    simulation/carla_scripts/record_flight.py format) when it first arrives, and state changes
+    [carla_frame, sim_time, opendrive id, state]."""
+    session_id: str
+    lights: list[dict] | None = None
+    changes: list[list] = []
+
+    def model_post_init(self, _):
+        for c in self.changes:
+            if len(c) != 4 or not isinstance(c[1], (int, float)) or not isinstance(c[3], str):
+                raise ValueError("each change is [carla_frame, sim_time, id, state]")
+        for li in self.lights or []:
+            if "id" not in li or not isinstance(li.get("stop_lines", []), list):
+                raise ValueError("each light needs id and stop_lines")
+
+
+@router.post("/live/signals")
+async def live_signals(body: SignalsIn = Body(...), _: Principal = Depends(require(service=True))):
+    if not body.lights and not body.changes:
+        raise HTTPException(422, "nothing to publish")
+    n = await hub.publish_signals(body.session_id, body.lights, body.changes)
+    return {"lights": len(body.lights or []), "changes": n}
 
 
 # columns an update replaces; review_* and created_at stay (a review of the provisional event is kept)

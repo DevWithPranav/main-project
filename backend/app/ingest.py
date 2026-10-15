@@ -115,6 +115,20 @@ def town_of(flight: str) -> str | None:
     return None
 
 
+def session_signals(flight: str, source: str | None) -> dict | None:
+    """Traffic-light timelines of a session (signals.py): the recorded flight's, else a live session's."""
+    from signals import flight_timelines, live_timelines  # the violation engine (engine_bridge puts it on the path)
+    if not flight or any(c in flight for c in "/\\") or flight.startswith("."):
+        return None
+    rec = config.RECORDINGS_DIR / flight
+    if source != "live" and (rec / "traffic_lights.json").is_file() and (rec / "frame_times.csv").is_file():
+        return flight_timelines(rec)
+    live = config.LIVE_RESULTS_DIR / flight / "traffic_lights.json"
+    if live.is_file():
+        return live_timelines(json.loads(live.read_text(encoding="utf-8")))
+    return None
+
+
 def load_events(vdir: Path) -> list[dict]:
     data = json.loads((vdir / "violations.json").read_text(encoding="utf-8"))
     if isinstance(data, dict):

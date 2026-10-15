@@ -145,6 +145,13 @@ export class PlanStore {
     return item;
   }
 
+  /** Several items of one kind in one undo step (a signal on every approach of a junction). */
+  addMany(group: PlanGroup, kind: PlanKind, at: { x: number; y: number; extra?: Partial<PlanItem> }[]): PlanItem[] {
+    const made = at.map(({ x, y, extra }) => ({ id: this.newId(), kind: kind.key, x: round(x), y: round(y), yaw_deg: 0, params: defaultsFor(kind), ...extra }) as PlanItem);
+    if (made.length) this.change((d) => d[GROUP_KEY[group]].push(...made));
+    return made;
+  }
+
   update(id: string, patch: Partial<PlanItem>) {
     this.change((d) => {
       const e = allItems(d).find((q) => q.item.id === id);

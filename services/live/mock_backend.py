@@ -35,7 +35,7 @@ def make_handler(log_path: Path, token: str):
             if self.path.startswith("/api/health"):
                 self._reply(200, {"db": "mock", "redis": "mock", "s3": "mock", **counts})
             else:
-                self._reply(404, {"detail": "mock backend: only /api/health, POST /api/events, /api/live/state"})
+                self._reply(404, {"detail": "mock backend: only /api/health, POST /api/events, /api/live/state, /api/live/signals"})
 
         def do_POST(self):
             now = time.time()
@@ -48,6 +48,13 @@ def make_handler(log_path: Path, token: str):
                     with open(log_path, "a") as f:
                         f.write(json.dumps({"recv_wall": now, "route": "events", "event": body}) + "\n")
                     return self._reply(201, body)
+                if self.path == "/api/live/signals":
+                    counts["signals"] = counts.get("signals", 0) + len((body or {}).get("changes", []))
+                    with open(log_path, "a") as f:
+                        f.write(json.dumps({"recv_wall": now, "route": "signals", "lights": len((body or {}).get("lights") or []),
+                                            "changes": (body or {}).get("changes", [])}) + "
+")
+                    return self._reply(200, {"changes": len((body or {}).get("changes", []))})
                 if self.path == "/api/live/state":
                     counts["states"] += 1
                     counts["vehicles"] += len(body or [])

@@ -18,7 +18,7 @@ from events import COUNTED_STATUS  # noqa: E402
 from kinematics import smooth_track  # noqa: E402
 from lane_map import SceneMap  # noqa: E402
 from rules import Engine  # noqa: E402
-from signals import SignalLog  # noqa: E402
+from signals import LiveSignalLog, SignalLog  # noqa: E402
 
 FPS = 27.0
 NOISE_M = 0.1
@@ -305,6 +305,24 @@ class RedLight(unittest.TestCase):
     def test_crossing_against_the_line_direction_ignored(self):
         westbound = track((lambda t: (40 - kmh(30) * t, 0), 10.0))
         self.assertEqual(self.run_red([(0, "Red")], westbound), [])
+
+    def test_live_log_by_sim_time_matches_the_frame_log(self):
+        """The live pipeline's LiveSignalLog (changes by sim time, frames as they are processed) flags the
+        same crossing as the recorded flight's SignalLog."""
+        rows = track((lambda t: (-40 + kmh(30) * t, 0), 10.0))
+        for changes, n in (([(0, "Green"), (self.cross_t - 1.5, "Red")], 1), ([(0, "Green")], 0),
+                           ([(0, "Green"), (self.cross_t + 0.5, "Red")], 0)):
+            live = LiveSignalLog()
+            for r in rows:
+                live.add_frame(r["frame"], r["time_s"])
+            for t, st in changes:
+                live.add_change("7", t, st)
+            sc = SceneMap({"scene": "test", "lanes": BASE_LANES, "zones": [], "stop_lines": self.lines})
+            evs = [e for e in Engine(sc, signals=live).run(rows) if e.type == "red_light"]
+            self.assertEqual(len(evs), n)
+            if n:
+                self.assertEqual(evs[0].status, "flagged")
+                self.assertAlmostEqual(evs[0].value["red_for_s"], 1.5, delta=0.15)
 
     def test_right_at_the_change_needs_review(self):
         evs = self.run_red([(0, "Green"), (self.cross_t - 0.1, "Red")])

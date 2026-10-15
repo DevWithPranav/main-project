@@ -28,6 +28,7 @@ import {
   Matrix4,
   PerInstanceColorAppearance,
   PointPrimitiveCollection,
+  Polyline,
   PolylineCollection,
   Primitive,
   PrimitiveType,
@@ -36,12 +37,12 @@ import {
   Transforms,
   Viewer,
 } from "cesium";
-import type { Role, ZoneFeature, ZoneType } from "../api/types";
+import type { JunctionInfo, Role, ZoneFeature, ZoneType } from "../api/types";
 import { can } from "../lib/permissions";
 import { openRing, polygonProblem, zoneColor, ZONE_TYPES } from "../lib/zones";
 import { profileSummaries, twinApi as api, unwrapProfile } from "./api";
 import { DEFAULT_ANCHOR, Frame, parseAnchor } from "./coords";
-import { buildLaneMeshes, crosswalkZones, emptyMesh, HeightIndex, laneCategory, mergeInto, polygonFan, type Mesh } from "./laneGeometry";
+import { buildLaneMeshes, crosswalkZones, emptyMesh, HeightIndex, junctionMeshes, laneCategory, mergeInto, polygonFan, type Mesh } from "./laneGeometry";
 import { gridHotspots, isAnomaly, LiveTrails, pinStyle, problemSections } from "./layers";
 import { describeItem, FALLBACK_ATTRIBUTES, laneValue, OVERRIDE_KEYS, type AttrValue, type OverrideKey } from "../lib/roadEdits";
 import type { RoadAttribute } from "../api/types";
@@ -49,7 +50,12 @@ import { buildProfile, overrideTarget, validateNote, validateOverride, validateP
 import { eventTime, indexEventsByTrack, parseTrajectories, sampleTrack, statesAt, timeRange, type EventIndex, type Track } from "./replay";
 import type { Lane, LaneOverride, Scene, TwinEvent, VehicleState, Zone } from "./types";
 import { localTime } from "./whatif";
+import { countsText, liveTime, signalColor, SignalStore, type SignalLight } from "./signals";
+import { headColour, phaseAt, plannedTimeline, planSignals, SIGNAL_CSS, stateText, type PlanSignal } from "./planSignals";
 import { PlanBuilder, type BuilderHost, type DrawnItem } from "./builder/PlanBuilder";
+import { allItems } from "./builder/planStore";
+
+const allPlanItems = (doc: Parameters<typeof allItems>[0]) => allItems(doc).map((e) => e.item);
 
 export interface TwinOptions {
   username: string;
@@ -90,6 +96,9 @@ const esc = (s: unknown) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&
 
 const zoneTypeOptions = (Object.keys(ZONE_TYPES) as ZoneType[])
   .map((t) => `<option value="${t}">${esc(ZONE_TYPES[t].label)}</option>`).join("");
+
+/** The "Selected lane" editor in the Planner panel (road attributes + "Add lane change") is hidden, not removed (docs/Live_Page_Changes.md). */
+const SHOW_LANE_EDIT = false;
 
 /** One row per road attribute in the planner panel (`attr_<key>`), same attributes as Configuration > Road configuration. */
 function attrRowsHtml(): string {
@@ -140,6 +149,8 @@ const PANEL_HTML = `
   <div class="row">
     <label><input type="checkbox" id="hotspots" checked /> Hotspots</label>
     <label><input type="checkbox" id="objects" checked /> Buildings &amp; objects</label>
+    <label title="Hide the trees and bushes only (buildings, poles, walls and the rest stay)"><input type="checkbox" id="trees" checked /> Trees</label>
+    <label title="CARLA's own traffic lights, coloured by their state at the time of the vehicles on screen (recorded sessions and live CARLA streams)"><input type="checkbox" id="lightsOn" checked /> Traffic lights <span id="lightsNote" class="muted"></span></label>
   </div>
   <div class="row"><label><input type="checkbox" id="zonesOn" checked /> Zones</label><span id="zoneCount" class="muted"></span></div>
   <label>Pins <select id="pinKind"><option value="violation" selected>violations</option><option value="all">violations &amp; road surface</option><option value="anomaly">road surface</option><option value="none">none</option></select></label>
@@ -210,6 +221,26 @@ export class TwinView {
   private roadPrims: Primitive[] = [];
   private lanePrim: Primitive | null = null;
   private objectPrim: Primitive | null = null;
+  /** trees (Vegetation) in their own primitive, so the "Trees" switch hides them alone */
+  private treePrim: Primitive | null = null;
+  private junctionsById = new Map<string, JunctionInfo>();
+  private selectedJunction: JunctionInfo | null = null;
+  /** junction outline + approach stop lines: the selected junction, or the builder's (placed approaches green) */
+  private readonly junctionLines: PolylineCollection;
+  private readonly junctionLabels: LabelCollection;
+  private builderJunction: { j: JunctionInfo; placed: Set<string> } | null = null;
+  /** CARLA's traffic lights: the replayed session's, and per live session what the WebSocket sent */
+  private sigReplay: SignalStore | null = null;
+  private readonly sigLive = new Map<string, SignalStore>();
+  private readonly signalLines: PolylineCollection;
+  private sigPolys = new Map<string, Polyline[]>();
+  private sigShown = new Map<string, string>();
+  private sigDrawn: { store: SignalStore; version: number } | null = null;
+  /** the plan's signals / stop signs (scenario builder) with their state: simulated, or the planned timing */
+  private planSigs: PlanSignal[] = [];
+  private readonly planSignalLines: PolylineCollection;
+  private readonly planSignalLabels: LabelCollection;
+  private planSigDrawn = 0;
 
   private disposed = false;
   private raf = 0;
@@ -247,6 +278,8 @@ export class TwinView {
   private lastDrawn = 0;
   private last = 0;
   private sessionToken = 0; // bumps on every loadSession: a slower older load must not win
+  /** live streams with no stored session yet (no event so far): watchable in Live mode only */
+  private liveOnly = new Set<string>();
 
   constructor(root: HTMLElement, opts: TwinOptions) {
     this.root = root;
@@ -279,10 +312,20 @@ export class TwinView {
     this.planLines = sc.primitives.add(new PolylineCollection());
     this.planPoints = sc.primitives.add(new PointPrimitiveCollection());
     this.planLabels = sc.primitives.add(new LabelCollection());
+    this.junctionLines = sc.primitives.add(new PolylineCollection());
+    this.signalLines = sc.primitives.add(new PolylineCollection());
+    this.planSignalLines = sc.primitives.add(new PolylineCollection());
+    this.planSignalLabels = sc.primitives.add(new LabelCollection());
+    this.junctionLabels = sc.primitives.add(new LabelCollection());
     this.handler = new ScreenSpaceEventHandler(sc.canvas);
     const host: BuilderHost = {
       root, role: opts.role, town: () => this.scene?.scene ?? "", sessionId: () => this.val("session"),
       flyTo: (x, y) => this.flyTo(x, y), draw: (items, anchor) => this.drawPlan(items, anchor),
+      carlaLightsAt: (j) => this.lightsAtJunction(j).length,
+      showJunction: (j, placed) => {
+        this.builderJunction = j ? { j, placed: new Set(placed) } : null;
+        this.drawJunctionHighlight();
+      },
       player: {
         toggle: () => this.setPlaying(!this.playing),
         reset: () => { this.t = this.tMin; this.render(); },
@@ -395,11 +438,25 @@ export class TwinView {
       if (!this.heights.levels(cx, cy, 15).length) continue;
       cross = mergeInto(cross, polygonFan(zn.polygon, this.z(cx, cy), 0.07)); // polygonFan converts CARLA -> ENU itself
     }
+    // junctions: one surface each over the overlapping junction-lane ribbons, its outline and the approaches' stop lines
+    this.junctionsById = new Map((sc.junctions ?? []).map((j) => [j.id, j]));
+    this.selectedJunction = null;
+    const junctionInst: GeometryInstance[] = [];
+    let jEdge = emptyMesh(), jStops = emptyMesh();
+    for (const j of this.junctionsById.values()) {
+      const jm = junctionMeshes(j, this.z(j.centre[0], j.centre[1]));
+      const i = this.inst({ kind: "junction", id: j.id }, jm.surface, CATEGORY_COLOR.driving);
+      if (i) junctionInst.push(i);
+      jEdge = mergeInto(jEdge, jm.edge);
+      jStops = mergeInto(jStops, jm.stops);
+    }
     this.lanePrim = laneInst.length ? this.prim(laneInst) : null;
     if (this.lanePrim) this.roadPrims.push(this.lanePrim);
+    if (junctionInst.length) this.roadPrims.push(this.prim(junctionInst));
     const extra = [
       this.inst("marks-white", marks.white, "#f1f3f5"), this.inst("marks-yellow", marks.yellow, "#fcc419"), this.inst("curb", marks.curb, "#adb5bd"),
       this.inst("grass", marks.grass, "#69db7c"), this.inst("median", median, "#5c940d"), this.inst("piers", piers, "#868e96"), this.inst("crosswalks", cross, "#f8f9fa"),
+      this.inst("junction-edges", jEdge, "#ced4da"), this.inst("stop-lines", jStops, "#f8f9fa"),
     ].filter((x): x is GeometryInstance => !!x);
     if (extra.length) this.roadPrims.push(this.prim(extra));
     // frame the town
@@ -447,8 +504,7 @@ export class TwinView {
   // ------------------------------------------------------------------ town objects (buildings, trees, ...)
 
   private async buildObjects(town: string) {
-    if (this.objectPrim) this.viewer.scene.primitives.remove(this.objectPrim);
-    this.objectPrim = null;
+    this.removeObjects();
     let doc;
     try {
       doc = await api.objects(town);
@@ -457,9 +513,12 @@ export class TwinView {
     }
     if (this.disposed || this.scene?.scene !== town) return;
     const instances: GeometryInstance[] = [];
+    const trees: GeometryInstance[] = [];
     const dark = !!this.opts.dark;
     for (const o of doc.objects) {
       const label = doc.labels[o.l];
+      // the light housings (amber boxes, no state): the twin draws CARLA's lights as stop lines coloured by state instead
+      if (label === "TrafficLight") continue;
       // CARLA reports negative extents for mirrored meshes (seen: -12.1 m in Town03)
       const [ex, ey, ez] = o.e.map((v) => Math.max(Math.abs(v), 0.05));
       // a curved linear structure (the Town03 rail loop, long walls) is one mesh whose box spans
@@ -475,11 +534,27 @@ export class TwinView {
           : BoxGeometry.fromDimensions({ dimensions: new Cartesian3(2 * ex, 2 * ey, 2 * ez), vertexFormat: PerInstanceColorAppearance.VERTEX_FORMAT });
       let c = Color.fromCssColorString(OBJECT_COLOR[label] ?? "#868e96");
       if (dark && label === "Buildings") c = Color.fromCssColorString("#7d828a");
-      instances.push(new GeometryInstance({ geometry, modelMatrix: model, id: { kind: "object", label, o }, attributes: { color: ColorGeometryInstanceAttribute.fromColor(c) } }));
+      (label === "Vegetation" ? trees : instances).push(new GeometryInstance({ geometry, modelMatrix: model, id: { kind: "object", label, o }, attributes: { color: ColorGeometryInstanceAttribute.fromColor(c) } }));
     }
-    const p: Primitive = this.viewer.scene.primitives.add(new Primitive({ geometryInstances: instances, appearance: new PerInstanceColorAppearance({ translucent: false }) }));
-    p.show = this.checked("objects");
-    this.objectPrim = p;
+    const add = (list: GeometryInstance[]) => list.length
+      ? this.viewer.scene.primitives.add(new Primitive({ geometryInstances: list, appearance: new PerInstanceColorAppearance({ translucent: false }) })) as Primitive
+      : null;
+    this.objectPrim = add(instances);
+    this.treePrim = add(trees);
+    this.showObjects();
+  }
+
+  private removeObjects() {
+    for (const p of [this.objectPrim, this.treePrim]) if (p) this.viewer.scene.primitives.remove(p);
+    this.objectPrim = this.treePrim = null;
+  }
+
+  /** "Buildings & objects" shows the town objects; "Trees" hides or shows the trees within them. */
+  private showObjects() {
+    const on = this.checked("objects");
+    if (this.objectPrim) this.objectPrim.show = on;
+    if (this.treePrim) this.treePrim.show = on && this.checked("trees");
+    (this.$("trees") as HTMLInputElement).disabled = !on;
   }
 
   // ------------------------------------------------------------------ zones (/api/zones)
@@ -637,6 +712,115 @@ export class TwinView {
       this.drawVehicles(this.liveVehicles);
       this.drawPins(null);
     }
+    this.drawSignals();
+    this.drawPlanSignals();
+  }
+
+  // ------------------------------------------------------------------ the plan's signals (scenario builder)
+
+  /** Each placed signal's stop lines coloured by its state now, and a label (state, seconds left, simulated / planned).
+   * Simulated: the Custom traffic run (looped on the replay clock, as its vehicles). Planned: the signal's own timing, on
+   * the replay clock when a session is loaded, else on the wall clock (so it cycles while nothing plays). */
+  private drawPlanSignals() {
+    this.planSignalLines.removeAll();
+    this.planSignalLabels.removeAll();
+    this.planSigDrawn = performance.now();
+    const show = this.builder?.isOpen || this.checked("custom");
+    if (!show || !this.planSigs.length) return;
+    const c = this.custom && this.checked("custom") ? this.custom : null;
+    const simT = c ? (((this.t - this.tMin) % c.dur) + c.dur) % c.dur : null;
+    const planT = this.tracks.length ? this.t - this.tMin : performance.now() / 1000;
+    for (const ps of this.planSigs) {
+      const sim = c?.signals.find((sg) => sg.id === `sig_${ps.id}`);
+      let phase: string, prev: string | null, left: number | null, how: string;
+      if (sim) {
+        ({ phase, prev, left } = phaseAt(sim.timeline as [number, string][], simT!));
+        how = "simulated";
+      } else if (c && ps.kind === "traffic_signal") {
+        phase = "ALL"; prev = null; left = null;
+        how = "not in the simulation";
+      } else {
+        const { tl, period } = plannedTimeline(ps.cycle, ps.green);
+        ({ phase, prev, left } = ps.kind === "stop_sign" ? { phase: "ALL", prev: null, left: null } : phaseAt(tl, planT, period));
+        how = ps.adaptive ? "planned, adaptive" : "planned";
+      }
+      const z = this.z(ps.x, ps.y);
+      for (const h of ps.heads) {
+        const col = Color.fromCssColorString(SIGNAL_CSS[headColour(ps.kind, h.group, phase, prev)]);
+        const zz = this.z(h.x, h.y) + 0.5;
+        this.planSignalLines.add({ positions: h.bar.map(([x, y]) => this.frame.carla(x, y, zz)), width: 8, material: Material.fromType("Color", { color: col }) });
+      }
+      const text = `${ps.kind === "stop_sign" ? "Stop sign" : ps.junction ? `Signal ${ps.junction}` : "Signal"}: ${stateText(ps.kind, phase, prev, left, new Set(ps.heads.map((h) => h.group)))} (${how})`;
+      this.planSignalLabels.add({ position: this.frame.carla(ps.x, ps.y, z + 4), text, font: "bold 12px sans-serif", disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        style: LabelStyle.FILL_AND_OUTLINE, outlineWidth: 3, outlineColor: Color.BLACK, fillColor: Color.WHITE, pixelOffset: new Cartesian2(0, -18) });
+    }
+  }
+
+  // ------------------------------------------------------------------ CARLA traffic lights
+
+  /** The lights shown now: the replayed session's, or live the selected session's (else the one that sent last). */
+  private signalStore(): SignalStore | null {
+    if (this.mode === "replay") return this.sigReplay;
+    const sid = this.val("session");
+    if (sid && this.sigLive.has(sid)) return this.sigLive.get(sid)!;
+    let best: SignalStore | null = null;
+    for (const s of this.sigLive.values()) if (!best || s.latestT > best.latestT) best = s;
+    return best;
+  }
+
+  /** Stop lines coloured by each light's state at the time on screen (replay clock, or the live vehicles' sim time). */
+  private drawSignals() {
+    const store = this.signalStore();
+    const on = this.checked("lightsOn");
+    this.signalLines.show = on;
+    if (!store) {
+      if (this.sigDrawn) {
+        this.signalLines.removeAll();
+        this.sigPolys.clear();
+        this.sigShown.clear();
+        this.sigDrawn = null;
+      }
+      this.$("lightsNote").textContent = "";
+      return;
+    }
+    if (this.sigDrawn?.store !== store || this.sigDrawn.version !== store.version) {
+      this.signalLines.removeAll();
+      this.sigPolys.clear();
+      this.sigShown.clear();
+      for (const l of store.lights.values()) {
+        const polys: Polyline[] = [];
+        for (const sl of l.stop_lines) {
+          if (sl.line.length < 2) continue;
+          const [a, b] = [sl.line[0], sl.line[sl.line.length - 1]];
+          const z = this.z((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) + 0.45;
+          polys.push(this.signalLines.add({ positions: [this.frame.carla(a[0], a[1], z), this.frame.carla(b[0], b[1], z)], width: 6,
+            material: Material.fromType("Color", { color: Color.fromCssColorString(signalColor(null)) }), id: { kind: "light", light: l } }));
+        }
+        this.sigPolys.set(l.id, polys);
+      }
+      this.sigDrawn = { store, version: store.version };
+    }
+    const t = this.mode === "replay" ? this.t : liveTime(this.liveVehicles);
+    for (const [id, polys] of this.sigPolys) {
+      const st = store.stateAt(id, t) ?? "none";
+      if (this.sigShown.get(id) === st) continue;
+      this.sigShown.set(id, st);
+      const c = Color.fromCssColorString(signalColor(st));
+      for (const pl of polys) pl.material = Material.fromType("Color", { color: c });
+    }
+    this.$("lightsNote").textContent = `(${countsText(store.lights.size, store.countsAt(t))})`;
+  }
+
+  /** CARLA lights whose stop lines are at this junction (inside its outline's reach). */
+  private lightsAtJunction(j: JunctionInfo): SignalLight[] {
+    const store = this.signalStore();
+    if (!store) return [];
+    const reach = Math.max(...j.polygon.map(([x, y]) => Math.hypot(x - j.centre[0], y - j.centre[1])), 10) + 6;
+    return store.lightsNear(j.centre[0], j.centre[1], reach);
+  }
+
+  private signalTime(): number | null {
+    return this.mode === "replay" ? this.t : liveTime(this.liveVehicles);
   }
 
   private tick = (now: number) => {
@@ -645,6 +829,8 @@ export class TwinView {
       this.t = Math.min(this.tMax, this.t + ((now - this.last) / 1000) * Number(this.val("speed")));
       if (this.t >= this.tMax) this.setPlaying(false);
       this.render();
+    } else if (this.planSigs.length && now - this.planSigDrawn > 250) {
+      this.drawPlanSignals(); // planned timing on the wall clock: the colours change while nothing plays
     }
     this.last = now;
     this.raf = requestAnimationFrame(this.tick);
@@ -666,12 +852,46 @@ export class TwinView {
     void this.loadZones();
   }
 
+  /** Live streams that are not stored sessions yet go to the top of the picker as "● live: <id>". */
+  private async refreshLiveSources(stored?: string[]) {
+    const sel = this.$("session") as HTMLSelectElement;
+    const have = new Set(stored ?? [...sel.options].filter((o) => !o.dataset.live).map((o) => o.value));
+    const live = await api.liveSources().catch(() => []);
+    if (this.disposed) return;
+    const cur = sel.value;
+    sel.querySelectorAll("option[data-live]").forEach((o) => o.remove());
+    this.liveOnly = new Set(live.map((l) => l.session_id).filter((id) => !have.has(id)));
+    for (const id of [...this.liveOnly].reverse()) {
+      const o = document.createElement("option");
+      o.value = id;
+      o.dataset.live = "1";
+      o.textContent = `● live: ${id}`;
+      sel.prepend(o);
+    }
+    if (cur) sel.value = cur;
+  }
+
   /** Shows a session (the panel picker, or the page when ?session= changes). */
   async loadSession(id: string, t: number | null = null) {
     const my = ++this.sessionToken;
     if (t != null) this.pendingSeek = t;
     const stale = () => this.disposed || my !== this.sessionToken;
     (this.$("session") as HTMLSelectElement).value = id;
+    if (this.liveOnly.has(id)) {
+      // a live stream with no stored session yet: nothing to replay, watch it live on the picked town
+      if (!this.scene) await this.loadTown(this.opts.town ?? this.val("town"));
+      if (stale()) return;
+      this.events = [];
+      this.evIdx = indexEventsByTrack([]);
+      this.tracks = [];
+      this.tMin = this.tMax = this.t = 0;
+      this.sigReplay = null;
+      this.refreshEventLayers();
+      if (this.mode !== "live") this.setMode("live");
+      else this.connectLive(id);
+      this.render();
+      return;
+    }
     const s = await api.session(id);
     if (stale()) return;
     const town = s.town ?? s.scene ?? null;
@@ -681,8 +901,7 @@ export class TwinView {
       if (stale()) return;
       this.scene = sc;
       this.buildRoads(sc);
-      if (this.objectPrim) this.viewer.scene.primitives.remove(this.objectPrim);
-      this.objectPrim = null;
+      this.removeObjects();
       void this.loadZones();
     } else if (town && town !== this.scene?.scene) {
       (this.$("town") as HTMLSelectElement).value = town;
@@ -696,7 +915,9 @@ export class TwinView {
     if (stale()) return;
     const events = await api.events(id);
     const tracks = parseTrajectories(await api.trajectories(id));
+    const sig = await api.sessionSignals(id).catch(() => null); // an older backend has no such route
     if (stale()) return;
+    this.sigReplay = SignalStore.fromSession(sig);
     this.events = events;
     this.evIdx = indexEventsByTrack(events);
     this.tracks = tracks;
@@ -727,6 +948,7 @@ export class TwinView {
     this.ws = null;
     this.liveVehicles = [];
     this.liveTrails.clear();
+    this.sigLive.clear(); // the new socket sends every light's current state first
     if (this.mode !== "live" || this.disposed) return;
     this.$("liveStatus").textContent = "connecting…";
     const ws = new WebSocket(api.liveUrl(id));
@@ -746,6 +968,12 @@ export class TwinView {
       if (msg.type === "vehicles") {
         this.liveVehicles = msg.items;
         this.liveTrails.update(this.liveVehicles);
+      } else if (msg.type === "signals" && msg.session_id) {
+        let st = this.sigLive.get(msg.session_id);
+        if (!st || msg.snapshot) this.sigLive.set(msg.session_id, (st = st && !msg.snapshot ? st : new SignalStore()));
+        if (msg.lights?.length) st.setLights(msg.lights);
+        for (const [t, lid, state] of msg.changes ?? []) st.add(t, lid, state);
+        st.trim();
       } else if (msg.type === "event" && !this.events.some((e) => e.event_id === msg.event.event_id)) {
         this.events.push(msg.event);
         this.evIdx = indexEventsByTrack(this.events);
@@ -757,6 +985,7 @@ export class TwinView {
 
   private setMode(m: "replay" | "live") {
     this.mode = m;
+    if (m === "live") void this.refreshLiveSources(); // streams started after the page loaded
     this.root.querySelectorAll<HTMLInputElement>("input[name=tw-mode]").forEach((r) => (r.checked = r.value === m));
     this.setPlaying(false);
     this.connectLive(this.val("session") || null);
@@ -775,6 +1004,8 @@ export class TwinView {
 
   private select(picked: unknown) {
     this.selectedLane = null;
+    const prevJunction = this.selectedJunction;
+    this.selectedJunction = null;
     const prevZone = this.selectedZone;
     this.selectedZone = null;
     const p = picked as { id?: unknown } | undefined;
@@ -787,8 +1018,8 @@ export class TwinView {
     if (typeof id === "string" && this.lanesById.has(id)) {
       const l = this.lanesById.get(id)!;
       this.selectedLane = l;
-      this.$("laneEdit").hidden = false;
-      this.$("plannerHint").hidden = true;
+      this.$("laneEdit").hidden = !SHOW_LANE_EDIT;
+      this.$("plannerHint").hidden = true; // selecting a road shows nothing in the Planner while the lane editor is hidden
       const { centreline: _c, z: _z, next: _n, ...rest } = l;
       box.innerHTML = this.kv(rest as Record<string, unknown>);
       for (const a of FALLBACK_ATTRIBUTES) setAttrControl(this.$(`attr_${a.key}`), a, laneValue(l as never, a.key as OverrideKey));
@@ -805,6 +1036,24 @@ export class TwinView {
       } else {
         this.$("plannerHintText").textContent = "This zone comes from the map file and is read-only. Draw a new zone below to add your own.";
       }
+    } else if (id && typeof id === "object" && id.kind === "junction") {
+      const j = this.junctionsById.get((id as unknown as { id: string }).id);
+      if (j) {
+        this.selectedJunction = j;
+        const canPlan = this.opts.role === "PLANNER" || this.opts.role === "ADMIN";
+        const lights = this.lightsAtJunction(j), store = this.signalStore(), tt = this.signalTime();
+        box.innerHTML = this.kv({ junction: j.id, approaches: j.approaches.length, roads_in: j.approaches.map((a) => a.road_id).join(", "),
+          centre: `${j.centre[0].toFixed(1)}, ${j.centre[1].toFixed(1)}`,
+          carla_lights: lights.length && store ? `${lights.length}: ${lights.map((l) => `${l.id} ${(store.stateAt(l.id, tt) ?? "?").toLowerCase()}`).join(", ")}` : undefined }) +
+          `<button class="mini" data-jadd="${esc(j.id)}" ${canPlan ? "" : "disabled title='PLANNER role needed'"}>Add a signal / stop sign here</button>`;
+        // with the builder open, picking a junction moves the builder there (its signals go on the approaches)
+        if (this.builder.isOpen && canPlan) void this.guard(this.builder.openAt(j.centre[0], j.centre[1]));
+      }
+    } else if (id && typeof id === "object" && id.kind === "light") {
+      const l = (id as unknown as { light: SignalLight }).light;
+      const store = this.signalStore();
+      box.innerHTML = this.kv({ "traffic light (CARLA)": l.id, state: store?.stateAt(l.id, this.signalTime()) ?? "unknown",
+        stop_lines: l.stop_lines.length, actor: l.actor_id });
     } else if (id && typeof id === "object" && id.kind === "vehicle" && id.v) {
       box.innerHTML = this.kv({ track: id.v.track_id, state: id.v.state, speed_kmh: id.v.speed_kmh?.toFixed(1), heading: id.v.heading_deg?.toFixed(0) });
     } else if (id && typeof id === "object" && id.kind === "object") {
@@ -827,7 +1076,33 @@ export class TwinView {
       box.textContent = "Click a lane, vehicle, pin or zone.";
     }
     if (prevZone !== this.selectedZone) this.drawZones();
+    if (prevJunction !== this.selectedJunction) this.drawJunctionHighlight();
     this.applyLaneColors();
+  }
+
+  /** The builder's junction (stop lines of approaches with a signal / stop sign green, the others cyan, labelled), else the
+   * selected junction's outline. */
+  private drawJunctionHighlight() {
+    this.junctionLines.removeAll();
+    this.junctionLabels.removeAll();
+    const bj = this.builderJunction;
+    const j = bj?.j ?? this.selectedJunction;
+    if (!j) return;
+    const z = this.z(j.centre[0], j.centre[1]) + 0.35;
+    const cyan = Color.fromCssColorString("#15aabf"), green = Color.fromCssColorString("#40c057");
+    if (j.polygon.length >= 3) {
+      const ring = [...j.polygon, j.polygon[0]].map(([x, y]) => this.frame.carla(x, y, z));
+      this.junctionLines.add({ positions: ring, width: 3, material: Material.fromType("Color", { color: cyan }) });
+    }
+    if (!bj) return;
+    for (const a of j.approaches) {
+      const on = bj.placed.has(a.id);
+      this.junctionLines.add({ positions: a.stop_line.map(([x, y]) => this.frame.carla(x, y, z)), width: 7,
+        material: Material.fromType("Color", { color: on ? green : cyan }) });
+      this.junctionLabels.add({ position: this.frame.carla(a.x, a.y, z + 1), text: `${a.id.split("_").pop()}${on ? " ✓" : ""}`,
+        font: "bold 12px sans-serif", disableDepthTestDistance: Number.POSITIVE_INFINITY, style: LabelStyle.FILL_AND_OUTLINE,
+        outlineWidth: 3, outlineColor: Color.BLACK, fillColor: on ? green : Color.WHITE, pixelOffset: new Cartesian2(0, -12) });
+    }
   }
 
   private async showZoneActions(f: ZoneFeature) {
@@ -1101,12 +1376,12 @@ export class TwinView {
     const c = this.custom;
     if (!c || !this.checked("custom")) return;
     const tt = c.t0 + ((((this.t - this.tMin) % c.dur) + c.dur) % c.dur);
-    for (const sg of c.signals) { // signal heads: green / red by the simulated phase, stop signs orange, bus stops purple, crossings red while people cross
+    for (const sg of c.signals) { // crossings red while people cross, bus stops purple (signals and stop signs: drawPlanSignals)
+      if (sg.kind === "traffic_signal" || sg.kind === "stop_sign") continue;
       let ph = sg.timeline[0]?.[1] ?? "ALL";
       for (const [ts, p] of sg.timeline) if (ts <= tt - c.t0) ph = p;
       for (const h of sg.heads) {
-        const colour = sg.kind === "stop_sign" ? "#fd7e14" : sg.kind === "bus_stop" ? "#845ef7"
-          : sg.kind === "crossing" ? (ph === "R" ? "#fa5252" : "#ced4da") : (ph === "ALL" || ph === h.group ? "#40c057" : "#fa5252");
+        const colour = sg.kind === "bus_stop" ? "#845ef7" : ph === "R" ? "#fa5252" : "#ced4da";
         this.customPoints.add({ position: this.frame.carla(h.x, h.y, this.z(h.x, h.y) + 2.4), pixelSize: 13, color: Color.fromCssColorString(colour), outlineColor: Color.BLACK, outlineWidth: 2,
           disableDepthTestDistance: Number.POSITIVE_INFINITY });
       }
@@ -1171,6 +1446,8 @@ export class TwinView {
 
   /** The builder's items on the map: a marker + label per item, footprints for area items, a cross at the builder location. */
   private drawPlan(items: DrawnItem[], anchor: [number, number] | null) {
+    this.planSigs = planSignals(this.builder ? allPlanItems(this.builder.store.doc) : [], this.scene);
+    this.drawPlanSignals();
     this.planPoints.removeAll();
     this.planLabels.removeAll();
     this.planLines.removeAll();
@@ -1208,12 +1485,26 @@ export class TwinView {
         return;
       }
       this.closeContextMenu();
+      if (this.builder.isPicking) {
+        // the builder waits for an approach to be picked on the map: the nearest approach of its junction gets the item
+        const p = viewer.camera.pickEllipsoid(ev.position);
+        if (p) {
+          const [x, y] = this.frame.toCarla(p);
+          this.builder.pickAt(x, y);
+        }
+        return;
+      }
       this.select(viewer.scene.pick(ev.position));
     }, ScreenSpaceEventType.LEFT_CLICK);
     handler.setInputAction((ev: { position: Cartesian2 }) => {
       if (this.drawing || this.redrawZone) return void this.guard(this.finishDrawing());
       this.openContextMenu(ev.position);
     }, ScreenSpaceEventType.RIGHT_CLICK);
+    this.$("selected").addEventListener("click", (e) => {
+      const jid = (e.target as HTMLElement).closest<HTMLElement>("[data-jadd]")?.dataset.jadd;
+      const j = jid ? this.junctionsById.get(jid) : undefined;
+      if (j) void this.guard(this.builder.openAt(j.centre[0], j.centre[1]));
+    });
     this.root.addEventListener("pointerdown", (e) => { if (this.ctxMenu && !this.ctxMenu.contains(e.target as Node)) this.closeContextMenu(); });
     window.addEventListener("keydown", this.onKey);
 
@@ -1254,6 +1545,7 @@ export class TwinView {
     });
     on("hotspots", "change", () => this.drawHotspots());
     on("zonesOn", "change", () => this.drawZones());
+    on("lightsOn", "change", () => this.drawSignals());
     on("pinKind", "change", () => this.render());
     on("hotList", "click", (e) => {
       const li = (e.target as HTMLElement).closest("li");
@@ -1268,9 +1560,8 @@ export class TwinView {
     });
     on("panelToggle", "click", () => this.root.classList.toggle("collapsed"));
     on("plannerToggle", "click", () => this.root.classList.toggle("planner-collapsed"));
-    on("objects", "change", () => {
-      if (this.objectPrim) this.objectPrim.show = this.checked("objects");
-    });
+    on("objects", "change", () => this.showObjects());
+    on("trees", "change", () => this.showObjects());
     on("session", "change", async (e) => {
       const id = (e.target as HTMLSelectElement).value;
       this.opts.onSession?.(id);
@@ -1299,6 +1590,7 @@ export class TwinView {
     const sessions = await api.sessions();
     if (this.disposed) return;
     this.$("session").innerHTML = sessions.map((s) => `<option value="${esc(s.session_id)}">${esc(s.name ?? s.session_id)}</option>`).join("");
+    await this.refreshLiveSources(sessions.map((s) => s.session_id));
     const want = o.session ?? sessions[0]?.session_id;
     const town = o.town ?? towns[0];
     if (o.town && towns.includes(o.town)) (this.$("town") as HTMLSelectElement).value = o.town;
@@ -1307,7 +1599,8 @@ export class TwinView {
       await this.loadSession(want);
     } else if (town) await this.loadTown(town);
     if (this.disposed) return;
-    if ((o.mode ?? "replay") !== this.mode) this.setMode(o.mode ?? "replay");
+    const mode = want && this.liveOnly.has(want) ? "live" : (o.mode ?? "replay"); // a live-only stream has nothing to replay
+    if (mode !== this.mode) this.setMode(mode);
     if (this.canEditProfile()) {
       const profiles = profileSummaries(await api.profiles().catch(() => []));
       (this.$("profileName") as HTMLInputElement).placeholder =

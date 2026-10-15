@@ -143,6 +143,8 @@ function ProfileEditor({ name }: { name: string }) {
   );
 }
 
+const SHOW_ROAD_TAB = false; // "Road configuration" tab hidden, not removed (docs/Live_Page_Changes.md)
+
 export default function ConfigPage() {
   const list = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const names = (list.data ?? []).map(profileName);
@@ -154,14 +156,14 @@ export default function ConfigPage() {
       <Tabs defaultValue="profiles">
         <Tabs.List>
           <Tabs.Tab value="profiles">Profiles & thresholds</Tabs.Tab>
-          <Tabs.Tab value="road">Road configuration</Tabs.Tab>
+          {SHOW_ROAD_TAB && <Tabs.Tab value="road">Road configuration</Tabs.Tab>}
           <Tabs.Tab value="zones">Zones</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="profiles" pt="md">
           <Group mb="md"><Select label="Profile" data={names} value={name} onChange={setName} w={240} /></Group>
           {name && <ProfileEditor key={name} name={name} />}
         </Tabs.Panel>
-        <Tabs.Panel value="road" pt="md"><RoadEditor /></Tabs.Panel>
+        {SHOW_ROAD_TAB && <Tabs.Panel value="road" pt="md"><RoadEditor /></Tabs.Panel>}
         <Tabs.Panel value="zones" pt="md"><ZoneDrawer /></Tabs.Panel>
       </Tabs>
     </Stack>

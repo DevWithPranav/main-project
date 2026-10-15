@@ -43,6 +43,7 @@ state ("ok"|"checking"|"flagged"), t_s}`.
 | `POST /api/sessions/import` | OPERATOR, ADMIN | `{flight, violations_dir?, scene?, profile?}`: loads `violations.json` (+ clips, trajectories) of a processed flight; returns the session |
 | `GET /api/sessions/{id}` | any | one session |
 | `GET /api/sessions/{id}/trajectories` | any | `{track_id: [[t_s, x, y, speed_kmh], ...]}` (downsampled ≤ 5 Hz) |
+| `GET /api/sessions/{id}/signals` | any | CARLA's traffic lights for the replay, on the trajectories' time axis: `{lights: [{id, actor_id, stop_lines: [{id, signal_id, line, dir}]}], timelines: {id: [[t, "Red"|"Yellow"|"Green"|...], ...]}, time_base: "time_s"|"sim_time"|null}`. A CARLA flight: the recording's `traffic_lights.json` (record_flight.py, stream_flight.py `--record`) put on `frame_times.csv` time_s; a live session: the pipeline's `traffic_lights.json` (sim time = the vehicles' t_s). None recorded: empty lists |
 | `GET /api/events` | any | filters: `session_id, type, condition, status, review (none/confirmed/dismissed), kind, since, until, bbox=x0,y0,x1,y1, limit (default 200), offset`; returns `{total, items}` |
 | `GET /api/events/{id}` | any | one event |
 | `POST /api/events` | OPERATOR, ADMIN, service token | create one event (live pipeline); broadcast on the WebSocket |
@@ -70,7 +71,8 @@ state ("ok"|"checking"|"flagged"), t_s}`.
 | `POST /api/scenarios` | PLANNER, ADMIN | what-if (PRD 21.3): `{session_id, name, changes: {lane_overrides, zones}, countermeasure?, area?}` → 202 `{id, status: running}`; runs `ml/planning/whatif.py` in the background |
 | `GET /api/scenarios?session_id=` · `GET /api/scenarios/{id}` | any | saved scenarios (summary) · one with `result.replay` (rule replay on the recorded traffic, measured) and `result.projection` (countermeasure × sourced factor, projected estimate) |
 | `POST /api/live/state` | service token | list of vehicle states → Redis (TTL 2 s) + WebSocket |
-| `WS /api/ws/live?session_id=&catch_up_s=` | token as `?token=` | server pushes `{"type":"vehicles","items":[...]}` (≤ 10 Hz) and `{"type":"event","event":{...}}`. **Catch-up (PRD 29.3):** right after connecting, events stored in the last `catch_up_s` seconds (default and maximum 60, `0` = none; at most 500, oldest first) are sent as `{"type":"event","event":{...},"catch_up":true}`, then `{"type":"catch_up","window_s":60,"n":N,"session_id":...}`. An event can arrive twice (stored as the socket registered): de-duplicate by `event_id`. A client that was away longer than the window reloads `GET /api/events` |
+| `POST /api/live/signals` | service token | CARLA traffic lights of a live session: `{session_id, lights?: [{id, stop_lines}], changes: [[carla_frame, sim_time, id, state], ...]}` → Redis (light list + each light's last 8 changes, 6 h) + WebSocket → `{lights, changes}`; 422 if both are empty or a change is malformed |
+| `WS /api/ws/live?session_id=&catch_up_s=` | token as `?token=` | server pushes `{"type":"vehicles","items":[...]}` (≤ 10 Hz) and `{"type":"event","event":{...}}`. **Traffic lights:** `{"type":"signals","session_id","lights":[...]|null,"changes":[[t, id, state], ...]}` per POST (never dropped), and on connect one `{"type":"signals",...,"snapshot":true}` per live session with the light list and each light's recent changes; `t` is CARLA's sim time, the clock of the vehicles' `t_s`, so a client shows each light as it was at the time of the vehicles it draws. **Catch-up (PRD 29.3):** right after connecting, events stored in the last `catch_up_s` seconds (default and maximum 60, `0` = none; at most 500, oldest first) are sent as `{"type":"event","event":{...},"catch_up":true}`, then `{"type":"catch_up","window_s":60,"n":N,"session_id":...}`. An event can arrive twice (stored as the socket registered): de-duplicate by `event_id`. A client that was away longer than the window reloads `GET /api/events` |
 | `POST /api/live/frame?session_id=&kind=raw|annotated&t_s=` | service token | body: one JPEG (≤ 2 MB); only the newest frame per session and kind is kept, in memory → 204 |
 | `GET /api/live/video?session_id=&kind=raw|annotated` | token (header or `?token=`) | MJPEG (`multipart/x-mixed-replace`) of those frames, for an `<img>`; the newest frame first |
 | `GET /api/live/sources` | any | sessions that sent a frame in the last 10 s: `[{session_id, kinds, t_s, age_s}]`, newest first |
@@ -85,7 +87,7 @@ Service token for the live pipeline: env `SERVICE_TOKEN` (default `dev-service-t
 - PostGIS (`postgresql+asyncpg://aerial:aerial_dev@localhost:5432/aerial`): tables `sessions`,
   `events` (geometry Point, SRID 0: map metres), `reviews`, `profiles` (versioned), `recommendations`,
   `planner_history`, `users`, `zones` (geometry Polygon, SRID 0) + `zone_versions`, `reports`.
-- Redis `localhost:6379`: `live:{session}:{track}` keys, channel `live:{session}` and `events`;
+- Redis `localhost:6379`: `live:{session}:{track}` keys, channel `live:{session}` and `events`; traffic lights `signals:{session}:lights`, hash `signals:{session}:state` (recent changes per light), channel `signals`;
   auth: `auth:refresh:{sha256(token)}` (refresh tokens), `auth:deny:{jti}` (logged-out access tokens,
   TTL = their remaining life), `auth:cutoff:{username}` (tokens issued before it are refused: set when
   a user is disabled, changes role or gets a new password).

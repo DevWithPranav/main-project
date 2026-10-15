@@ -43,10 +43,12 @@ import ViolationsPage from './pages/Violations';
 // Cesium is large: the twin page loads on first visit only
 const TwinPage = lazy(() => import('./pages/Twin'));
 
+const SHOW_STATS = false; // Statistics page hidden (docs/Live_Page_Changes.md); true brings back the menu entry and route
+
 const NAV = [
   { to: '/live', label: 'Live monitoring', icon: IconRadar },
   { to: '/violations', label: 'Violations', icon: IconListCheck },
-  { to: '/stats', label: 'Statistics', icon: IconChartBar },
+  ...(SHOW_STATS ? [{ to: '/stats', label: 'Statistics', icon: IconChartBar }] : []),
   { to: '/sessions', label: 'Sessions', icon: IconDatabase },
   { to: '/config', label: 'Configuration', icon: IconAdjustments },
   { to: '/recommendations', label: 'Recommendations', icon: IconBulb },
@@ -141,7 +143,7 @@ export default function App() {
         <Routes>
           <Route path="/live" element={<LivePage />} />
           <Route path="/violations" element={<ViolationsPage />} />
-          <Route path="/stats" element={<StatsPage />} />
+          {SHOW_STATS && <Route path="/stats" element={<StatsPage />} />}
           <Route path="/sessions" element={<SessionsPage />} />
           <Route path="/config" element={<ConfigPage />} />
           <Route path="/recommendations" element={<RecommendationsPage />} />

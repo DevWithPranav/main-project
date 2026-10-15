@@ -7,6 +7,10 @@ as the JPEG files on disk (no re-encode) at the pace they were captured (frame_t
 time_s, the wall clock of the recording), or --speed times faster. capture_wall is stamped
 when a frame is handed to the sender, so latency is measured as if it had just been rendered.
 
+Traffic lights: a flight with traffic_lights.json (record_flight.py, or stream_flight.py --record)
+streams them as stream_flight.py does: the lights and their state at the first replayed frame in
+the hello, then a "signal" message as each change's CARLA frame is reached (--no-signals: off).
+
 ground_z: the median vehicle height of the flight (ground_coords.flight_ground_z), as the
 offline pipeline uses; the live streamer sends the same from the world's vehicles.
 
@@ -98,6 +102,24 @@ def load(flight: Path) -> tuple[dict, list[dict]]:
     return hello, rows
 
 
+def load_signals(flight: Path) -> dict | None:
+    """traffic_lights.json, or None."""
+    p = flight / "traffic_lights.json"
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def signal_schedule(data: dict, first_cf: int) -> tuple[list, list]:
+    """(states at first_cf: each light's latest change at or before it, changes after it in CARLA frame order)."""
+    ch = sorted(data.get("changes", []), key=lambda c: (int(c[0]), float(c[1])))
+    start, later = {}, []
+    for c in ch:
+        if int(c[0]) <= first_cf:
+            start[str(c[2])] = c
+        else:
+            later.append(c)
+    return list(start.values()), later
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("flight", help="Flight folder, or its name under simulation/data_export/recorded_flights/")
@@ -109,6 +131,7 @@ def main() -> None:
     ap.add_argument("--start", type=float, default=0.0, help="Skip the first N seconds of the flight")
     ap.add_argument("--duration", type=float, default=None, help="Send only N seconds")
     ap.add_argument("--queue", type=int, default=2, help="Sender queue (oldest dropped when full)")
+    ap.add_argument("--no-signals", action="store_true", help="Do not stream the flight's traffic lights")
     args = ap.parse_args()
 
     flight = Path(args.flight)
@@ -121,6 +144,12 @@ def main() -> None:
             (args.duration is None or float(r[tcol]) < t0_rec + args.duration)]
     print(f"[replay] {flight.name}: {len(rows)} frames, {hello['width']}x{hello['height']}, "
           f"ground_z {hello['ground_z']} -> {args.host}:{args.port} at {args.speed}x")
+    sig = None if args.no_signals or not rows else load_signals(flight)
+    pending: list = []
+    if sig is not None:
+        states, pending = signal_schedule(sig, int(rows[0]["carla_frame"]))
+        hello["signals"] = {"lights": sig.get("lights", []), "states": states}
+        print(f"[replay] traffic lights: {len(sig.get('lights', []))}, {len(pending)} changes to stream")
     sender = FrameSender(args.host, args.port, hello, queue=args.queue)
     t_start = time.perf_counter()
     late = 0
@@ -131,6 +160,11 @@ def main() -> None:
             time.sleep(wait)
         elif wait < -0.1:
             late += 1
+        cf = int(r["carla_frame"])
+        if pending and int(pending[0][0]) <= cf:  # light changes up to this frame's tick go first
+            due_ch = [c for c in pending if int(c[0]) <= cf]
+            pending = pending[len(due_ch):]
+            sender.send_control({"type": "signal", "changes": due_ch})
         jpg = (flight / "frames" / f"{int(r['frame']):05d}.jpg").read_bytes()
         sender.send({"type": "frame", "frame": int(r["frame"]), "carla_frame": int(r["carla_frame"]),
                      "sim_time": float(r["sim_time"]),

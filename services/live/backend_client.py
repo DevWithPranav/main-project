@@ -7,7 +7,9 @@ answers again; with `spool_path` the buffer is also on disk (a JSON line per eve
 drained) so a pipeline restart does not lose it. A post the backend refuses as bad data (4xx other than
 408 / 429) is dropped with a log line, not retried for ever. Events are also written to events.jsonl by
 the pipeline (`replay_events.py` re-sends that file). Vehicle states are only the newest batch (older
-unsent batches are replaced: a stale position is useless). Camera frames (raw + annotated JPEG for the
+unsent batches are replaced: a stale position is useless). Traffic-light changes are never replaced:
+they are merged and sent before the vehicle states (a failed post is merged back and retried after
+SIGNAL_RETRY_S), so the twin always ends up with every light's latest state. Camera frames (raw + annotated JPEG for the
 dashboard's Live page) work the same way and go last.
 
 Event updates: an event is POSTed to /api/events when it opens (flag time, "provisional" tag,
@@ -30,6 +32,8 @@ from pathlib import Path
 
 BACKOFF_S = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)  # PRD 29.2: 1, 2, 4, 8 s ... max 30 s
 BUFFER_MAX = 10000                              # events held while the backend is down (oldest dropped beyond this)
+SIGNAL_RETRY_S = 1.0                            # a failed traffic-light post is retried after this
+SIGNAL_MAX = 20000                              # changes held while the backend is down (oldest dropped beyond this)
 
 
 class BackendClient:
@@ -43,6 +47,8 @@ class BackendClient:
         self.events: deque = deque()
         self.states = None
         self.frames = None  # (session, t_s, {kind: jpeg bytes}); newest only, sent after events and states
+        self.signals: dict | None = None  # {"session_id", "lights"?, "changes"}: merged, never replaced
+        self._sig_retry_at = 0.0
         self.cv = threading.Condition()
         self.ok = self.failed = 0
         self.posted: list[dict] = []  # {event_id, phase, post_wall, ok}
@@ -77,6 +83,23 @@ class BackendClient:
         with self.cv:
             self.states = states
             self.cv.notify()
+
+    def post_signals(self, session: str, lights: list | None, changes: list) -> None:
+        """Traffic lights (once, or again after a reconnect of the source) and state changes
+        [carla_frame, sim_time, id, state]; merged with any unsent ones."""
+        if not self.base or (not lights and not changes):
+            return
+        with self.cv:
+            self._merge_signals({"session_id": session, "lights": lights, "changes": list(changes)})
+            self.cv.notify()
+
+    def _merge_signals(self, sig: dict) -> None:
+        cur = self.signals
+        if cur is None or cur["session_id"] != sig["session_id"]:
+            self.signals = {**sig, "changes": sig["changes"][-SIGNAL_MAX:]}
+            return
+        cur["lights"] = sig["lights"] or cur["lights"]
+        cur["changes"] = (cur["changes"] + sig["changes"])[-SIGNAL_MAX:]
 
     def post_frames(self, session: str, t_s: float, jpgs: dict[str, bytes]) -> None:
         """Camera frames for the dashboard (raw / annotated JPEG); an unsent older set is replaced."""
@@ -192,20 +215,31 @@ class BackendClient:
         while not self._stop:
             with self.cv:
                 while (not self.events and self.states is None and self.frames is None and not self._stop
-                       and not (self.buffer and time.time() >= self._retry_at)):
+                       and not (self.buffer and time.time() >= self._retry_at)
+                       and not (self.signals is not None and time.time() >= self._sig_retry_at)):
                     self.cv.wait(0.5)
                 has_events = bool(self.events) or bool(self.buffer and time.time() >= self._retry_at)
-                st, fr = None, None
+                st, fr, sig = None, None, None
                 if not has_events:
-                    st, self.states = self.states, None
-                    if st is None:
-                        fr, self.frames = self.frames, None
+                    if self.signals is not None and time.time() >= self._sig_retry_at:
+                        sig, self.signals = self.signals, None
+                    else:
+                        st, self.states = self.states, None
+                        if st is None:
+                            fr, self.frames = self.frames, None
             if has_events:  # events first: they carry the latency target
                 self._deliver_events()
                 if self.degraded:  # events are stuck behind a down backend: do not hammer it with states / frames
                     with self.cv:
                         self.states = self.frames = None
                     time.sleep(0.05)
+            elif sig is not None:  # before the states: a light change must not wait behind vehicle batches
+                if not self._post("/api/live/signals", {k: v for k, v in sig.items() if v is not None}):
+                    with self.cv:  # put it back in front of anything that came in meanwhile
+                        newer, self.signals = self.signals, sig
+                        if newer is not None:
+                            self._merge_signals(newer)
+                    self._sig_retry_at = time.time() + SIGNAL_RETRY_S
             elif st is not None:
                 self._post("/api/live/state", st)
             elif fr is not None:

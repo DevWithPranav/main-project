@@ -13,8 +13,14 @@ flight_ground_z does from vehicle_poses.csv), or --ground-z.
 The drone is flown by someone else: fly_drone.py / start_carla_and_fly.bat, or goto_spot.py to
 hold a spot. Esc (global hotkey) or Ctrl+C stops the stream; the drone is left as it is.
 
+Traffic lights: the hello carries every light of the map with its stop lines (CARLA's
+get_stop_waypoints) and current state, and each tick that changes a light sends a "signal" message
+(transport.py) stamped with CARLA's frame and sim time, the clock the frames carry: the pipeline,
+the backend and the twin show each light as it was at the time of the vehicles on screen.
+--no-signals turns it off.
+
 --record also saves the stream as a recorded flight (frames/, frame_times.csv with per-frame
-pose + sim time, metadata.json; no seg / labels), so the same minutes can be run through the
+pose + sim time, metadata.json, traffic_lights.json; no seg / labels), so the same minutes can be run through the
 offline pipeline afterwards and the two compared (services/live/compare_offline.py).
 
 Run in the CarlaAir conda env (needs carla, cv2, pynput; the transport is standard library only):
@@ -47,7 +53,7 @@ sys.path.insert(0, str(REPO / "services" / "live"))
 from transport import DEFAULT_PORT, FrameSender  # noqa: E402
 
 from fly_and_capture import spawn_traffic  # noqa: E402
-from record_flight import DATA_EXPORT_DIR, EscStop, apply_weather, camera_mount, find_drone_actor  # noqa: E402
+from record_flight import DATA_EXPORT_DIR, EscStop, TrafficLightLogger, apply_weather, camera_mount, find_drone_actor  # noqa: E402
 
 STATUS_EVERY_S = 2.0
 
@@ -133,6 +139,9 @@ def main() -> None:
     ap.add_argument("--weather", default=None)
     ap.add_argument("--sun-altitude", type=float, default=None)
     ap.add_argument("--session", default=None, help="Session name sent to the detector (default: a timestamp)")
+    ap.add_argument("--no-signals", action="store_true", help="Do not send the traffic lights")
+    ap.add_argument("--duration", type=float, default=None,
+                    help="Stop by itself after this many seconds (unattended runs; a clean stop writes the --record files)")
     ap.add_argument("--record", action="store_true",
                     help="Also save the stream as a recorded flight under simulation/data_export/recorded_flights/")
     args = ap.parse_args()
@@ -163,6 +172,28 @@ def main() -> None:
     hello = {"type": "hello", "source": "carla", "flight": session, "map": map_name, "width": args.width,
              "height": args.height, "fov": args.fov, "ground_z": round(ground_z, 3)}
     sender = FrameSender(args.to, args.to_port, hello, queue=args.queue)
+    lights = None
+    if not args.no_signals:
+        # order matters (live run 2026-10-14: the first tick fired before the light list was in the hello, the sender
+        # connected with a plain hello, and the pipeline got 414 changes but no lights): read the list and set the
+        # hello first, then send the list once as a never-dropped message, and only then pass changes on
+        lights = TrafficLightLogger(world)
+        info = lights.lights_info()
+
+        def snapshot() -> dict:
+            return {"lights": info, "states": list(lights.current.values())}
+
+        n0 = len(lights.changes)
+        sender.set_hello({**hello, "signals": snapshot()})
+        sender.send_control({"type": "signal", "lights": info, "changes": snapshot()["states"]})
+
+        def on_change(changes):  # tick thread: keep the hello current for a reconnect, then send
+            sender.set_hello({**hello, "signals": snapshot()})
+            sender.send_control({"type": "signal", "changes": changes})
+        lights.on_change = on_change
+        if len(lights.changes) > n0:  # ticks between the snapshot and the callback (the pipeline drops repeats)
+            sender.send_control({"type": "signal", "changes": lights.changes[n0:]})
+        print(f"[signals] {len(info)} traffic lights, {sum(len(li['stop_lines']) for li in info)} stop lines: streamed")
     cam = StreamCamera(world, drone, sender, args.width, args.height, args.fov, args.pitch,
                        args.jpeg_quality, record_dir)
     stop = EscStop()
@@ -175,6 +206,9 @@ def main() -> None:
     try:
         while stop.running:
             time.sleep(STATUS_EVERY_S)
+            if args.duration is not None and time.perf_counter() - t0 >= args.duration:
+                print(f"[stream] --duration {args.duration:.0f} s reached: stopping", flush=True)
+                break
             now = time.perf_counter()
             fps = (cam.count - last_n) / (now - last_t)
             last_n, last_t = cam.count, now
@@ -186,6 +220,11 @@ def main() -> None:
     finally:
         stop.stop()
         cam.stop()
+        if lights is not None:
+            if record_dir is not None and cam.count:
+                lights.stop_and_write(record_dir / "traffic_lights.json")
+            else:
+                world.remove_on_tick(lights._cb)
         sender.close()
         for v in vehicles:
             try:

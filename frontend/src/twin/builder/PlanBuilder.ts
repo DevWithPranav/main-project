@@ -7,7 +7,7 @@
  * Nothing here invents a number: results come from the backend /api/plans/* and are labelled by where they come from.
  */
 import { api } from '../../api';
-import type { PlanAnalysis, PlanCatalogue, PlanDoc, PlanGroup, PlanItem, PlanKind, PlanLocate, PlanRow, PlanReportRow, PlanRun, TrafficResult, TrafficSchema, VirtualResult, VirtualSignal } from '../../api/types';
+import type { JunctionApproach, JunctionInfo, PlanAnalysis, PlanCatalogue, PlanDoc, PlanGroup, PlanItem, PlanKind, PlanLocate, PlanRow, PlanReportRow, PlanRun, TrafficResult, TrafficSchema, VirtualResult, VirtualSignal } from '../../api/types';
 import './builder.css';
 import { alternativesHtml, bestWorstHtml, compareHtml, compiledHtml, esc, evidenceBadge, messagesHtml, observedHtml, pendingHtml, replayHtml, risksHtml, virtualHtml, type CompareRow } from './recoView';
 import { normalizeTraffic, setPath, trafficIsDefault, trafficProblems, trafficTabHtml, type Cfg } from './trafficUi';
@@ -32,6 +32,10 @@ export interface BuilderHost {
   sessionId(): string;
   flyTo(x: number, y: number): void;
   draw(items: DrawnItem[], anchor: [number, number] | null): void;
+  /** highlight a junction's outline and approaches (the ids that already have the form's kind drawn as placed); null clears it */
+  showJunction?(j: JunctionInfo | null, placed: string[]): void;
+  /** how many of CARLA's own traffic lights stand at this junction (recorded / live sessions); 0 when none are known */
+  carlaLightsAt?(j: JunctionInfo): number;
   /** play the vehicle paths of a virtual-traffic run instead of the recording (null: back to the recording) */
   showVirtual(traj: VirtualResult['trajectories']['plan'] | null, signals?: VirtualSignal[] | null): void;
   /** the map's Custom traffic switch (virtual traffic that follows the plan) */
@@ -60,6 +64,12 @@ const GROUP_TITLE: Record<PlanGroup, string> = { prop: 'Props', rule: 'Rules', s
 const GROUP_COLOR: Record<PlanGroup, string> = { prop: '#4c6ef5', rule: '#f08c00', scenario: '#12b886' };
 const CARLA_MARK = { supported: '✓', approximate: '≈', unsupported: '✕' } as const;
 const dash = (s: string) => s.replace(/_/g, ' ');
+/** Kinds placed on a junction's approaches (stop line at the junction edge, one controller per junction in the virtual traffic). */
+const JUNCTION_KINDS = new Set(['traffic_signal', 'stop_sign']);
+const COMPASS = ['E', 'NE', 'N', 'NW', 'W', 'SW', 'S', 'SE'];
+/** Driving direction as a compass point: CARLA y points south, so north is -y. */
+const compass = (headingDeg: number) => COMPASS[Math.round((((-headingDeg % 360) + 360) % 360) / 45) % 8];
+const shortId = (approachId: string) => approachId.split('_').pop() ?? approachId;
 
 /** A progress bar block (filled by updateBars): the step label, the bar, the time elapsed. */
 function progressHtml(id: string, title: string, st: { stage: string; done: number; total: number }): string {
@@ -99,6 +109,10 @@ export class PlanBuilder {
   private msg = '';
   private disposed = false;
   private tickTimer: ReturnType<typeof setInterval> | undefined;
+  /** junction placement of a signal / stop sign: on every approach at once, or one approach at a time */
+  private junctionMode: 'all' | 'one' = 'all';
+  /** waiting for a left-click on the map that picks an approach (junctionMode 'one') */
+  private picking = false;
 
   constructor(host: BuilderHost) {
     this.host = host;
@@ -108,6 +122,23 @@ export class PlanBuilder {
 
   get isOpen() {
     return this.opened;
+  }
+
+  /** The 3D view should hand the next left-click on the map to pickAt. */
+  get isPicking() {
+    return this.opened && this.picking;
+  }
+
+  /** A map click while picking: the nearest approach of the builder's junction gets the form's signal / stop sign. */
+  pickAt(x: number, y: number) {
+    const j = this.junction();
+    if (!j || !j.approaches.length) return;
+    const a = j.approaches.reduce((b, q) => (Math.hypot(q.x - x, q.y - y) < Math.hypot(b.x - x, b.y - y) ? q : b));
+    if (Math.hypot(a.x - x, a.y - y) > 40) {
+      this.msg = 'That click is not near this junction: click next to one of its stop lines.';
+      return this.renderLeft();
+    }
+    this.addOnApproaches([a]);
   }
 
   // ---------------------------------------------------------------- mounting
@@ -177,6 +208,7 @@ export class PlanBuilder {
   /** Right-click "Add Custom Rules" (or "Set location here"): open the builder at a map position. */
   async openAt(x: number, y: number) {
     this.anchor = { x, y, loc: null };
+    this.picking = false;
     // the town is only known once the map has loaded: a new plan takes the current one (no undo step)
     if (!this.store.planId && this.host.town() && this.store.doc.scene !== this.host.town()) this.store.doc.scene = this.host.town();
     if (!this.opened) {
@@ -200,6 +232,8 @@ export class PlanBuilder {
   }
 
   close() {
+    this.picking = false;
+    this.host.showJunction?.(null, []);
     this.opened = false; // the custom traffic stays on the map (its switch is in the info panel)
     this.host.root.classList.remove('builder-open');
     for (const el of [this.left, this.right, this.bottom]) el.hidden = true;
@@ -284,6 +318,72 @@ export class PlanBuilder {
       footprint: footprint(item, this.kind(item.kind)), selected: item.id === this.selectedId, level: this.levelOf(item.id),
     }));
     this.host.draw(items, this.anchor ? [this.anchor.x, this.anchor.y] : null);
+    const j = this.opened && this.tab === 'prop' && JUNCTION_KINDS.has(this.propKindKey()) ? this.junction() : null;
+    this.host.showJunction?.(j, j ? this.placedOn(j, this.propKindKey()) : []);
+  }
+
+  /** The junction at the builder location (from the locate lookup), or null. */
+  private junction(): JunctionInfo | null {
+    return this.anchor?.loc?.junction_info ?? null;
+  }
+
+  /** The kind shown in the Props form (the item being edited, the last chosen, else the first prop kind). */
+  private propKindKey(): string {
+    const editing = this.editing ? this.store.find(this.editing)?.item : undefined;
+    if (editing && this.kind(editing.kind)?.group === 'prop') return editing.kind;
+    return this.formKindByGroup.prop ?? Object.values(this.cat?.kinds ?? {}).find((k) => k.group === 'prop')?.key ?? '';
+  }
+
+  /** The approaches of a junction that already have an item of this kind (an item without approach_id covers all). */
+  private placedOn(j: JunctionInfo, kind: string): string[] {
+    const out = new Set<string>();
+    for (const { item } of allItems(this.store.doc)) {
+      if (item.kind !== kind || item.target?.junction_id !== j.id) continue;
+      if (item.target.approach_id) out.add(item.target.approach_id);
+      else j.approaches.forEach((a) => out.add(a.id));
+    }
+    return [...out];
+  }
+
+  /** Put the form's signal / stop sign on these approaches: one item each at its stop line, facing the traffic, in one undo step. */
+  private addOnApproaches(approaches: JunctionApproach[]) {
+    const form = this.readForm();
+    const j = this.junction();
+    const out = this.left.querySelector<HTMLElement>('#formmsg');
+    if (!form || !j) return;
+    if (form.problems.length) {
+      if (out) out.innerHTML = form.problems.map((p) => `<div class="m-err">${esc(p)}</div>`).join('');
+      return;
+    }
+    const done = new Set(this.placedOn(j, form.kind.key));
+    const todo = approaches.filter((a) => !done.has(a.id));
+    if (!todo.length) {
+      this.msg = `${approaches.length === 1 ? `Approach ${shortId(approaches[0].id)} already has` : 'Every approach already has'} a ${form.kind.label.toLowerCase()} at ${j.id}.`;
+      return this.renderLeft();
+    }
+    const made = this.store.addMany(form.kind.group, form.kind, todo.map((a) => ({
+      x: a.x, y: a.y,
+      extra: { ...form.item, params: form.item.params, yaw_deg: a.heading_deg, target: { junction_id: j.id, approach_id: a.id, lane_id: a.lanes[0] } },
+    })));
+    this.selectedId = made[made.length - 1]?.id ?? null;
+    this.msg = `Added ${made.length} ${form.kind.label.toLowerCase()}${made.length === 1 ? '' : 's'} at ${j.id} (${todo.map((a) => shortId(a.id)).join(', ')}): the virtual traffic runs them as one controller.`;
+  }
+
+  /** The junction block of the Props form: where a signal / stop sign goes on the junction under the builder location. */
+  private junctionHtml(kind: PlanKind, canEdit: boolean): string {
+    const j = this.junction();
+    if (!j || !JUNCTION_KINDS.has(kind.key) || this.editing) return '';
+    const placed = new Set(this.placedOn(j, kind.key));
+    const dis = canEdit ? '' : 'disabled';
+    const rows = j.approaches.map((a) => `<li><span><b>${shortId(a.id)}</b> road ${esc(a.road_id ?? '?')} · heading ${compass(a.heading_deg)} · ${a.lanes.length} lane${a.lanes.length === 1 ? '' : 's'}</span>
+        ${placed.has(a.id) ? '<span class="ok">✓ placed</span>' : `<button class="mini" data-jappr="${esc(a.id)}" ${dis}>Add here</button>`}</li>`).join('');
+    return `<div class="junction-box"><div><b>Junction ${esc(j.id)}</b> · ${j.approaches.length} approaches <span class="muted">(${placed.size} with a ${esc(kind.label.toLowerCase())})</span></div>
+      <label class="chk"><input type="radio" name="jmode" data-jmode="all" ${this.junctionMode === 'all' ? 'checked' : ''}/> Every approach (one controller${kind.key === 'traffic_signal' ? ', phased by road axis' : ': all-way stop'})</label>
+      <label class="chk"><input type="radio" name="jmode" data-jmode="one" ${this.junctionMode === 'one' ? 'checked' : ''}/> One approach at a time</label>
+      ${this.junctionMode === 'one' ? `<ul class="approaches">${rows}</ul>
+        <button class="mini ${this.picking ? 'on' : ''}" data-act="jpick" ${dis}>${this.picking ? 'Picking: click near a stop line… (click to stop)' : 'Pick on the map'}</button>` : ''}
+      <div class="muted">Stop lines sit at the junction edge (cyan on the map, green once placed).</div>
+      ${(() => { const n = this.host.carlaLightsAt?.(j) ?? 0; return n ? `<div class="muted">CARLA has ${n} traffic light${n === 1 ? '' : 's'} here (on the map, by state). They run in CARLA; the virtual traffic uses the signals you add.</div>` : ''; })()}</div>`;
   }
 
   // ---------------------------------------------------------------- rendering
@@ -350,19 +450,21 @@ export class PlanBuilder {
     }).join('');
     const area = cur.target !== 'lane';
     const sch = editing?.schedule;
+    const atJunction = !editing && group === 'prop' && JUNCTION_KINDS.has(cur.key) && !!this.junction();
     return `<label>${editing ? 'Editing' : 'Add'} ${GROUP_TITLE[group].toLowerCase().slice(0, -1)}
         <select data-f="kind" data-group="${group}">${kinds.map((k) => `<option value="${k.key}" ${k.key === cur.key ? 'selected' : ''}>${esc(k.label)}</option>`).join('')}</select></label>
       <div class="support"><span class="sup r-${cur.replay.mode === 'none' ? 'no' : 'yes'}" title="${esc(cur.replay.note || 'judged by the violation-engine replay')}">replay ${cur.replay.mode === 'none' ? '✕' : '✓'}</span>
         <span class="sup v-${cur.virtual?.status ?? 'unsupported'}" title="${esc(cur.virtual?.how ?? '')}">virtual traffic ${CARLA_MARK[cur.virtual?.status ?? 'unsupported']}</span>
         <span class="sup c-${cur.carla.status}" title="${esc(cur.carla.how)}">CARLA ${CARLA_MARK[cur.carla.status]} ${cur.carla.status}</span></div>
-      <div class="grid2">${fields}${area ? `<label>Direction <span class="muted">(deg)</span><input type="number" data-f="yaw" step="1" value="${editing?.yaw_deg ?? this.anchor?.loc?.nearest_lane?.heading_deg ?? 0}"/></label>` : ''}</div>
+      <div class="grid2">${fields}${area && !atJunction ? `<label>Direction <span class="muted">(deg)</span><input type="number" data-f="yaw" step="1" value="${editing?.yaw_deg ?? this.anchor?.loc?.nearest_lane?.heading_deg ?? 0}"/></label>` : ''}</div>
       <details><summary>Priority, schedule, note</summary><div class="grid2">
         <label>Priority<input type="number" data-f="priority" step="1" value="${editing?.priority ?? 0}"/></label>
         <label>Note<input data-f="inote" value="${esc(editing?.note ?? '')}"/></label>
         <label>Active from <span class="muted">(s)</span><input type="number" data-f="from" step="any" value="${sch?.from_s ?? ''}"/></label>
         <label>Active to <span class="muted">(s)</span><input type="number" data-f="to" step="any" value="${sch?.to_s ?? ''}"/></label></div></details>
+      ${this.junctionHtml(cur, canEdit)}
       <div class="formmsg" id="formmsg"></div>
-      <div class="row2"><button class="primary" data-act="${editing ? 'apply' : 'add'}" ${canEdit && this.anchor ? '' : 'disabled'} title="${canEdit ? (this.anchor ? '' : 'Right-click the map first') : 'PLANNER role needed'}">${editing ? 'Apply changes' : `Add at this location`}</button>
+      <div class="row2">${atJunction && this.junctionMode === 'one' ? '' : `<button class="primary" data-act="${editing ? 'apply' : 'add'}" ${canEdit && this.anchor ? '' : 'disabled'} title="${canEdit ? (this.anchor ? '' : 'Right-click the map first') : 'PLANNER role needed'}">${editing ? 'Apply changes' : atJunction ? `Add on all ${this.junction()!.approaches.length} approaches` : 'Add at this location'}</button>`}
         ${editing ? '<button class="mini" data-act="cancel">Cancel</button>' : ''}</div>`;
   }
 
@@ -566,12 +668,19 @@ export class PlanBuilder {
 
   private async onClick(e: Event) {
     const t = e.target as HTMLElement;
-    const btn = t.closest<HTMLElement>('[data-tscn],[data-tpreset],[data-tadd],[data-repdl],[data-repopen],[data-act],[data-tab],[data-tpl],[data-fly],[data-edit],[data-del],[data-alt],[data-play],.fly,[data-item]');
+    const btn = t.closest<HTMLElement>('[data-jappr],[data-tscn],[data-tpreset],[data-tadd],[data-repdl],[data-repopen],[data-act],[data-tab],[data-tpl],[data-fly],[data-edit],[data-del],[data-alt],[data-play],.fly,[data-item]');
     if (!btn) return;
     const act = btn.dataset.act;
+    if (btn.dataset.jappr) {
+      const a = this.junction()?.approaches.find((q) => q.id === btn.dataset.jappr);
+      if (a) this.addOnApproaches([a]);
+      return;
+    }
     if (btn.dataset.tab) {
       this.tab = btn.dataset.tab as Tab;
       this.editing = null;
+      this.picking = false;
+      this.redraw();
       return this.renderLeft();
     }
     if (btn.dataset.tpl && this.cat && this.anchor) {
@@ -672,6 +781,7 @@ export class PlanBuilder {
       case 'redo': return this.store.redo();
       case 'new': this.store.load(emptyPlan(this.host.town(), this.host.sessionId() || null)); this.runs = []; this.virtual = null; if (this.playing) this.host.showVirtual(null); this.playing = null; this.shownRun = null; this.preview = null; this.editing = null; this.selectedId = null; return this.render();
       case 'cancel': this.editing = null; return this.renderLeft();
+      case 'jpick': this.picking = !this.picking; return this.renderLeft();
       case 'add': case 'apply': return this.addOrApply(act === 'apply');
       case 'save': return void this.save();
       case 'analyze': return void this.analyse();
@@ -707,6 +817,8 @@ export class PlanBuilder {
       return;
     }
     if (!this.anchor) return;
+    const j = this.junction();
+    if (j && JUNCTION_KINDS.has(form.kind.key)) return this.addOnApproaches(j.approaches);
     const lane = form.kind.target === 'lane' || form.kind.target === 'area' ? this.anchor.loc?.nearest_lane?.id : undefined;
     const item = this.store.add(form.kind.group, form.kind, this.anchor.x, this.anchor.y, {
       ...form.item, params: form.item.params, ...(lane ? { target: { lane_id: lane } } : {}),
@@ -721,6 +833,13 @@ export class PlanBuilder {
       const g = (t.dataset.group ?? this.tab) as PlanGroup;
       this.formKindByGroup[g] = t.value;
       this.editing = null;
+      this.picking = false;
+      this.redraw();
+      return this.renderLeft();
+    }
+    if (t.dataset.jmode) {
+      this.junctionMode = t.dataset.jmode as 'all' | 'one';
+      this.picking = false;
       return this.renderLeft();
     }
     if (f === 'name') return this.store.setMeta({ name: t.value });

@@ -423,7 +423,9 @@ export interface PlanItem {
   y: number;
   yaw_deg?: number;
   params?: Record<string, unknown>;
-  target?: { lane_id?: string };
+  /** lane_id: the lane it acts on; junction_id (+ approach_id): a signal / stop sign on a junction's approach
+   * (no approach_id = all of them); the virtual traffic runs one controller per junction */
+  target?: { lane_id?: string; junction_id?: string; approach_id?: string };
   schedule?: { from_s?: number | null; to_s?: number | null };
   priority?: number;
   note?: string;
@@ -492,6 +494,26 @@ export interface PlanValidation {
   infos: PlanMessage[];
 }
 
+/** One road and direction leading into a junction: its lanes, and the stop line across their ends (CARLA metres). */
+export interface JunctionApproach {
+  id: string;
+  road_id: string | null;
+  lanes: string[];
+  x: number;
+  y: number;
+  heading_deg: number;
+  stop_line: [number, number][];
+}
+
+/** A junction of the lane map (ml/violation_engine/junctions.py): outline, centre and approaches. */
+export interface JunctionInfo {
+  id: string;
+  centre: [number, number];
+  polygon: [number, number][];
+  lanes?: string[];
+  approaches: JunctionApproach[];
+}
+
 export interface PlanLocate {
   x: number;
   y: number;
@@ -501,6 +523,8 @@ export interface PlanLocate {
   nearest_lane: { id: string; road_id: number | string | null; distance_m: number; lane_type: string | null; speed_limit_kmh: number | null; junction: boolean; heading_deg: number } | null;
   lanes: { id: string; distance_m: number; lane_type: string | null; speed_limit_kmh: number | null; junction: boolean }[];
   junction: boolean;
+  /** the junction at the position (inside its outline, or its centre within 25 m), from the scene's junctions; absent on older backends */
+  junction_info?: JunctionInfo | null;
   zones: { id: string; type: string; distance_m: number }[];
   plan_items: { id: string; group: PlanGroup; kind: string; distance_m: number }[];
   signals: string;

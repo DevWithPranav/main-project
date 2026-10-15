@@ -157,3 +157,8 @@
 .twin-root .traffic-tab h5 .muted { text-transform: none; letter-spacing: 0; font-size: 10.5px; }
 .twin-root .chip.scn { border-color: color-mix(in srgb, #12b886 55%, var(--tw-border)) !important; }
 .twin-root .chip:disabled { opacity: .45; cursor: not-allowed; }
+.twin-root .junction-box { display: grid; gap: 6px; margin: 8px 0; padding: 8px 10px; border-radius: 10px; border: 1px solid #15aabf; background: var(--tw-field); }
+.twin-root .junction-box .approaches { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.twin-root .junction-box .approaches li { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 12px; }
+.twin-root .junction-box .ok { color: #2f9e44; font-weight: 600; font-size: 11.5px; }
+.twin-root .junction-box button.on { background: #15aabf !important; border-color: #15aabf !important; color: #fff !important; }

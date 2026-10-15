@@ -52,6 +52,20 @@ async def trajectories(sid: str, db: AsyncSession = Depends(get_db), _: Principa
     return {str(tid): pts for tid, pts in rows}
 
 
+@router.get("/sessions/{sid}/signals")
+async def session_signals(sid: str, db: AsyncSession = Depends(get_db), _: Principal = Depends(current_user)):
+    """A session's traffic lights for the twin's replay: {"lights": [{id, stop_lines}], "timelines":
+    {id: [[t, state], ...]}, "time_base"} on the same time axis as its trajectories. A CARLA flight: the
+    recording's traffic_lights.json (record_flight.py / stream_flight.py --record) put on frame_times.csv
+    time_s; a live session: the pipeline's traffic_lights.json (sim time, the vehicles' t_s). No lights
+    recorded: empty lists."""
+    s = await db.get(Session, sid)
+    if s is None:
+        raise HTTPException(404, f"no session {sid}")
+    out = await asyncio.to_thread(ingest.session_signals, s.flight or sid, s.source)
+    return out or {"lights": [], "timelines": {}, "time_base": None}
+
+
 class ImportReq(BaseModel):
     flight: str  # CARLA flight folder, or the real clip's folder under video_validation (source "video")
     source: str = "carla"  # carla | video (Expected_Output 3: external videos are a session source too)

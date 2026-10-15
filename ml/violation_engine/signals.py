@@ -71,3 +71,88 @@ class SignalLog:
             changes[str(sig["id"])].append((int(round((t0 + sig["red_at_s"]) * hz)), "Red"))
             changes[str(sig["id"])].append((int(round((t0 + act["duration_s"]) * hz)), "Green"))
         return cls(changes)
+
+
+class LiveSignalLog:
+    """SignalLog for the live pipeline: changes keyed by simulator time as they stream in (transport.py
+    "signal" messages, sim_time from CARLA's own tick), looked up by frame through the frames the
+    pipeline has processed (add_frame). Same state_at interface as SignalLog, so rules.RedLightMonitor
+    takes either. Frames and changes share CARLA's clock, so network or detector delay does not shift them."""
+
+    def __init__(self):
+        self.changes: dict[str, list[tuple[float, str]]] = defaultdict(list)  # id -> [(sim_time, state)], sorted
+        self.frames: list[int] = []
+        self.times: list[float] = []
+
+    def add_frame(self, frame: int, sim_time: float) -> None:
+        if not self.frames or frame > self.frames[-1]:
+            self.frames.append(int(frame))
+            self.times.append(float(sim_time))
+
+    def add_change(self, signal_id, sim_time: float, state: str) -> None:
+        ch = self.changes[str(signal_id)]
+        item = (float(sim_time), str(state))
+        if item not in ch:
+            bisect.insort(ch, item)
+
+    def time_of(self, frame: int) -> float | None:
+        k = bisect.bisect_right(self.frames, frame) - 1
+        return self.times[k] if k >= 0 else None
+
+    def state_at(self, signal_id, frame: int) -> tuple[str, int] | None:
+        """(state, first processed frame at or after the state began) at a frame, or None if unknown."""
+        t = self.time_of(frame)
+        ch = self.changes.get(str(signal_id))
+        if t is None or not ch:
+            return None
+        k = bisect.bisect_right(ch, (t, "￿")) - 1
+        if k < 0:
+            return None
+        t_began, state = ch[k]
+        j = bisect.bisect_left(self.times, t_began)
+        return state, (self.frames[j] if j < len(self.frames) else frame)
+
+
+def stop_lines(lights: list[dict]) -> list[dict]:
+    """The stop lines of traffic_lights.json "lights", in the scene's stop_lines format."""
+    return [sl for light in lights for sl in light.get("stop_lines", [])]
+
+
+def timelines(changes: list, time_of_change) -> dict[str, list[list]]:
+    """light id -> [[t, state], ...] in time order (consecutive repeats dropped), t = time_of_change(carla_frame,
+    sim_time) or None to drop the change."""
+    out: dict[str, list[list]] = defaultdict(list)
+    for cf, st, sid, state in sorted(changes, key=lambda c: (c[1], c[0])):
+        t = time_of_change(cf, st)
+        if t is None:
+            continue
+        tl = out[str(sid)]
+        if tl and tl[-1][1] == state:
+            continue
+        tl.append([round(float(t), 3), str(state)])
+    return dict(out)
+
+
+def flight_timelines(flight: Path) -> dict | None:
+    """traffic_lights.json of a recorded flight on the session time axis the twin replays (frame_times.csv
+    time_s, as kinematics.csv): a change takes effect at the first recorded frame at or after its tick;
+    changes before the first frame (the state at the start) are put at the first frame, changes after
+    the last frame dropped. None if the flight has no traffic_lights.json."""
+    path = flight / "traffic_lights.json"
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text())
+    with open(flight / "frame_times.csv", newline="") as f:
+        pairs = sorted((int(r["carla_frame"]), float(r["time_s"])) for r in csv.DictReader(f))
+    cfs = [c for c, _ in pairs]
+
+    def at(cf, _st):
+        k = bisect.bisect_left(cfs, int(cf))
+        return pairs[k][1] if k < len(pairs) else None
+    return {"lights": data["lights"], "timelines": timelines(data["changes"], at), "time_base": "time_s"}
+
+
+def live_timelines(data: dict) -> dict:
+    """traffic_lights.json written by the live pipeline: its sessions' times are the simulator's (vehicle t_s)."""
+    return {"lights": data.get("lights", []), "timelines": timelines(data.get("changes", []), lambda _cf, st: st),
+            "time_base": "sim_time"}

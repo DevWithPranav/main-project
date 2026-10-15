@@ -1,6 +1,8 @@
 /** Shapes the twin reads: the lane map (ml/violation_engine/lane_map.py docstring, schemas/scene.schema.json)
  * and the backend contract (backend/API.md). Only the fields the twin uses are typed. */
 
+import type { JunctionInfo } from "../api/types";
+
 export interface Lane {
   id: string;
   road_id?: string | null;
@@ -9,6 +11,7 @@ export interface Lane {
   width_m?: number;
   lane_type?: string; // driving / shoulder / parking / ...
   junction?: boolean;
+  junction_id?: string | null;
   left_line?: string;
   right_line?: string;
   lane_change?: string;
@@ -37,6 +40,8 @@ export interface Scene {
   lanes: Lane[];
   zones?: Zone[];
   stop_lines?: unknown[];
+  /** outline + approaches per junction (export_lane_map.py, junctions.py); absent in older scene files */
+  junctions?: JunctionInfo[];
 }
 
 export type VehicleStateName = "ok" | "checking" | "flagged";

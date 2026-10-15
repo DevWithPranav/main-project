@@ -117,11 +117,18 @@ function fieldHtml(f: TrafficSchema['sections'][number]['fields'][number], v: un
 
 export const TRAFFIC_ITEM_KINDS = ['traffic_flow', 'spawn_vehicles', 'traffic_density', 'peak_hour', 'demand_surge', 'special_event', 'congestion_jam', 'accident', 'breakdown', 'emergency_vehicle', 'weather'];
 
+/** Traffic-character presets offered in the Traffic tab (key -> button label). The backend still lists all of them; the rest are only
+ *  filtered out here (docs/Live_Page_Changes.md). Add a key to bring one back. */
+const SHOWN_PRESETS: Record<string, string> = { moderate: 'Normal traffic', heavy: 'Heavy traffic' };
+
+/** The "Traffic scenarios" row is hidden, not removed (docs/Live_Page_Changes.md); true brings it back. */
+const SHOW_SCENARIOS = false;
+
 /** The Traffic tab: presets, the schema's sections with live visuals, quick adds, the last run, export / import. */
 export function trafficTabHtml(schema: TrafficSchema, cfg: Cfg | null | undefined, last: TrafficResult | null, canEdit: boolean, hasAnchor: boolean, counts: { flows: number; groups: number; zones: number; incidents: number }): string {
   const c = normalizeTraffic(schema, cfg);
   const bg = c.background;
-  const presets = Object.entries(schema.presets).map(([k, p]) => `<button class="chip ${c.preset === k ? 'on' : ''}" data-tpreset="${esc(k)}" title="${esc(p.help)}" ${canEdit ? '' : 'disabled'}>${esc(p.label)}</button>`).join('');
+  const presets = Object.entries(schema.presets).filter(([k]) => k in SHOWN_PRESETS).map(([k, p]) => `<button class="chip ${c.preset === k ? 'on' : ''}" data-tpreset="${esc(k)}" title="${esc(p.help)}" ${canEdit ? '' : 'disabled'}>${esc(SHOWN_PRESETS[k] ?? p.label)}</button>`).join('');
   const scenarios = Object.entries(schema.scenario_presets ?? {}).map(([k, sp]) => `<button class="chip scn" data-tscn="${esc(k)}" ${canEdit && hasAnchor ? '' : 'disabled'}
       title="${esc(sp.help)} Adds: ${esc(sp.items.map((i) => i.kind.replace(/_/g, ' ')).join(', '))}">${esc(sp.label)}</button>`).join('');
   const sections = schema.sections.map((sec) => {
@@ -141,9 +148,9 @@ export function trafficTabHtml(schema: TrafficSchema, cfg: Cfg | null | undefine
     <p class="muted">${esc(describeTraffic(schema, cfg))}</p>
     <h5>Traffic character <span class="muted">(presets: density, mix, drivers, demand)</span></h5>
     <div class="chips">${presets}</div>
-    <h5>Traffic scenarios <span class="muted">(settings + sources, groups, zones or incidents at the builder location)</span></h5>
+    ${SHOW_SCENARIOS ? `<h5>Traffic scenarios <span class="muted">(settings + sources, groups, zones or incidents at the builder location)</span></h5>
     <div class="chips">${scenarios}</div>
-    ${hasAnchor ? '' : '<p class="muted">Right-click the map and choose Add Custom Rules to place a scenario.</p>'}
+    ${hasAnchor ? '' : '<p class="muted">Right-click the map and choose Add Custom Rules to place a scenario.</p>'} ` : ''}
     ${sections}
     <details class="tsec" open><summary><b>Sources, groups and zones</b> <span class="muted">placed on the map at the builder location</span></summary>
       <div class="qadd"><button class="mini" data-tadd="traffic_flow" ${canEdit ? '' : 'disabled'}>+ Flow source <span class="muted">(${counts.flows})</span></button>

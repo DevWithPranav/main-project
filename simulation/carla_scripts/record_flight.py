@@ -462,37 +462,54 @@ class TrafficLightLogger:
     """Every traffic light's state change (world.on_tick) and its stop lines, for the violation
     engine's red-light rule (ml/violation_engine/signals.py). Stop lines are CARLA's own
     TrafficLight.get_stop_waypoints(): one per controlled lane, drawn across the lane, with the
-    lane's driving direction as the approach direction. Lights are static, so the list is read once."""
+    lane's driving direction as the approach direction. Lights are static, so the list is read once.
 
-    def __init__(self, world):
+    on_change (optional): called from the tick thread with the tick's new changes, each
+    [carla_frame, sim_time, opendrive id, state] (stream_flight.py sends them live)."""
+
+    def __init__(self, world, on_change=None):
         self.world = world
         self.lights = list(world.get_actors().filter("traffic.traffic_light"))
         self.last: dict[int, str] = {}
+        self.current: dict[str, list] = {}  # opendrive id -> its latest change
         self.changes: list = []
+        self.on_change = on_change
+        self._info = None
         self._cb = world.on_tick(self._on_tick)
 
     def _on_tick(self, snapshot) -> None:
+        new = []
         for tl in self.lights:
             st = str(tl.get_state())
             if self.last.get(tl.id) != st:
                 self.last[tl.id] = st
-                self.changes.append([snapshot.frame, round(snapshot.timestamp.elapsed_seconds, 4),
-                                     tl.get_opendrive_id(), st])
+                ch = [snapshot.frame, round(snapshot.timestamp.elapsed_seconds, 4), tl.get_opendrive_id(), st]
+                self.changes.append(ch)
+                self.current[ch[2]] = ch
+                new.append(ch)
+        if new and self.on_change is not None:
+            self.on_change(new)
+
+    def lights_info(self) -> list[dict]:
+        """Every light with its stop lines (traffic_lights.json "lights"); read once, the lights are static."""
+        if self._info is None:
+            lights = []
+            for tl in self.lights:
+                sid = tl.get_opendrive_id()
+                lines = []
+                for k, wp in enumerate(tl.get_stop_waypoints()):
+                    c, r, f = wp.transform.location, wp.transform.get_right_vector(), wp.transform.get_forward_vector()
+                    h = wp.lane_width / 2
+                    lines.append({"id": f"tl_{sid}_{k}", "signal_id": sid, "dir": [round(f.x, 4), round(f.y, 4)],
+                                  "line": [[round(c.x - h * r.x, 2), round(c.y - h * r.y, 2)],
+                                           [round(c.x + h * r.x, 2), round(c.y + h * r.y, 2)]]})
+                lights.append({"id": sid, "actor_id": tl.id, "stop_lines": lines})
+            self._info = lights
+        return self._info
 
     def stop_and_write(self, path: Path) -> None:
         self.world.remove_on_tick(self._cb)
-        lights = []
-        for tl in self.lights:
-            sid = tl.get_opendrive_id()
-            lines = []
-            for k, wp in enumerate(tl.get_stop_waypoints()):
-                c, r, f = wp.transform.location, wp.transform.get_right_vector(), wp.transform.get_forward_vector()
-                h = wp.lane_width / 2
-                lines.append({"id": f"tl_{sid}_{k}", "signal_id": sid, "dir": [round(f.x, 4), round(f.y, 4)],
-                              "line": [[round(c.x - h * r.x, 2), round(c.y - h * r.y, 2)],
-                                       [round(c.x + h * r.x, 2), round(c.y + h * r.y, 2)]]})
-            lights.append({"id": sid, "actor_id": tl.id, "stop_lines": lines})
-        path.write_text(json.dumps({"lights": lights, "changes": self.changes}))
+        path.write_text(json.dumps({"lights": self.lights_info(), "changes": self.changes}))
 
 
 def _bbox_dict(bb) -> dict:
