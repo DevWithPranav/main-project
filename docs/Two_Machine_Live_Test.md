@@ -39,6 +39,22 @@ Only port **5555** (frames) has to be reachable from Afif's PC. Backend and dash
    allows inbound TCP 5555 and 5556 **only from the tailnet range 100.64.0.0/10**. Add `-Dashboard` to also open 8000 and 5173 for Afif.
    Remove it after the test with `-Remove`.
 
+### Optional: direct Ethernet cable instead of Wi-Fi
+
+A plain USB-C to USB-C cable gives no network between two PCs (both ends are USB hosts). It takes an Ethernet cable between Ethernet
+ports (built in, or a USB-C to Ethernet adapter), or USB4 / Thunderbolt networking on both PCs (Afif's PC has no USB4 controller, so
+Ethernet it is: its Realtek GbE port). On both PCs, as Administrator:
+
+| | Afif's PC | This PC |
+|---|---|---|
+| Address | `scripts\live_test\05_cable_link.ps1 -Role sim` (192.168.50.1) | `scripts\live_test\05_cable_link.ps1 -Role detector` (192.168.50.2) |
+| Firewall | | `scripts\live_test\02_open_firewall.ps1 -Cable` (adds 192.168.50.0/24 to the rule) |
+| Stream | `stream_flight.py --to 192.168.50.2 ...` | |
+
+No gateway is set on the cable, so internet and Tailscale stay on Wi-Fi. After the test: `05_cable_link.ps1 -Undo` on both.
+A faster link only helps if frames are lost on the way: when the pipeline log shows `received` close to what the sender sent and
+`processed` far below, the detector is the limit (`-Imgsz 640`), not the network.
+
 ## 2. Check the link before touching CarlaAir
 
 On this PC (leave it running):
