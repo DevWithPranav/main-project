@@ -47,3 +47,16 @@ def test_restarts_a_hung_pipeline(tmp_path, monkeypatch):
     assert time.time() - t0 < 30
     gaps = [json.loads(line) for line in (tmp_path / "res" / "s1" / "pipeline_gaps.jsonl").read_text().splitlines()]
     assert len(gaps) == 1 and "no heartbeat" in gaps[0]["reason"] and gaps[0]["restart"] == 1
+
+
+def test_stale_heartbeat_from_an_earlier_run_is_ignored(tmp_path, monkeypatch):
+    """A heartbeat.json left by a previous run of the same session must not get the new pipeline killed at once."""
+    fake = tmp_path / "pipeline.py"
+    fake.write_text("import time\ntime.sleep(2)\n")  # exits 0 without ever writing a heartbeat
+    old = tmp_path / "res" / "s2"
+    old.mkdir(parents=True)
+    (old / "heartbeat.json").write_text(json.dumps({"wall": time.time() - 100000}))
+    monkeypatch.setattr(watchdog, "HERE", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["watchdog.py", "--timeout", "1", "--out", str(tmp_path / "res"), "--session", "s2"])
+    watchdog.main()  # a restart on the stale file would hit the 20-restart limit and sys.exit(1)
+    assert not (old / "pipeline_gaps.jsonl").exists()

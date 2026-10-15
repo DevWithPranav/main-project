@@ -57,6 +57,7 @@ def main() -> None:
     folder = args.out / session
     folder.mkdir(parents=True, exist_ok=True)
     beat_file, gaps_file = folder / "heartbeat.json", folder / "pipeline_gaps.jsonl"
+    beat_file.unlink(missing_ok=True)  # a heartbeat left by an earlier run of this session would read as an instantly stale one
     cmd = [sys.executable, str(HERE / "pipeline.py"), *passthrough, "--session", session, "--out", str(args.out)]
     restarts, last_beat_wall, gap_start, reason, gap_reason = 0, None, None, "", ""
     while True:
