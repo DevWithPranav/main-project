@@ -1,6 +1,6 @@
 // Filter bar shared by Violations and Statistics; state lives in the URL so views can be shared.
 
-import { Button, Group, Menu, Select } from '@mantine/core';
+import { Button, Group, Menu, Select, TextInput } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconDownload, IconHistory } from '@tabler/icons-react';
 import { useState } from 'react';
@@ -12,6 +12,19 @@ import { useConditions, useSessions } from '../hooks';
 import { activeFilterCount, filtersToParams, paramsToFilters, type EventFilters } from '../lib/filters';
 import { statusLabel, typeLabel } from '../lib/format';
 import ReportHistory, { saveBlob } from './ReportHistory';
+
+/** ISO instant -> the browser's local 'YYYY-MM-DDTHH:mm' for a datetime-local input, and back. */
+function isoToLocal(iso: string | undefined): string {
+  const d = iso ? new Date(iso) : null;
+  if (!d || Number.isNaN(d.getTime())) return '';
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+/** endOfMinute: 'To 14:30' keeps events up to 14:30:59.999, not only those before 14:30:00. */
+function localToIso(local: string, endOfMinute = false): string | undefined {
+  const d = new Date(local);
+  return local && !Number.isNaN(d.getTime()) ? new Date(d.getTime() + (endOfMinute ? 59999 : 0)).toISOString() : undefined;
+}
 
 export function useFilters(): [EventFilters, (f: EventFilters) => void] {
   const [sp, setSp] = useSearchParams();
@@ -53,6 +66,10 @@ export default function FilterBar({ value, onChange }: { value: EventFilters; on
       <Select label="Status" w={150} clearable value={value.status ?? null} onChange={set('status')} data={statuses.map((s) => ({ value: s, label: statusLabel(s) }))} />
       <Select label="Review" w={130} clearable value={value.review ?? null} onChange={set('review')}
         data={[{ value: 'none', label: 'not reviewed' }, { value: 'confirmed', label: 'confirmed' }, { value: 'dismissed', label: 'dismissed' }]} />
+      <TextInput label="From" type="datetime-local" w={200} value={isoToLocal(value.since)}
+        max={isoToLocal(value.until) || undefined} onChange={(ev) => set('since')(localToIso(ev.currentTarget.value) ?? null)} />
+      <TextInput label="To" type="datetime-local" w={200} value={isoToLocal(value.until)}
+        min={isoToLocal(value.since) || undefined} onChange={(ev) => set('until')(localToIso(ev.currentTarget.value, true) ?? null)} />
       {activeFilterCount(value) > 0 && <Button variant="subtle" onClick={() => onChange({})}>Clear</Button>}
       <Menu>
         <Menu.Target>

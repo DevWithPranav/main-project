@@ -6,7 +6,7 @@ import { eventTime, isAnomaly, type TrafficEvent } from '../api/types';
 import EventDrawer from '../components/EventDrawer';
 import FilterBar, { useFilters } from '../components/Filters';
 import { useConditions } from '../hooks';
-import { conditionLabel, fmtSimTime, reviewState, STATUS_COLORS, statusLabel, TYPE_COLORS, typeLabel } from '../lib/format';
+import { conditionLabel, fmtDateTime, fmtSimTime, reviewState, STATUS_COLORS, statusLabel, TYPE_COLORS, typeLabel } from '../lib/format';
 
 const PAGE = 50;
 const REVIEW_COLORS = { none: 'gray', confirmed: 'green', dismissed: 'dark' } as const;
@@ -52,7 +52,10 @@ export default function ViolationsPage() {
                   <Table.Td><Badge color={TYPE_COLORS[e.type] ?? 'gray'} size="sm">{typeLabel(e.type)}</Badge></Table.Td>
                   <Table.Td><Text size="sm">{isAnomaly(e) ? '-' : conditionLabel(e.condition, idx)}</Text></Table.Td>
                   <Table.Td><Text size="sm">{isAnomaly(e) ? `severity ${e.severity_score.toFixed(2)}` : `${e.cls} #${e.track_ids.join(', #')}`}</Text></Table.Td>
-                  <Table.Td><Text size="sm">{fmtSimTime(eventTime(e))}</Text></Table.Td>
+                  <Table.Td>
+                    <Text size="sm">{fmtDateTime((e as TrafficEvent & { occurred_at?: string }).occurred_at)}</Text>
+                    <Text size="xs" c="dimmed">sim {fmtSimTime(eventTime(e))}</Text>
+                  </Table.Td>
                   <Table.Td><Text size="sm">{e.session_id ?? '-'}</Text></Table.Td>
                   <Table.Td><Badge variant="light" color={STATUS_COLORS[e.status] ?? 'gray'} size="sm">{statusLabel(e.status)}</Badge></Table.Td>
                   <Table.Td><Badge variant="outline" color={REVIEW_COLORS[reviewState(e)]} size="sm">{reviewState(e)}</Badge></Table.Td>
