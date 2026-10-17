@@ -83,6 +83,49 @@ A geometric screen (junction-free 30 m approach) would have kept only 2 of 66 cr
 sit at junction mouths. The engine does not mind, so the stations are ranked best-first (unsignalised, few junction
 lanes on the way in and out) and the engine's dry-run is the real filter.
 
+## Town04, side by side with the highway run (2026-10-15)
+
+Town04 has 27 crosswalks, all in the town grid (x 60-343, y -126..-310), 190-360 m from the highway stretch
+around (-10, -10). Stations 1, 2, 4 and 3 sit within ~17 m of each other around (256.5, -248), so one drone spot
+covers all four (1, 2 and 4 have no traffic light near).
+
+```powershell
+python simulation\violation_scenarios\highway_violations.py --stoppers 2 --duration 0
+python simulation\violation_scenarios\pedestrian_violations.py --station-ids 1 2 4 3 --duration 0 --out <dir>\scenario_log.json
+python simulation\carla_scripts\goto_spot.py -12 -5 --yaw 90      # highway; later, Ctrl+C it and:
+python simulation\carla_scripts\goto_spot.py 256.5 -248 --yaw 90  # the crossings
+```
+
+- **Own actor role.** This script's car and walkers carry `role_name` `zebra_scenario` (was `violation_scenario`,
+  shared with `highway_violations.py` and the stager). Each script removes its own role's leftovers at start, so
+  with one role, starting the second script deleted the first one's cars. `traffic_flow.py` skips both roles.
+- **Offline plan check** (stations 1 2 4 3, 3 rounds): 48/48 acts as expected, 24 events, 0 extra.
+- **Live, two runs** (CarlaAir Medium, one PC, pipeline + both scripts + an independent CARLA watcher every 0.5 s
+  for actors out of place, actors destroyed by the other script, cross-script contacts, simulator stalls):
+
+| Run | Length | Chaos found by the watcher | Notes |
+|---|---|---|---|
+| `live_coexist_1` | 13 min (drone 5.5 min highway, then 7 min crossings) | **none while both ran** (the only lines were each script's own clean-up at its end) | 135 zebra acts, 317 highway truth events, longest tick gap 0.11 s. 5 highway collisions, all highway car vs highway car (the known weave), none with a zebra actor |
+| `live_coexist_2` | 9 min (5 min highway, 4 min crossings) | none | longest tick gap 0.13 s |
+
+- **Live detection** (drone over the crossings; acts from the scenario log):
+
+| | Run 1 | Run 2 (stop-spot fix live) |
+|---|---|---|
+| F1 violations flagged | 15/16 | 11/12 |
+| F1 short-stop negatives flagged | 4/18 | **0/8** |
+| F3 violations flagged | 0/18 | 0/9 |
+
+  The 4 false F1s in run 1 were two short stops on one spot ~15 s apart read as one stop: the first car's track
+  was lost as it drove off (or changed ID), and the place memory carried its dwell over to the next car. Fixed in
+  `StopInZoneMonitor` (`place_memory.vacate_kmh` / `vacate_beyond_m`): a spot also closes when a track drives off or
+  through it, or when a new track joins it after a gap having driven there. Re-running run 1's own kinematics:
+  4 -> 2 (the 2 left are an approach and its stop under two track IDs, which the rows cannot tell apart).
+- **F3 needs the people detector, which barely sees CARLA walkers from 67 m:** on flight `20261014_224953`, walker
+  recall 1.8 % on the full frame at 1280 px (2.5 false people per frame); crops around the crosswalks at 1280 px:
+  28 % (8.4 false per frame). The live people path works (replay of that flight: F1 4/4, no false events, the
+  people tracks reach the engine); F3 waits for a detector trained on CARLA walkers (the retrain).
+
 ## Not done
 
 - **Scoring the real pipeline** (`run_violations.py` without `--oracle`, then `eval_violations.py` pipeline vs oracle

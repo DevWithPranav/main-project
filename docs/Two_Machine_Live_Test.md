@@ -94,6 +94,13 @@ Logs: `ml\data\results\live\<session>_*.log`.
 Spot for the staged-violation test: Town05 around **(-40, -137)** (flight `20261009_201727` was recorded there, so its `scenario_log.json` zones fit); pass that file with `-Zones` in step 3.
 For natural traffic only, any spot works. Stop with **Esc** or Ctrl+C in window C, then B, then A.
 
+Town04, highway and zebra violations at once (`docs/Pedestrian_Violations.md`, "Town04, side by side"): in window B
+run `highway_violations.py --stoppers 2 --duration 0` and, in a fifth window, `pedestrian_violations.py --station-ids 1 2 4 3
+--duration 0`; fly between (-12, -5) (highway) and (256.5, -248) (crossings) by stopping window A and starting `goto_spot.py`
+again with the other spot. The pipeline runs the pedestrian detector only while a crosswalk is near the view (`--people auto`,
+the default; `off` / `on` with `--people`): over the highway it costs nothing (0.3-0.5 ms a frame), over the crossings about +130 ms a frame (one PC with CarlaAir:
+~8-9 fps on the highway, ~4-5 fps over the crossings).
+
 ## 5. Watch it work (this PC)
 
 Open http://localhost:5173, log in (`operator` / `operator123` runs sessions, `officer` reviews events, `planner` edits, `admin` everything).
@@ -130,7 +137,7 @@ Do them in this order; each needs the previous ones working. Write the result an
 | 12 | Network drop | disconnect Tailscale on Afif's PC for 15 s, reconnect | the sender reconnects, no crash, processing resumes | sender window, pipeline log |
 | 13 | Offline replay | stop the backend for 1 minute during a stream, start it again, then `venv\Scripts\python.exe services\live\replay_events.py ml\data\results\live\<session>\events.jsonl` | events missed while it was down are delivered, running it twice changes nothing | Violations page |
 | 14 | Configuration | Configuration page: edit a threshold, save (new version with a note) | version history shows who / when / why; a pipeline restarted with that profile uses it | Configuration, `backend\data\profiles\` |
-| 15 | Zones | as `planner`: draw a no-parking zone in the 3D twin (Planner > New zone) | the zone appears, its history is kept, `backend\data\zones\Town05.json` is rewritten; a pipeline restarted with `-Zones` that file flags a car stopping in it | twin, file |
+| 15 | Zones | as `planner`: draw a no-parking zone in the 3D twin (Planner > New zone) | the zone appears, its history is kept, `backend\data\zones\Town05.json` is rewritten; the running pipeline logs `[zones] reloaded N zone(s)` within ~2 s (no restart, no `-Zones` needed) and flags a car stopping in it | twin, file |
 | 16 | 3D twin live | `/twin`, Live mode, with the **Custom traffic** switch off and on | live vehicles and pins; custom traffic (blue) is independent of the video traffic | twin |
 | 17 | Scenario builder (no CARLA needed) | right-click the Town05 map, Add Custom Rules, add a rule + a traffic scenario, Simulate virtual traffic, Report | virtual traffic follows the plan; comparison with intervals; PDF downloads | twin |
 | 18 | Roles and audit | log in as each role | each sees only what its role allows; `admin` sees the audit log with the review and zone actions | all pages |
