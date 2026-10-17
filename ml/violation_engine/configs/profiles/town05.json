@@ -1,0 +1,22 @@
+{
+ "profile_version": 1,
+ "name": "town05",
+ "description": "CARLA Town05 recorded or live flights: default thresholds, Town05 lane map, retrained 3-class detector + TrackTrack",
+ "applies_to": {"map": "Town05", "site": null, "road_type": "mixed", "scenario": null},
+ "violations": {
+  "red_light": {"enabled": false}
+ },
+ "model": {
+  "detector_weights": "ml/data/results/retrain_v1/train/weights/best.pt",
+  "tracker": "tracktrack_ours",
+  "tracker_config": "ml/violation_engine/tracktrack_ours.yaml",
+  "stitching": true,
+  "pedestrian_detector": {"enabled": false, "weights": "ml/data/results/full_train/train/weights/best.pt",
+                          "classes": ["pedestrian", "people"]}
+ },
+ "modules": {"static_check": true, "evidence_clips": true, "learn_flow": false, "red_light": false,
+             "pedestrians": false, "surface_anomalies": false},
+ "road": {
+  "scene": "ml/violation_engine/configs/scenes/Town05.json"
+ }
+}

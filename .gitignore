@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+venv_*/
+env/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+frontend/.env*.local
+# Vite builds (frontend dashboard, twin) and TypeScript incremental info
+frontend/dist/
+twin/dist/
+*.tsbuildinfo
+# Browser-test output
+test-results/
+playwright-report/
+
+# Env files
+.env
+*.env
+!*.env.example
+
+# ML artifacts
+*.pt
+ml/models/*.pt
+ml/models/*.pth
+ml/models/*.onnx
+# Ultralytics auto-downloads ReID encoders into the working directory
+/yolo26*-reid.onnx
+ml/notebooks/.ipynb_checkpoints/
+
+# Raw drone footage (large media, not code)
+ml/data/raw_footage/*
+!ml/data/raw_footage/.gitkeep
+
+# Inference/training outputs
+ml/data/results/
+ml/pothole/runs/
+runs/
+
+# Pothole datasets
+ml/pothole/data/
+PUBLIC POTHOLE DATASET/
+
+# Test videos (large media)
+*.mp4
+
+# Downloaded datasets
+ml/data/datasets/
+
+# Simulation output
+simulation/data_export/*
+!simulation/data_export/.gitkeep
+
+# CarlaAir simulator distribution (multi-GB packaged UE4 build, not source)
+CarlaAir-v0.1.7-Windows11-x86_64/*
+
+# Databases / logs
+*.log
+*.sqlite3
+
+# MinIO / Docker volumes
+infra/**/data/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+/CLAUDE.md
+
+# External pothole/crack training datasets
+ml/pothole/external/

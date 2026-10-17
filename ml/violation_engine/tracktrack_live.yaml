@@ -1,0 +1,35 @@
+# Live pipeline tracker (2026-10-15): tracktrack_ours.yaml for the live frame rate. The pipeline processes ~8 of the
+# ~30 frames it receives, so a car moves 2-4 m between processed frames; with stock IoU matching a new car above
+# ~70 km/h never overlapped its next box enough to be confirmed. Two changes (buffered_tracktrack.py):
+#   iou_buffer 1.0   boxes compared enlarged by their own width / height on each side (C-BIoU)
+#   min_track_len 1  drawn on its second matched frame instead of its fourth
+# Recorded Town04 highway flight trk_20261015_150635 (90 s, 17 cars, every 3rd frame = ~7 fps, scored against CARLA's
+# true positions): vehicles in view boxed 41 % -> 78 % (detector alone, the ceiling: 78 %); 70-100 km/h 1 % -> 68 %,
+# above 100 km/h 1 % -> 74 %; box precision 0.72 -> 0.80; IDs per vehicle 5.2 -> 6.4 counted per raw tracker id
+# (more cars tracked, each split where it passes under the overpass; the kinematics relink joins them).
+# Offline runs on full-rate footage keep tracktrack_ours.yaml.
+
+tracker_type: tracktrack
+track_high_thresh: 0.15
+track_low_thresh: 0.05
+new_track_thresh: 0.35
+track_buffer: 90
+match_thresh: 0.7
+lost_match_thr: 0.9
+
+iou_weight: 0.5
+reid_weight: 0.5
+conf_weight: 0.1
+angle_weight: 0.1
+
+penalty_p: 0.2
+penalty_q: 0.4
+reduce_step: 0.05
+
+tai_thr: 0.45
+min_track_len: 1
+iou_buffer: 1.0
+
+gmc_method: sparseOptFlow
+with_reid: False
+model: auto

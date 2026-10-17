@@ -1,0 +1,99 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "aerial-surveillance/event.schema.json",
+ "title": "Event",
+ "description": "One violation or road-surface anomaly event (Build Plan M0). Violations mirror ml/violation_engine/events.py Event and the PRD ViolationEvent (Section 13.1); anomalies mirror the PRD road_anomalies table. kind defaults to violation, so engine output written before 2026-10-09 still validates. Positions are map metres (CARLA world or site frame); the backend adds lat/lon.",
+ "version": "1.0",
+ "if": {"properties": {"kind": {"const": "anomaly"}}, "required": ["kind"]},
+ "then": {"$ref": "#/$defs/anomaly"},
+ "else": {"$ref": "#/$defs/violation"},
+ "$defs": {
+  "time_s": {"type": "number", "minimum": 0},
+  "frame": {"type": "integer", "minimum": 0},
+  "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+  "evidence": {
+   "type": "object",
+   "description": "Filled by render_violations.py --clips; the backend replaces local paths by object-store URLs",
+   "properties": {
+    "frame": {"type": "integer", "minimum": 0},
+    "clip": {"type": "string"},
+    "snapshot": {"type": "string"},
+    "trajectory": {"type": "string"},
+    "telemetry": {"type": "object"}
+   },
+   "additionalProperties": true
+  },
+  "review": {
+   "type": "object",
+   "description": "Human-in-the-loop outcome (PRD Section 30.5); absent until reviewed",
+   "required": ["outcome", "by", "at"],
+   "properties": {
+    "outcome": {"enum": ["confirmed", "dismissed"]},
+    "note": {"type": "string"},
+    "by": {"type": "string"},
+    "at": {"type": "string", "format": "date-time",
+           "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:\\d{2})$"}
+   },
+   "additionalProperties": false
+  },
+  "violation": {
+   "type": "object",
+   "required": ["event_id", "type", "track_ids", "cls", "start_s", "start_frame", "flag_s", "flag_frame",
+                "x", "y", "confidence", "status", "tags", "value"],
+   "properties": {
+    "kind": {"const": "violation"},
+    "event_id": {"type": "string", "minLength": 1},
+    "type": {"enum": ["no_parking", "wrong_way", "illegal_u_turn", "speeding", "lane_violation",
+                      "zebra_crossing", "highway_stop", "red_light"]},
+    "condition": {"type": ["string", "null"], "pattern": "^[A-F][1-8]$",
+                  "description": "Expected_Output Section 4.2 condition id, see schemas/conditions.json"},
+    "track_ids": {"type": "array", "items": {"type": "integer"}, "minItems": 1},
+    "cls": {"type": "string"},
+    "start_s": {"$ref": "#/$defs/time_s"},
+    "start_frame": {"$ref": "#/$defs/frame"},
+    "flag_s": {"$ref": "#/$defs/time_s"},
+    "flag_frame": {"$ref": "#/$defs/frame"},
+    "end_s": {"oneOf": [{"$ref": "#/$defs/time_s"}, {"type": "null"}]},
+    "end_frame": {"oneOf": [{"$ref": "#/$defs/frame"}, {"type": "null"}]},
+    "lane_id": {"type": ["string", "null"]},
+    "zone_id": {"type": ["string", "null"]},
+    "x": {"type": "number"},
+    "y": {"type": "number"},
+    "value": {"type": "object"},
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "confidence": {"$ref": "#/$defs/confidence"},
+    "status": {"enum": ["flagged", "needs_review", "suppressed", "possible_breakdown"]},
+    "evidence": {"$ref": "#/$defs/evidence"},
+    "session_id": {"type": "string"},
+    "review": {"$ref": "#/$defs/review"}
+   },
+   "additionalProperties": false
+  },
+  "anomaly": {
+   "type": "object",
+   "required": ["kind", "event_id", "type", "t_s", "frame", "x", "y", "severity_score", "confidence", "status"],
+   "properties": {
+    "kind": {"const": "anomaly"},
+    "event_id": {"type": "string", "minLength": 1},
+    "type": {"enum": ["pothole", "crack", "waterlogging", "debris"]},
+    "t_s": {"$ref": "#/$defs/time_s"},
+    "frame": {"$ref": "#/$defs/frame"},
+    "x": {"type": "number"},
+    "y": {"type": "number"},
+    "lane_id": {"type": ["string", "null"]},
+    "zone_id": {"type": ["string", "null"]},
+    "severity_score": {"type": "number", "minimum": 0, "maximum": 1},
+    "severity_band": {"enum": ["low", "medium", "high"]},
+    "area_sq_m": {"type": "number", "minimum": 0},
+    "recurrence_count": {"type": "integer", "minimum": 1},
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "confidence": {"$ref": "#/$defs/confidence"},
+    "status": {"enum": ["flagged", "reviewed", "work_order_issued", "repaired"]},
+    "evidence": {"$ref": "#/$defs/evidence"},
+    "session_id": {"type": "string"},
+    "review": {"$ref": "#/$defs/review"}
+   },
+   "additionalProperties": false
+  }
+ }
+}

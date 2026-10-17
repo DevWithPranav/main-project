@@ -1,0 +1,24 @@
+# Simulation environment: simulation/carla_scripts/* (CARLA + AirSim drone control).
+# Must be Python 3.10 — the bundled CARLA wheel is cp310 only.
+#
+#   conda create -n carlaAir python=3.10 -y
+#   conda activate carlaAir
+#   pip install numpy msgpack-rpc-python
+#   pip install --no-build-isolation airsim
+#   pip install -r simulation\requirements-sim.txt
+#   pip install CarlaAir-v0.1.7-Windows11-x86_64\PythonAPI\carla\dist\carla-0.9.16-cp310-cp310-win_amd64.whl
+#
+# airsim is installed separately first because its setup.py imports numpy and
+# msgpack-rpc at build time (needs --no-build-isolation).
+#
+# live_fly_and_track.py also runs YOLO inside this env; for that, additionally:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#   pip install ultralytics
+
+numpy
+msgpack-rpc-python
+airsim
+opencv-python
+pillow
+pygame
+pynput

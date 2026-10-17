@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <input>
+        <net-file value="Town10HD.net.xml"/>
+        <route-files value="D:/Main-Project/project data/WindowsNoEditor/Co-Simulation/Sumo/examples/carlavtypes.rou.xml,Town10HD.rou.xml"/>
+    </input>
+</configuration>

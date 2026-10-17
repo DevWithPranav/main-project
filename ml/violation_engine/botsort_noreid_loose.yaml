@@ -1,0 +1,20 @@
+# Improvement Plan C1: ReID off, but with a looser IoU gate (match_thresh 0.8 = IoU >= 0.2).
+#
+# Phase 1 found that botsort_sim.yaml's "ReID" mostly acts as a looser IoU gate: any box
+# overlapping a track by IoU >= proximity_thresh (0.2) matches, whatever it looks like.
+# This config reproduces that loosening without any appearance model, to see what
+# appearance adds on top. Otherwise identical to botsort_noreid.yaml.
+
+tracker_type: botsort
+track_high_thresh: 0.15
+track_low_thresh: 0.05
+new_track_thresh: 0.15
+track_buffer: 90
+match_thresh: 0.8          # max cost 1 - IoU*score (fuse_score) -> IoU*score >= 0.2 (stock value)
+fuse_score: True
+
+gmc_method: sparseOptFlow
+proximity_thresh: 0.2
+appearance_thresh: 0.25
+with_reid: False
+model: auto

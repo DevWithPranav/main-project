@@ -1,0 +1,122 @@
+# Research Notes
+
+Web research done before building each milestone (rule: `AGENTS/rules.md` §7). For each topic: what was found, what we adopt, and what we reject. Numbers quoted from papers are **their claims**, not our measurements; nothing here is adopted as a result until it is measured on our data and logged in `docs/main_project_tracker.md`.
+
+---
+
+## 2026-10-09: first pass (M0 infra, M1–M8)
+
+### Object store (M0)
+- MinIO no longer publishes free images: `minio/minio` on Docker Hub and `quay.io/minio/minio` both refused the pull (checked 2026-10-09).
+- **Adopted:** SeaweedFS (Apache-2.0, S3 API), verified in `docker-compose.yml`.
+
+### Road features in the lane map (M1)
+- **Ramp detection without lane tags.** Foretellix's OpenSCENARIO domain classifies highway entries and exits from *the topology and geometry of road intersections and interchanges, as well as speed limits* ([Foretellix highway route elements](https://docs.nvidia.foretellix.com/osc_dom/route_elements/oscdomain_route_elements_highway.html)). ASAM OSI defines on-ramps (rural/urban road → motorway), off-ramps, and motorway-to-motorway connectors as lane classifications ([ASAM OSI Lane Classification](https://www.asam.net/static_downloads/ASAM_OSI_reference-documentation_v3.5.0/structosi3_1_1Lane_1_1Classification.html)). OSM's `motorway_link` is the same idea ([OSM wiki](https://wiki.openstreetmap.org/wiki/Tag:highway%3Dmotorway_link)).
+  - **Adopted:** use OpenDRIVE's ramp lane types (`onRamp` / `offRamp` / `entry` / `exit`) when a map has them. Town04/05 don't, so derive ramps from topology (non-highway lanes linked to highway lanes through junctions) plus the speed limit. Record `ramp` as `on` / `off` / `link`, following OSI.
+- **Outcome (measured on our maps):** topology + speed works once a ramp must reach a highway lane of *another* road through a junction; road class has to follow the road, not the posted limit (OSI/OSM also treat motorway as a road class); OpenDRIVE `<bridge>` tags are unreliable in Town05 (ground-level stretches tagged), so height decides. Details in the tracker row of 2026-10-09 (M1).
+- **OpenDRIVE → lanelet conversion** (CommonRoad Scenario Designer, [docs](https://commonroad-scenario-designer.readthedocs.io/en/latest/_modules/opendrive/opendrive_parser/elements/junction/)). **Rejected for now:** our exporter already reads OpenDRIVE through CARLA's own parser, which is the ground truth for the simulator. Revisit if we need lanelet-based rule monitors (M2).
+
+### Rules: lane change, unsafe lane change, criticality (M2, M8)
+- Formal traffic rules in temporal logic, evaluated on recorded traffic: TUM interstate rules ([Maierhofer et al. 2020](https://portal.fis.tum.de/en/publications/formalization-of-interstate-traffic-rules-in-temporal-logic/), already the basis of our engine); freeway lane-change rules in Metric Temporal Logic, calibrated on naturalistic data ([TRID record](https://trid.trb.org/View/2736802)); lane change as an ordered sequence of *safe gap → signal → move* ([Digital Highway Code, arXiv:2209.14036](https://arxiv.org/pdf/2209.14036)); Traffic Scenario Logic on OpenDRIVE networks ([AAAI-25](https://ojs.aaai.org/index.php/AAAI/article/view/33667/35822)); LLM-assisted rule→MTL translation ([TR2MTL](https://publica.fraunhofer.de/handle/publica/472933)).
+  - **Adopted for A3/A8:** separate the *spatial* condition (gap / time-to-collision to the vehicle in the target lane) from the *temporal* one (lane change in progress), as in the timed-automata work. Signals (indicators) can't be seen from 60 m, so A8 uses gap + TTC only.
+- **Criticality measures:** [CommonRoad-CriMe](https://cps.pages.gitlab.lrz.de/commonroad/commonroad-criticality-measures/) (`pip install commonroad-crime`, IEEE IV 2023; TTC, time-to-react and many more). FHWA's [SSAM v3](https://rosap.ntl.bts.gov/view/dot/35919) computes min TTC / PET from simulated trajectories.
+  - **To evaluate in M2/M8:** CommonRoad-CriMe for conflict indicators in the CARLA before/after runs. It needs scenarios in CommonRoad format, so check the conversion cost first; otherwise implement TTC/PET ourselves using its definitions.
+- **TTC/PET details from drone data:** [SinD 2.0](https://arxiv.org/pdf/2607.16943) computes PET only when the closest conflict points are < 2.5 m apart, and keeps a TTC only when the closing speed is > 0.5 m/s and it stays valid ≥ 3 consecutive frames (preprint, verify). [CitySim](https://arxiv.org/pdf/2208.11036) uses min TTC for merge/diverge and cut-in events, and min PET for intersection conflicts; [UAV PET vs signal timing](https://arxiv.org/pdf/2210.05044); [drone traffic metrics at intersections](https://arxiv.org/pdf/2411.02349).
+  - **Adopted as starting values** for A8 and the M8 conflict metrics, re-expressed in seconds (≥ 3 frames → ≥ 0.1 s at 30 fps), then tuned on staged acts.
+
+### M2 pass (2026-10-09): unsafe lane change, U-turn geometry, class speed limits
+- **Unsafe lane change (A8).** highD extracts min distance headway, time headway, TTC and gap around each of its 5,600 lane changes, mainly to the vehicle behind in the target lane (the cut-in view) ([highD, arXiv:1810.05642](https://arxiv.org/pdf/1810.05642)). Gap = rear of the changer to the front of the target-lane vehicle ([Nobukawa et al., truck gap acceptance](https://arxiv.org/pdf/1707.09415)). 2 s is a commonly used TTC threshold between risky and safe interactions, 1 s for high risk ([lane changes after crashes, arXiv:2601.08125](https://arxiv.org/pdf/2601.08125)); Mobileye warns at 2.7 s ([arXiv:2306.06981](https://arxiv.org/pdf/2306.06981)). 2-D TTC suits interactive lane changes better than 1-D ([arXiv:2209.15133](https://arxiv.org/pdf/2209.15133)).
+  - **Adopted:** A8 checks the lead and the lag vehicle in the target lane from the moment the changer's centre crosses the line until it settles: TTC < 2.0 s (1.0 s marks high risk in the event), only for closing speed > 0.5 m/s (SinD 2.0), plus a bumper gap < 0 (overlap) as a hard fail. 1-D TTC along the target lane first; 2-D TTC if staged acts show it is needed.
+  - **Outcome (measured, flight 20261009_201727):** a 3 s window flagged normal braking towards a queue (oracle 17 events); judging only the lane-change moment (1 s, as highD does), only the nearest lead/lag, real sideways body overlap, and the SinD persistence idea as 0.3 s (3 frames = 0.1 s let position noise through) gives oracle 4 / pipeline 4, 2 matching. Needs staged acts to tune further.
+- **U-turn geometry (D2–D5).** A banned-manoeuvre pipeline (filter, classify the trajectory, match against banned zones) and the U-turn's start point relative to the median / intersection centre are the features used in practice ([IECON 2022 framework](https://experts.mcmaster.ca/scholarly-works/2632219); [U-turn patent](https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/12146961)); aerial violation detection by geofencing + trajectory deviation ([arXiv:2509.04624](https://arxiv.org/html/2509.04624v1)); commercial lane-direction rules flag motion against a lane's set direction ([Vehant](https://www.vehant.com/products/trafficmon-wrong-way-detection/)).
+  - **Adopted:** D2/D4 classify a detected U-turn by what its path crossed between the start and end lanes: a solid / double-solid line (D2), or non-driving space between opposing carriageways (a lane with `median_left`, M1) (D4); D3 by the junction it happened in; D5 stays a zone.
+- **Speed limits by vehicle class (E4).** EU Directive 92/6/EEC sets limiters: buses (M3 > 10 t) 100 km/h, heavy goods vehicles (N3) 90 km/h; extended to M2/N2 by 2002/85/EC ([EUR-Lex 92/6](https://eur-lex.europa.eu/eli/dir/1992/6/oj/eng), [TML](https://www.tmleuven.be/en/project/speedlimiters)). These are limiter settings, not posted limits, which are national.
+  - **Adopted:** E4 limits are per class in the profile (`road.class_speed_limits_kmh`); the effective limit is the lower of the lane's and the class's. No built-in national defaults.
+
+### Pedestrians from 50–70 m (M3)
+- Most VisDrone objects are tiny: 54 % of instances < 32×32 px, 22 % < 16×16 ([LAF-YOLOv10](https://arxiv.org/pdf/2609.14560)); 68 % < 32×32 per [DroneScan-YOLO](https://arxiv.org/pdf/2604.13278). Gains reported from a P2 (high-resolution) head + attention fusion + Soft-NMS ([SOD-YOLO](https://papers.cool/arxiv/2507.12727)), from small-object layers on YOLOv11 ([MSDF-YOLO, SAE 2025](https://saemobilus.sae.org/downloads/papers/2025-99-0449/Full%20Text%20PDF)), and from SAHI sliced inference ([thesis](https://norma.ncirl.ie/8780/)). A YOLO26 VisDrone model card also recommends SAHI or a 1024 px model ([HF](https://huggingface.co/steven0226/uav-traffic-vision)).
+  - **Plan for M3:** measure pedestrian recall on CARLA walkers with the `full_train` model at 1280 px, then with SAHI slices restricted to crosswalk areas (cheap, as crossings are known from the map). Only retrain with a P2 head if both fall short.
+
+### 3D twin (M7)
+- No ready OpenDRIVE → CesiumJS pipeline exists. Options found: [libOpenDRIVE](https://github.com/dacuotecuo/libopendrive) (C++, compiles to WebAssembly with JS bindings, generates 3D road meshes) → three.js [GLTFExporter](https://threejs.org/docs/examples/en/exporters/GLTFExporter.html) → Cesium; or OpenDRIVE → CityGML 3.0 → Cesium, as TUM's Digital Twin Munich did ([GISRUK 2023](https://mediatum.ub.tum.de/doc/1712095/1712095.pdf)); [OpenTwinMap](https://arxiv.org/pdf/2511.21925) builds CARLA-compatible twins from OSM + LiDAR; [GDAL XODR driver](https://github.com/DLR-TS/gdal/blob/libopendrive-pr/doc/source/drivers/vector/xodr.rst) wraps libOpenDRIVE.
+  - **Plan for M7:** first draw lanes from our lane-map JSON as Cesium corridors with the M1 road heights (no new toolchain, same data the engine uses); add libOpenDRIVE meshes for surfaces and junctions after that.
+
+### Reproducible CARLA runs (M8)
+- Traffic Manager deterministic mode since 0.9.11: world and TM both synchronous, fixed `fixed_delta_seconds` (tutorial: 0.05), `traffic_manager.set_random_device_seed(seed)`, and seed Python's `random` too; send commands in batches ([CARLA 0.9.11 release](https://carla.org/2020/12/22/release-0.9.11/), [TM tutorial](https://carla.readthedocs.io/en/latest/tuto_G_traffic_manager/), [TM docs 0.9.12](https://carla.readthedocs.io/en/0.9.12/adv_traffic_manager/)).
+  - **Adopted for M8:** `traffic_flow.py` gets `--seed` with exactly that setup. Hybrid physics is **not** used in validation runs: no source confirms it keeps determinism.
+
+## 2026-10-10: M5 backend, M9 road-surface model
+
+### Backend (M5)
+- FastAPI + async SQLAlchemy 2.0 (asyncpg) + GeoAlchemy2; sessions per request via `Depends`, keep the whole path async ([oneuptime: async DB in FastAPI](https://oneuptime.com/blog/post/2026-02-02-fastapi-async-database/view)). **Adopted.**
+- WebSocket fan-out: per-process connection set + Redis pub/sub listener started in the lifespan, `redis.asyncio` (aioredis is deprecated); pub/sub is fire-and-forget, fine for live UI ([oneuptime: FastAPI WebSocket + Redis](https://oneuptime.com/blog/post/2026-03-31-redis-build-fastapi-websocket-chat-with-redis/markdown)). **Adopted.**
+- PDF: ReportLab for table-heavy reports, fpdf2 simpler, WeasyPrint slowest ([templated.io comparison](https://templated.io/blog/generate-pdfs-in-python-with-libraries/)). **Adopted ReportLab**; measured 10 000 events in 6.97 s after splitting the table.
+
+### Road-surface anomalies (M9), written up for Afif in `docs/Pothole_Model_Training_Guide.md`
+- Aerial distress data: HighRPD 2025 (11,696 high-altitude drone images; cracks + potholes) ([PMC11872502](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11872502/)); UAV-PDD2023 (2,440 images, 6 classes, boxes) ([PMC10630617](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10630617/)); PaveCrack1300 (UAV crack masks) ([Mendeley](https://data.mendeley.com/datasets/8b27pdcxv7/1)). **Adopted** as the aerial fine-tune / test sources; box sets get SAM masks from box prompts.
+- Waterlogging: FloodNet (UAV, 10 classes incl. *road flooded*, masks) ([GitHub](https://github.com/BinaLab/FloodNet-Supervised_v1.0), [paper](https://arxiv.org/abs/2012.02951)). **Adopted** (road-flooded class only).
+- Debris: no adequate public aerial dataset found (WildRoadBench: 48 debris images) ([arXiv 2605.20306](https://arxiv.org/pdf/2605.20306)). **Gap**, reported as no_data unless we annotate/synthesise.
+- RGB-D as a 4th input channel: no study found showing it helps YOLO segmentation; PothRGBD uses depth only for measurement ([arXiv 2505.04207](https://arxiv.org/abs/2505.04207)). **Not adopted** (the drone has no depth either).
+- SAHI tiled inference for small objects in large aerial frames ([Ultralytics guide](https://docs.ultralytics.com/guides/sahi-tiled-inference)). **To test** on the aerial test set vs whole-frame.
+- Copy-paste augmentation, higher imgsz, cosine LR: standard Ultralytics options; **to test** against E1/E2 (`train_m9.py --set`).
+
+## 2026-10-10: What-if recommendation system (plan: `docs/WhatIf_Plan.md`)
+
+- Signal delay: HCM control delay `d = d1·PF + d2 + d3`; `d1` is the Webster-derived uniform term, `d2` covers random arrivals and oversaturation. Webster is deterministic, suited to undersaturated conditions; newer HCM editions changed the formulation, so check the edition ([NPTEL signal design](https://archive.nptel.ac.in/content/storage2/courses/105104098/TransportationII/lecture8/text/8%20slide.htm)). **Adopted** for signal-timing what-ifs; **to test** against CARLA signal runs.
+- Link travel time: BPR `t = t0(1 + α(v/c)^β)`, α=0.15, β=4 default; closures reduce `c` (and raise `t0` for work-zone speeds) ([PTV Visum VD functions](https://cgi.ptvgroup.com/vision-help/VISUM_2025_ENG/Content/1_Benutzermodell%20IV/1_5_Vordefinierte%20CR-Funktionen.htm)). Standard BPR underestimates delay on partly blocked roads ([UGPTI brief](https://www.ugpti.org/resources/reports/downloads/mpc22-448-brief.pdf)). **Adopted** with a widened high end for closures/incidents; no published lane-loss-to-capacity recipe found, so the mapping (capacity scaled by lanes lost) is ours and flagged *assumed*. Capacity cuts can also reduce demand, which a static model misses ([York closure](https://www.richardclegg.org/previous/pubs/rgc_utsg2006.doc)).
+- Speed vs crashes: Nilsson power model (exponents 2 injury / 3 serious / 4 fatal, rural Swedish data); Elvik's meta-analyses (98 then 115 studies) give lower exponents; road environment matters and the model does not suit urban arterials directly ([Cameron & Elvik via science.gov](https://www.science.gov/topicpages/n/nilsson+model.html), [SWOV](https://swov.nl/nl/publicatie/nilssons-power-model-connecting-speed-and-road-trauma-does-it-apply-urban-roads)). **Adopted with caution**: use Elvik's urban-specific exponents (not yet looked up; **to do** before coding), show a range, flag as published/uncalibrated.
+- Safety indicators: TTC and PET from simulation, plus TET/TIT; thresholds in the literature vary (TTC 1.5 to 4 s; PET 1 to 8 s; conflict definitions inconsistent), and simulation can underestimate conflicts such as illegal pedestrian crossings ([FHWA SSAM](https://www.fhwa.dot.gov/publications/research/safety/03050/02.cfm), [VISSIM/SSAM pedestrian study](https://trid.trb.org/View/1526117)). **Adopted**: thresholds are parameters, results shown over a range; TTC reported as likelihood, not severity.
+- Not found: a ready-made digital-twin what-if recommender to copy. The design is our own composition of the above.
+
+## What-if for planner changes (2026-10-10, PRD 21.3)
+
+Question: how should the twin answer "what if we change this?" before a CARLA validation run?
+
+- PRD 21.3 asks for a rule-based projection ("Before 142 -> Projected after ~35"), labelled a projected estimate.
+- Crash modification factors (CMFs) are the standard way to express a countermeasure's effect (FHWA CMF Clearinghouse,
+  https://cmfclearinghouse.fhwa.dot.gov/resources_about.php); our M8 catalogue (`ml/planning/catalogue.py`,
+  docs/research/M8_recommendations.md) already holds the sourced ranges. They are published claims about crashes, not our
+  measurements, and are shown that way.
+- Counterfactual replay of recorded trajectories under changed rules is the cheap, exact part: the same vehicles judged by
+  the changed rules. It does not model driver response (that needs the CARLA baseline-vs-modified run, M8).
+
+Adopted: two answers kept apart in `ml/planning/whatif.py`: (1) rule replay on the session's kinematics (measured; only
+vehicles within 60 m of the change, baseline and modified on the same rows), (2) projection = affected historical events
+x the catalogue factor ("not quantified" when no factor was retrieved). Scenarios are stored for side-by-side comparison.
+
+## WebSocket catch-up on reconnect (2026-10-11, PRD 29.3)
+
+Searched: WebSocket reconnect / missed-message replay patterns.
+- WebSocket has no built-in resume (unlike EventSource's Last-Event-ID); recovery is an application protocol: ids on messages,
+  a bounded server-side buffer, replay after the client's cursor, a snapshot / reload fallback when the gap is too old, and
+  duplicate-tolerant clients (https://websocket.org/guides/reconnection/,
+  https://oneuptime.com/blog/post/2026-08-15-restore-websocket-subscriptions-resume-events/view).
+
+Adopted (`backend/app/live.py` `Hub.catch_up`): the buffer is the events table itself (no second store); on connect the server
+sends events stored in the last `catch_up_s` (default and max 60 s, PRD 29.3) oldest first with `catch_up: true`, then a
+`catch_up` marker; the client (`openLive`) asks for the time since its last frame and de-duplicates by `event_id`. Not adopted:
+per-message sequence cursors (event ids + a 60 s window are enough for the PRD; a longer gap reloads `GET /api/events`).
+
+## Pipeline failure handling: watchdog, event buffer, offline replay (2026-10-11, PRD 29.1 / 29.2 / Mode 5)
+
+Searched: store-and-forward buffering with backoff and replay; heartbeat watchdog (the search returned nothing useful on
+watchdogs, so that part follows PRD 29.1 directly).
+- Store-and-forward on local disk, bounded size, replay on reconnect, retries with backoff and de-duplication: OpenMeter
+  collector buffer (https://openmeter.io/docs/collectors/buffer), Particle store-and-forward
+  (https://docs.particle.io/firmware/tracker-edge/store-and-forward/). In-memory buffers do not survive a crash and a blocked
+  destination must not back-pressure the producer (https://docs.datadoghq.com/observability_pipelines/scaling_and_performance/buffering_and_backpressure/).
+
+Adopted (`services/live/backend_client.py`, `watchdog.py`, `replay_events.py`, `pipeline.py`):
+- Buffer in the pipeline process with an on-disk spool (`backend_spool.jsonl`), not Redis Streams as the PRD text says: it also covers
+  the Redis-down case the PRD calls a rare dual failure, and needs no new service. Retry 1, 2, 4, 8, 16, 30 s, in order; a 409 on
+  a re-sent open event counts as delivered (idempotent), other 4xx are dropped and counted; buffer capped at 10 000 events.
+- Watchdog = supervisor process around `pipeline.py` that watches `heartbeat.json` (5 s timeout, PRD 29.1), restarts with
+  `--resume` and writes `pipeline gap: <start> to <end>` lines to `pipeline_gaps.jsonl`.
+- `replay_events.py` re-sends `events.jsonl` (Mode 5 offline replay), safe to run twice.
+
+## Interactive scenario builder (2026-10-11)
+
+Searched: CARLA props / traffic-light control / ScenarioRunner; simulation scenario comparison practice.
+- CARLA exposes traffic-light timing (`TrafficLight.set_green_time`, freeze, state) and static props through blueprints; Scenic's CARLA model treats cones etc. as non-moving props (https://scenic-lang.readthedocs.io/en/latest/_modules/scenic/simulators/carla/model.html, https://carla.readthedocs.io/en/0.9.4/python_api/). The exact prop blueprint names on our CarlaAir build were not confirmed by the search: they are marked "verify with list_blueprints" in `docs/Scenario_Builder_Plan.md`. ScenarioRunner / OpenSCENARIO is the standard way to describe such scenarios (https://scenario-runner.readthedocs.io/); not adopted yet, our plan JSON compiles to our own runner.
+- Comparing scenarios: independent replications with different seeds, remove the warm-up before collecting data, report 95 % confidence intervals across replications, and take care with many metrics at once (Bonferroni) (https://sumo.dlr.de/wiki/Simulation/Randomness, https://promodel.com/onlinehelp/ProModel/80/C-03%20-%20Step%204_%20Conducting%20Experiments.htm). To adopt in Phase 2: several seeds per variant, warm-up cut, 95 % intervals, "no difference detected" when intervals overlap. The search did not say how many seeds; the existing validate runner already takes `--seeds`.
+- Adopted now: the split observed / replay (measured) / projected, and a support matrix that refuses to put numbers on elements the evaluators cannot judge.

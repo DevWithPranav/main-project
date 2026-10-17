@@ -1,0 +1,20 @@
+# Improvement Plan C1 candidate (a): botsort_sim.yaml with ReID OFF.
+#
+# With YOLO26 (end-to-end head), `model: auto` silently falls back to yolo26n-cls.pt,
+# a generic ImageNet classifier — so botsort_sim.yaml never did vehicle ReID. This
+# config measures what that "ReID" was actually contributing. Everything else is
+# identical to botsort_sim.yaml.
+
+tracker_type: botsort
+track_high_thresh: 0.15
+track_low_thresh: 0.05
+new_track_thresh: 0.15
+track_buffer: 90
+match_thresh: 0.6          # max association cost; 0.6 is stricter than the stock 0.8
+fuse_score: True
+
+gmc_method: sparseOptFlow
+proximity_thresh: 0.2
+appearance_thresh: 0.25
+with_reid: False
+model: auto

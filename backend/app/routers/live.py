@@ -1,0 +1,212 @@
+"""Live vehicle state, traffic lights and camera frames in (service token), live event updates, and
+the live WebSocket and MJPEG video out."""
+
+import asyncio
+import time
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .. import storage
+from ..auth import Principal, bearer, current_user, principal, require
+from ..db import get_db
+from ..engine_bridge import condition_of, event_errors
+from ..events import to_api, to_row
+from ..live import hub
+from ..models import Event, Session
+from .events import create_event
+
+router = APIRouter()
+
+
+class VehicleState(BaseModel):
+    session_id: str
+    track_id: int
+    cls: str | None = None
+    x: float
+    y: float
+    speed_kmh: float | None = None
+    heading_deg: float | None = None
+    lane_id: str | None = None
+    state: str = "ok"
+    t_s: float
+
+    def model_post_init(self, _):
+        if self.state not in ("ok", "checking", "flagged"):
+            raise ValueError("state must be ok, checking or flagged")
+
+
+@router.post("/live/state")
+async def live_state(states: list[VehicleState] = Body(...), _: Principal = Depends(require(service=True))):
+    if not states:
+        raise HTTPException(422, "empty list")
+    n = await hub.publish_states([s.model_dump() for s in states])
+    return {"received": n}
+
+
+class SignalsIn(BaseModel):
+    """Traffic lights of a CARLA source (services/live/pipeline.py): the light list (stop lines per light,
+    simulation/carla_scripts/record_flight.py format) when it first arrives, and state changes
+    [carla_frame, sim_time, opendrive id, state]."""
+    session_id: str
+    lights: list[dict] | None = None
+    changes: list[list] = []
+
+    def model_post_init(self, _):
+        for c in self.changes:
+            if len(c) != 4 or not isinstance(c[1], (int, float)) or not isinstance(c[3], str):
+                raise ValueError("each change is [carla_frame, sim_time, id, state]")
+        for li in self.lights or []:
+            if "id" not in li or not isinstance(li.get("stop_lines", []), list):
+                raise ValueError("each light needs id and stop_lines")
+
+
+@router.post("/live/signals")
+async def live_signals(body: SignalsIn = Body(...), _: Principal = Depends(require(service=True))):
+    if not body.lights and not body.changes:
+        raise HTTPException(422, "nothing to publish")
+    n = await hub.publish_signals(body.session_id, body.lights, body.changes)
+    return {"lights": len(body.lights or []), "changes": n}
+
+
+# columns an update replaces; review_* and created_at stay (a review of the provisional event is kept)
+_UPDATED = ("kind", "type", "condition", "status", "cls", "confidence", "t_s", "occurred_at", "lane_id", "zone_id",
+            "x", "y", "geom", "data")
+
+
+@router.put("/live/events/{event_id}")
+async def live_event_update(event_id: str, event: dict = Body(...), db: AsyncSession = Depends(get_db),
+                            user: Principal = Depends(require(service=True))):
+    """Final version of a live event. The pipeline POSTs /api/events when an event is flagged
+    (provisional) and PUTs here when it closes (final status, confidence, end); POST /api/events
+    answers 409 for an existing event_id. Creates the event if the first POST was lost."""
+    if event.get("event_id") != event_id:
+        raise HTTPException(422, "event_id in the body must match the URL")
+    row = await db.get(Event, event_id)
+    if row is None:
+        return await create_event(event, db, user)
+    if event.get("session_id") != row.session_id:
+        raise HTTPException(409, f"event {event_id} belongs to session {row.session_id}")
+    if event.get("kind", "violation") == "violation" and "condition" not in event:
+        event = {**event, "condition": condition_of(event)}
+    errs = event_errors([event])
+    if errs:
+        raise HTTPException(422, "; ".join(errs[:10]))
+    kept = {k: v for k, v in ((row.data or {}).get("evidence") or {}).items() if k.endswith("_key")}
+    if kept:  # evidence uploaded while the event was open (live_evidence below): the final version keeps it
+        event = {**event, "evidence": {**(event.get("evidence") or {}), **kept}}
+    new = to_row(event, await db.get(Session, row.session_id))
+    for col in _UPDATED:
+        setattr(row, col, getattr(new, col))
+    await db.commit()
+    out = to_api(row)
+    await hub.publish_event(out)
+    return out
+
+
+# evidence of a live event: the pipeline sends a snapshot when it flags the event and a clip a few seconds later
+EVIDENCE_KINDS = {"snapshot": (b"\xff\xd8", "_snap.jpg", "image/jpeg"), "clip": (b"\x1a\x45\xdf\xa3", ".webm", "video/webm")}
+EVIDENCE_MAX = 50_000_000  # bytes
+
+
+@router.post("/live/events/{event_id}/evidence")
+async def live_evidence(event_id: str, request: Request, kind: str, db: AsyncSession = Depends(get_db),
+                        _: Principal = Depends(require(service=True))):
+    """Body: a JPEG (kind=snapshot) or a VP8 WebM (kind=clip). Stored in S3 as evidence/<session>/<event_id>_snap.jpg
+    or .webm (the import's naming) and recorded on the event as evidence.<kind>_key; 404 until the event exists."""
+    if kind not in EVIDENCE_KINDS:
+        raise HTTPException(422, f"kind must be one of {', '.join(EVIDENCE_KINDS)}")
+    magic, suffix, ctype = EVIDENCE_KINDS[kind]
+    body = await request.body()
+    if not body.startswith(magic) or len(body) > EVIDENCE_MAX:
+        raise HTTPException(422, f"body must be a {ctype} file under {EVIDENCE_MAX} bytes")
+    row = await db.get(Event, event_id)
+    if row is None:
+        raise HTTPException(404, f"no event {event_id}")
+    key = f"evidence/{row.session_id}/{event_id}{suffix}"
+    await asyncio.to_thread(storage.put_bytes, body, key, ctype)
+    await db.refresh(row)  # the close (PUT) may have landed meanwhile
+    data = dict(row.data or {})
+    data["evidence"] = {**(data.get("evidence") or {}), f"{kind}_key": key}
+    row.data = data
+    await db.commit()
+    out = to_api(row)
+    await hub.publish_event(out)
+    return out
+
+
+# --- live camera frames: the pipeline posts the newest raw and annotated JPEG; pages watch them as MJPEG ---
+
+FRAME_KINDS = ("raw", "annotated")
+FRAME_MAX = 2_000_000  # bytes; a 960 px JPEG is ~100 kB
+_frames: dict[tuple[str, str], dict] = {}  # (session, kind) -> {jpg, seq, t_s, wall}; newest only
+_frame_cv = asyncio.Condition()
+
+
+@router.post("/live/frame", status_code=204)
+async def live_frame(request: Request, session_id: str, kind: str = "raw", t_s: float | None = None,
+                     _: Principal = Depends(require(service=True))):
+    """Body: one JPEG. Only the newest frame per session and kind is kept (a stale frame is useless)."""
+    if kind not in FRAME_KINDS:
+        raise HTTPException(422, f"kind must be one of {', '.join(FRAME_KINDS)}")
+    jpg = await request.body()
+    if not jpg.startswith(b"\xff\xd8") or len(jpg) > FRAME_MAX:
+        raise HTTPException(422, f"body must be a JPEG under {FRAME_MAX} bytes")
+    async with _frame_cv:
+        old = _frames.get((session_id, kind))
+        _frames[(session_id, kind)] = {"jpg": jpg, "seq": (old["seq"] + 1) if old else 1, "t_s": t_s, "wall": time.time()}
+        _frame_cv.notify_all()
+
+
+@router.get("/live/sources")
+async def live_sources(_: Principal = Depends(current_user)):
+    """Sessions that sent a frame in the last 10 s, newest first."""
+    now = time.time()
+    out: dict[str, dict] = {}
+    for (sid, kind), f in _frames.items():
+        if now - f["wall"] < 10:
+            o = out.setdefault(sid, {"session_id": sid, "kinds": [], "t_s": f["t_s"], "age_s": round(now - f["wall"], 2)})
+            o["kinds"].append(kind)
+            o["age_s"] = min(o["age_s"], round(now - f["wall"], 2))
+    return sorted(out.values(), key=lambda o: o["age_s"])
+
+
+@router.get("/live/video")
+async def live_video(request: Request, session_id: str, kind: str = "raw", token: str | None = None):
+    """MJPEG stream (multipart/x-mixed-replace) of a session's live frames, for an <img>. Needs a token
+    (bearer header or ?token=, as <img> can't send headers); checked when the stream opens."""
+    if kind not in FRAME_KINDS:
+        raise HTTPException(422, f"kind must be one of {', '.join(FRAME_KINDS)}")
+    if await principal(bearer(request) or token) is None:
+        raise HTTPException(401, "live video needs a token", headers={"WWW-Authenticate": "Bearer"})
+    key = (session_id, kind)
+
+    async def gen():
+        seq = 0
+        while not await request.is_disconnected():
+            async with _frame_cv:
+                try:
+                    await asyncio.wait_for(_frame_cv.wait_for(lambda: (_frames.get(key) or {}).get("seq", 0) != seq), 5)
+                except asyncio.TimeoutError:
+                    continue  # nothing new: check the client is still there
+                f = _frames[key]
+            seq = f["seq"]
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(f["jpg"])).encode()
+                   + b"\r\n\r\n" + f["jpg"] + b"\r\n")
+
+    return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame",
+                             headers={"Cache-Control": "no-store"})
+
+
+@router.websocket("/ws/live")
+async def ws_live(ws: WebSocket, token: str | None = None, session_id: str | None = None, catch_up_s: float = 60.0):
+    if await principal(token) is None:
+        await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="invalid token")
+        return
+    await ws.accept()
+    try:
+        await hub.serve(ws, session_id, catch_up_s)
+    except WebSocketDisconnect:
+        pass

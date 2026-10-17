@@ -1,0 +1,68 @@
+# Local services for the backend (Build Plan M0; PRD Sections 13.1-13.3).
+#
+#   copy .env.example .env      # optional: change the passwords / ports
+#   docker compose up -d
+#   docker compose ps           # all three "healthy"
+#   docker compose down         # keep the data;  add -v to wipe it
+#
+# db     PostgreSQL 16 + PostGIS 3.4: events, tracks, zones, configs, recommendations, planner history
+# redis  live vehicle state (TTL keys) and pub/sub for the WebSockets
+# s3     S3-compatible object store (SeaweedFS) for evidence clips, snapshots and reports, on :9000
+#
+# Data lives in named Docker volumes, never in the repo. Tables come from the backend's
+# migrations (M5); buckets are created by the backend on startup (M5).
+
+name: aerial-surveillance
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-aerial}
+      POSTGRES_USER: ${POSTGRES_USER:-aerial}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aerial_dev}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "no", "--save", ""]  # live state only: no persistence
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  s3:
+    # SeaweedFS in place of MinIO: MinIO stopped publishing free images (Docker Hub and quay.io
+    # both refuse the pull, checked 2026-10-09). The backend only uses the S3 API, so either works.
+    # Dev credentials: infra/s3/s3.json (access key aerial / secret aerial_dev_secret).
+    image: chrislusf/seaweedfs:3.97
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweedfs/s3.json"]
+    ports:
+      - "${S3_PORT:-9000}:8333"
+    volumes:
+      - s3data:/data
+      - ./infra/s3/s3.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9333/cluster/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  s3data:

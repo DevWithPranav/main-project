@@ -1,0 +1,33 @@
+{
+ "note": "By-eye review of real-footage events (Expected_Output 9 item 3), 2026-10-10. verdict: true / false / plausible (cannot be confirmed from the video, e.g. an assumed speed limit).",
+ "events": {
+  "uavdt_M0603-0002": {
+   "verdict": "true",
+   "note": "car stopped 16 s on the north zebra crossing, not in a queue"
+  },
+  "highway_brazil-0001": {
+   "verdict": "plausible",
+   "note": "one of the 3 fastest cars on the clip (median 81 km/h, traffic 40-55); the 60 km/h limit is assumed (no sign in view)"
+  },
+  "highway_brazil-0002": {
+   "verdict": "plausible",
+   "note": "fastest car on the clip (median 83 km/h); limit assumed 60 km/h"
+  },
+  "highway_brazil-0003": {
+   "verdict": "plausible",
+   "note": "third fastest car (median 74 km/h); limit assumed 60 km/h"
+  },
+  "roundabout_snow-0001": {
+   "verdict": "true",
+   "note": "car standing on the zebra crossing at the roundabout entry ~14 s, waiting to enter"
+  },
+  "roundabout_snow-0002": {
+   "verdict": "false",
+   "note": "0.5 s track at the frame edge; direction cannot be judged"
+  },
+  "roundabout_snow-0003": {
+   "verdict": "false",
+   "note": "snow-covered patch at the crossing detected as a truck (no snow in the detector's training data)"
+  }
+ }
+}

@@ -1,0 +1,16 @@
+{
+  "source": "CARLA recorded flight 20260926_215405 (Town10HD)",
+  "frames_dir": "simulation/data_export/recorded_flights/20260926_215405/frames",
+  "video": "simulation/data_export/recorded_flights/20260926_215405/flight.mp4",
+  "video_note": "flight.mp4 reports 15 fps (nominal); real timing is in frame_times.csv, avg 23.04 fps. Run the pipeline on frames/ (process_recorded_flight.py), never on a re-encode.",
+  "labels_export": "new_validation_annotation.xml (CVAT for video 1.1, dumped 2026-09-27 12:22 UTC)",
+  "frame_base": 0,
+  "n_frames": 1987,
+  "resolution": "1920x1080",
+  "fps_used_for_time_s": 23.04,
+  "classes": ["car", "bus", "truck"],
+  "vehicle_ids": 40,
+  "vehicle_boxes": 5259,
+  "labelled_frames": "661-1986; 0-660, 726-831 and 1801-1811 have no vehicles in view (checked by eye)",
+  "imported": "2026-09-27 with ml/violation_engine/import_gt.py"
+}

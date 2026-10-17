@@ -1,0 +1,186 @@
+{
+ "video": "Drone Traffic Videos, Download The BEST Free 4k Stock Video Footage & Drone Traffic HD Video Clips.mp4",
+ "note": "Stock clip, Brazil (right-hand traffic), camera looking down and flying north with the traffic. Scale from frame 0: solid edge line x=223 to second lane dash x=322 = 2 lanes = 7.0 m (assumed 3.5 m lanes). Speed limit NOT known (no sign in view): 60 km/h assumed for an urban arterial, so speeds and speeding here are estimates. Carriageway geometry traced from tracked cars (median per 150 px), direction from the painted arrows (northbound = up the image). Lanes are whole carriageways (3 lanes, ~10.5 m), so lane-line violations are not checked on this clip. speed_sigma_kmh 6: the van parked on the shoulder (track 26, ~frame 1000) reads a median 5.5 km/h while the drone flies fast (scene-map drift), so speeds carry about +-6 km/h on top of the smoother's own error; no-parking from a fast-moving drone is not reliable here (parked cars do not read as stopped).",
+ "reference_frame": 0,
+ "frame_size": [
+  640,
+  360
+ ],
+ "ref_point": 0.5,
+ "calibration": {
+  "method": "scale",
+  "image_points": [
+   [
+    223,
+    300
+   ],
+   [
+    322,
+    300
+   ]
+  ],
+  "length_m": 7.0
+ },
+ "lanes": [
+  {
+   "id": "NB",
+   "centreline_px": [
+    [
+     287.0,
+     406.9
+    ],
+    [
+     281.1,
+     256.9
+    ],
+    [
+     287.2,
+     106.9
+    ],
+    [
+     304.8,
+     -43.1
+    ],
+    [
+     312.6,
+     -193.1
+    ],
+    [
+     310.1,
+     -343.1
+    ],
+    [
+     308.0,
+     -493.1
+    ],
+    [
+     318.2,
+     -643.1
+    ],
+    [
+     336.3,
+     -793.1
+    ],
+    [
+     359.7,
+     -943.1
+    ],
+    [
+     374.6,
+     -1093.1
+    ],
+    [
+     395.0,
+     -1243.1
+    ],
+    [
+     411.1,
+     -1393.1
+    ],
+    [
+     425.2,
+     -1543.1
+    ],
+    [
+     438.0,
+     -1693.1
+    ],
+    [
+     451.8,
+     -1843.1
+    ],
+    [
+     467.6,
+     -1993.1
+    ],
+    [
+     477.4,
+     -2143.1
+    ],
+    [
+     485.0,
+     -2293.1
+    ],
+    [
+     491.1,
+     -2443.1
+    ],
+    [
+     503.6,
+     -2593.1
+    ],
+    [
+     521.2,
+     -2743.1
+    ],
+    [
+     553.9,
+     -2893.1
+    ],
+    [
+     586.8,
+     -3043.1
+    ],
+    [
+     617.5,
+     -3193.1
+    ],
+    [
+     635.4,
+     -3343.1
+    ],
+    [
+     654.2,
+     -3493.1
+    ]
+   ],
+   "width_m": 12.0,
+   "speed_limit_kmh": 60,
+   "left_line": "none",
+   "right_line": "none",
+   "lane_type": "driving",
+   "junction": false
+  },
+  {
+   "id": "SB",
+   "centreline_px": [
+    [
+     10.6,
+     -35.9
+    ],
+    [
+     26.8,
+     24.1
+    ],
+    [
+     40.6,
+     84.1
+    ],
+    [
+     52.5,
+     144.1
+    ],
+    [
+     64.6,
+     204.1
+    ],
+    [
+     78.1,
+     264.1
+    ],
+    [
+     92.6,
+     324.1
+    ]
+   ],
+   "width_m": 10.5,
+   "speed_limit_kmh": 60,
+   "left_line": "none",
+   "right_line": "none",
+   "lane_type": "driving",
+   "junction": false
+  }
+ ],
+ "zones": [],
+ "speed_sigma_kmh": 6.0
+}
