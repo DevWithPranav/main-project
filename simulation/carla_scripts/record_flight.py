@@ -90,8 +90,40 @@ def find_drone_actor(world):
     return None
 
 
+def _foreground_title() -> tuple[int, str] | None:
+    """(handle, title) of the window in front (Windows only; None elsewhere or on error)."""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        h = user32.GetForegroundWindow()
+        n = user32.GetWindowTextLengthW(h)
+        buf = ctypes.create_unicode_buffer(n + 1)
+        user32.GetWindowTextW(h, buf, n + 1)
+        return int(h), buf.value
+    except Exception:  # noqa: BLE001 - not Windows, or no desktop: no focus check
+        return None
+
+
+def _own_console() -> int:
+    try:
+        import ctypes
+        return int(ctypes.windll.kernel32.GetConsoleWindow() or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+# windows whose keys fly the drone: the simulator (CarlaUE4 / CarlaAir / Unreal) and this script's console
+FLIGHT_WINDOW_MARKERS = ("carla", "airsim", "unreal")
+
+
 class KeyboardControl:
     """Manual WASD+yaw+altitude control, same keymap as fly_drone_keyboard.py.
+
+    The key listener (pynput) is global: it sees keys typed into ANY window. Keys only fly the
+    drone while the simulator window or this script's own console is in front (keys_anywhere=False,
+    the default); typing elsewhere (VS Code, the dashboard, a browser) is ignored, and keys still
+    held when the focus moves away are dropped. Before this (2026-10-16) ordinary typing elsewhere
+    flew the drone, and Q / E are yaw, so typing made it spin. The gamepad is not affected.
 
     Uses its own AirSim RPC connection — airsim's msgpackrpc client is not
     thread-safe, so sharing one connection across the control loop and the
@@ -99,8 +131,11 @@ class KeyboardControl:
     thread loses the race."""
 
     def __init__(self, airsim_port: int, speed: float = 5.0, yaw_rate: float = 45.0, rpc_timeout: float = 5.0,
-                 use_gamepad: bool = True, allow_quit: bool = True):
+                 use_gamepad: bool = True, allow_quit: bool = True, keys_anywhere: bool = False):
         self.client = airsim.MultirotorClient(port=airsim_port, timeout_value=rpc_timeout)
+        self.keys_anywhere = keys_anywhere
+        self._console = _own_console()
+        self._focus_t, self._focus_ok, self._focus_title = 0.0, True, ""
         self.client.confirmConnection()
         self.speed = speed
         self.yaw_rate = yaw_rate
@@ -138,7 +173,30 @@ class KeyboardControl:
             ch = chr(ord(ch) + 96)
         return ch.lower()
 
+    def focused(self) -> bool:
+        """Is a flight window (the simulator or this console) in front? Checked at most every 0.1 s."""
+        if self.keys_anywhere:
+            return True
+        now = time.monotonic()
+        if now - self._focus_t < 0.1:
+            return self._focus_ok
+        self._focus_t = now
+        fg = _foreground_title()
+        if fg is None:  # no way to tell (not Windows): behave as before
+            self._focus_ok = True
+            return True
+        h, title = fg
+        ok = (self._console and h == self._console) or any(m in title.lower() for m in FLIGHT_WINDOW_MARKERS)
+        if ok != self._focus_ok:
+            print(f"\n[keys] {'flying with the keyboard' if ok else 'keyboard ignored: ' + (title or 'another window') + ' is in front'}",
+                  flush=True)
+        self._focus_ok, self._focus_title = bool(ok), title
+        return self._focus_ok
+
     def held(self) -> set:
+        if not self.focused():
+            self.keys_pressed.clear()  # keys held when the focus left would otherwise keep steering
+            return set()
         now = time.monotonic()
         for k, t in list(self.keys_pressed.items()):  # one C-level copy: the listener thread writes the dict
             if now - t <= self.STALE_KEY_S:
@@ -147,6 +205,8 @@ class KeyboardControl:
         return set(self.keys_pressed)
 
     def _on_press(self, key) -> None:
+        if not self.focused():  # typed into another window: not for the drone
+            return
         if key == kb.Key.esc and self.allow_quit:
             self.running = False
             return

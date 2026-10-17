@@ -33,6 +33,7 @@ import carla
 
 BUS_BLUEPRINTS = {"vehicle.mitsubishi.fusorosa"}
 SCRIPTED_ROLE = "violation_scenario"  # role_name of stage_violations.py's cars
+SCRIPTED_ROLES = {SCRIPTED_ROLE, "zebra_scenario"}  # + pedestrian_violations.py's cars and walkers
 STOPPED_MPS = 0.3
 RED_OR_YELLOW = (carla.TrafficLightState.Red, carla.TrafficLightState.Yellow)
 
@@ -132,7 +133,7 @@ def main() -> None:
             # cars staged by simulation/violation_scenarios/stage_violations.py are scripted: never
             # adopt (autopilot) or remove them, even when they stand still on purpose
             vs = [v for v in world.get_actors().filter("vehicle.*")
-                  if v.attributes.get("role_name") != SCRIPTED_ROLE]
+                  if v.attributes.get("role_name") not in SCRIPTED_ROLES]
             for v in vs:
                 if v.id not in known:
                     adopt(v)

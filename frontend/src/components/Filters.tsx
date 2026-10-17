@@ -7,7 +7,7 @@ import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import type { ExportFormat } from '../api/client';
-import { VIOLATION_STATUSES, VIOLATION_TYPES } from '../api/types';
+import { SHOWN_VIOLATION_TYPES, VIOLATION_STATUSES } from '../api/types';
 import { useConditions, useSessions } from '../hooks';
 import { activeFilterCount, filtersToParams, paramsToFilters, type EventFilters } from '../lib/filters';
 import { statusLabel, typeLabel } from '../lib/format';
@@ -31,12 +31,16 @@ export function useFilters(): [EventFilters, (f: EventFilters) => void] {
   return [paramsToFilters(sp), (f) => setSp(filtersToParams(f), { replace: true })];
 }
 
+// each filter dropdown shows "All" when it filters nothing (was an empty box; docs/Live_Page_Changes.md)
+const ALL = '__all__';
+const withAll = (data: { value: string; label: string }[]) => [{ value: ALL, label: 'All' }, ...data];
+
 export default function FilterBar({ value, onChange }: { value: EventFilters; onChange: (f: EventFilters) => void }) {
   const sessions = useSessions();
   const { data: conds } = useConditions();
   const [busy, setBusy] = useState<ExportFormat | null>(null);
   const [history, setHistory] = useState(false);
-  const set = (k: keyof EventFilters) => (v: string | null) => onChange({ ...value, [k]: v || undefined });
+  const set = (k: keyof EventFilters) => (v: string | null) => onChange({ ...value, [k]: v && v !== ALL ? v : undefined });
 
   const download = async (fmt: ExportFormat) => {
     setBusy(fmt);
@@ -53,19 +57,19 @@ export default function FilterBar({ value, onChange }: { value: EventFilters; on
   };
 
   // road-surface anomalies (M9) were dropped from the project (2026-10-10): violations only
-  const types = VIOLATION_TYPES;
+  const types = SHOWN_VIOLATION_TYPES;
   const statuses = VIOLATION_STATUSES;
 
   return (
     <Group gap="xs" align="end">
-      <Select label="Session" w={200} clearable searchable value={value.session_id ?? null} onChange={set('session_id')}
-        data={(sessions.data ?? []).map((s) => ({ value: s.session_id, label: s.name || s.session_id }))} />
-      <Select label="Type" w={170} clearable value={value.type ?? null} onChange={set('type')} data={types.map((t) => ({ value: t, label: typeLabel(t) }))} />
-      <Select label="Condition" w={230} clearable searchable value={value.condition ?? null} onChange={set('condition')}
-        data={(conds?.conditions ?? []).filter((c) => !c.alias_of).map((c) => ({ value: c.id, label: `${c.id} ${c.name}` }))} />
-      <Select label="Status" w={150} clearable value={value.status ?? null} onChange={set('status')} data={statuses.map((s) => ({ value: s, label: statusLabel(s) }))} />
-      <Select label="Review" w={130} clearable value={value.review ?? null} onChange={set('review')}
-        data={[{ value: 'none', label: 'not reviewed' }, { value: 'confirmed', label: 'confirmed' }, { value: 'dismissed', label: 'dismissed' }]} />
+      <Select label="Session" w={200} searchable value={value.session_id ?? ALL} onChange={set('session_id')}
+        data={withAll((sessions.data ?? []).map((s) => ({ value: s.session_id, label: s.name || s.session_id })))} />
+      <Select label="Type" w={170} value={value.type ?? ALL} onChange={set('type')} data={withAll(types.map((t) => ({ value: t, label: typeLabel(t) })))} />
+      <Select label="Condition" w={230} searchable value={value.condition ?? ALL} onChange={set('condition')}
+        data={withAll((conds?.conditions ?? []).filter((c) => !c.alias_of).map((c) => ({ value: c.id, label: `${c.id} ${c.name}` })))} />
+      <Select label="Status" w={150} value={value.status ?? ALL} onChange={set('status')} data={withAll(statuses.map((s) => ({ value: s, label: statusLabel(s) })))} />
+      <Select label="Review" w={130} value={value.review ?? ALL} onChange={set('review')}
+        data={withAll([{ value: 'none', label: 'not reviewed' }, { value: 'confirmed', label: 'confirmed' }, { value: 'dismissed', label: 'dismissed' }])} />
       <TextInput label="From" type="datetime-local" w={200} value={isoToLocal(value.since)}
         max={isoToLocal(value.until) || undefined} onChange={(ev) => set('since')(localToIso(ev.currentTarget.value) ?? null)} />
       <TextInput label="To" type="datetime-local" w={200} value={isoToLocal(value.until)}

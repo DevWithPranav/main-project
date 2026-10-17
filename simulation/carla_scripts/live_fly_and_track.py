@@ -73,6 +73,7 @@ except ImportError:
     )
 
 from fly_and_capture import spawn_traffic, JPEG_SAVE_PARAMS
+from record_flight import KeyboardControl as _RecordKeyboardControl  # noqa: E402
 
 BEST_PT = Path(__file__).resolve().parents[2] / "ml" / "data" / "results" / "full_train" / "train" / "weights" / "best.pt"
 DATA_EXPORT_DIR = Path(__file__).resolve().parents[1] / "data_export" / "live_flights"
@@ -89,107 +90,13 @@ def find_drone_actor(world):
     return None
 
 
-class KeyboardControl:
-    """Manual WASD+yaw+altitude control, same keymap as fly_drone_keyboard.py.
-
-    Uses its own AirSim RPC connection — airsim's msgpackrpc client is not
-    thread-safe, so sharing one connection across the control loop and the
-    frame-grabber loop corrupts the connection (BufferError / tornado
-    iostream crashes) and silently kills whichever thread loses the race."""
+class KeyboardControl(_RecordKeyboardControl):
+    """record_flight.KeyboardControl without the gamepad (this script never used one). Its own copy here
+    had neither the 2026-10-15 lost-release fix nor the 2026-10-16 focus check (typing in another
+    window flew the drone; Q / E made it spin)."""
 
     def __init__(self, airsim_port: int, speed: float = 5.0, yaw_rate: float = 45.0, rpc_timeout: float = 5.0):
-        self.client = airsim.MultirotorClient(port=airsim_port, timeout_value=rpc_timeout)
-        self.client.confirmConnection()
-        self.speed = speed
-        self.yaw_rate = yaw_rate
-        self.keys_pressed: set = set()
-        self.running = True
-        self.airborne = False
-        self.listener = kb.Listener(on_press=self._on_press, on_release=self._on_release)
-
-    def start(self) -> None:
-        self.listener.start()
-
-    def stop(self) -> None:
-        self.listener.stop()
-
-    def _on_press(self, key) -> None:
-        try:
-            k = key.char
-        except AttributeError:
-            if key == kb.Key.space:
-                self.keys_pressed.add(kb.Key.space)
-            elif key in (kb.Key.shift, kb.Key.shift_l, kb.Key.shift_r):
-                self.keys_pressed.add(kb.Key.shift)
-            elif key == kb.Key.esc:
-                self.running = False
-            return
-
-        # OS key-repeat fires on_press repeatedly while held — debounce so a
-        # long T/L press doesn't queue dozens of takeoff/land RPC calls.
-        if k == "t" and not self.airborne:
-            self.airborne = True
-            print("  Taking off...")
-            self.client.takeoffAsync()
-        elif k == "l" and self.airborne:
-            self.airborne = False
-            print("  Landing...")
-            self.client.landAsync()
-        elif k not in ("t", "l"):
-            self.keys_pressed.add(k)
-
-    def _on_release(self, key) -> None:
-        try:
-            self.keys_pressed.discard(key.char)
-        except AttributeError:
-            if key == kb.Key.space:
-                self.keys_pressed.discard(kb.Key.space)
-            elif key in (kb.Key.shift, kb.Key.shift_l, kb.Key.shift_r):
-                self.keys_pressed.discard(kb.Key.shift)
-
-    def control_loop(self) -> None:
-        """Run in its own thread. AirSim marshals every RPC call (movement AND
-        camera capture) onto UE4's single game thread, so a constant stream of
-        movement commands can perpetually starve the much more expensive
-        camera-capture request of a turn — the capture thread would then time
-        out forever, even on the very first frame. Polls pressed keys at 10Hz
-        for responsiveness, but only actually issues a command when the
-        velocity/yaw changes, or periodically to refresh before the previous
-        command's duration lapses — not on every tick."""
-        poll_interval = 0.1
-        duration = 0.3
-        last_cmd = None
-        last_sent_at = 0.0
-
-        while self.running:
-            vx = vy = vz = yaw = 0.0
-            if "w" in self.keys_pressed:
-                vx = self.speed
-            if "s" in self.keys_pressed:
-                vx = -self.speed
-            if "d" in self.keys_pressed:
-                vy = self.speed
-            if "a" in self.keys_pressed:
-                vy = -self.speed
-            if kb.Key.space in self.keys_pressed:
-                vz = -self.speed
-            if kb.Key.shift in self.keys_pressed:
-                vz = self.speed
-            if "q" in self.keys_pressed:
-                yaw = -self.yaw_rate
-            if "e" in self.keys_pressed:
-                yaw = self.yaw_rate
-
-            cmd = (vx, vy, vz, yaw)
-            now = time.perf_counter()
-            if cmd != last_cmd or (now - last_sent_at) >= duration * 0.8:
-                try:
-                    self.client.moveByVelocityBodyFrameAsync(vx, vy, vz, duration, yaw_mode=airsim.YawMode(True, yaw))
-                    last_cmd = cmd
-                    last_sent_at = now
-                except Exception as e:
-                    print(f"\n[control] RPC error, continuing: {e}")
-            time.sleep(poll_interval)
+        super().__init__(airsim_port, speed=speed, yaw_rate=yaw_rate, rpc_timeout=rpc_timeout, use_gamepad=False)
 
 
 class CarlaCameraGrabber:

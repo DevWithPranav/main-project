@@ -99,6 +99,12 @@ const zoneTypeOptions = (Object.keys(ZONE_TYPES) as ZoneType[])
 
 /** The "Selected lane" editor in the Planner panel (road attributes + "Add lane change") is hidden, not removed (docs/Live_Page_Changes.md). */
 const SHOW_LANE_EDIT = false;
+/** The "Custom traffic" switch (virtual traffic + its gear) is hidden, not removed (docs/Live_Page_Changes.md). */
+const SHOW_CUSTOM_TRAFFIC = false;
+/** Town the twin opens on when neither ?town= nor the session names one (live sessions carry none); was the first town. */
+const DEFAULT_TOWN = "Town04";
+/** The "Pins" dropdown is hidden, not removed (docs/Live_Page_Changes.md); pins keep its default (violations). */
+const SHOW_PIN_SELECT = false;
 
 /** One row per road attribute in the planner panel (`attr_<key>`), same attributes as Configuration > Road configuration. */
 function attrRowsHtml(): string {
@@ -131,7 +137,7 @@ const PANEL_HTML = `
 <aside class="tw-panel">
   <header><strong>3D Digital Twin</strong><span id="user" class="muted"></span></header>
   <label class="tw-switch" title="Show or hide the vehicles (with their trails and speeds) coming from the video / live feed"><input type="checkbox" id="traffic" checked /><span class="tw-track"></span><span class="tw-switch-text">Traffic from video</span></label>
-  <label class="tw-switch" id="customSw" title="Virtual traffic on the map (blue): plain traffic on its own, and it follows your scenario plan as soon as the plan has items. Simplified model, not CARLA."><input type="checkbox" id="custom" /><span class="tw-track"></span><span class="tw-switch-text">Custom traffic <span class="muted" id="customNote">(off)</span></span><button type="button" class="gear" id="customCfg" title="Configure the custom traffic: density, vehicle mix, drivers, demand over time, sources, groups, zones">⚙</button></label>
+  <label class="tw-switch" id="customSw"${SHOW_CUSTOM_TRAFFIC ? "" : ' style="display:none"'} title="Virtual traffic on the map (blue): plain traffic on its own, and it follows your scenario plan as soon as the plan has items. Simplified model, not CARLA."><input type="checkbox" id="custom" /><span class="tw-track"></span><span class="tw-switch-text">Custom traffic <span class="muted" id="customNote">(off)</span></span><button type="button" class="gear" id="customCfg" title="Configure the custom traffic: density, vehicle mix, drivers, demand over time, sources, groups, zones">⚙</button></label>
   <label>Session <select id="session"></select></label>
   <label>Town <select id="town"></select></label>
   <div class="row tw-traffic">
@@ -153,7 +159,7 @@ const PANEL_HTML = `
     <label title="CARLA's own traffic lights, coloured by their state at the time of the vehicles on screen (recorded sessions and live CARLA streams)"><input type="checkbox" id="lightsOn" checked /> Traffic lights <span id="lightsNote" class="muted"></span></label>
   </div>
   <div class="row"><label><input type="checkbox" id="zonesOn" checked /> Zones</label><span id="zoneCount" class="muted"></span></div>
-  <label>Pins <select id="pinKind"><option value="violation" selected>violations</option><option value="all">violations &amp; road surface</option><option value="anomaly">road surface</option><option value="none">none</option></select></label>
+  <label${SHOW_PIN_SELECT ? "" : ' style="display:none"'}>Pins <select id="pinKind"><option value="violation" selected>violations</option><option value="all">violations &amp; road surface</option><option value="anomaly">road surface</option><option value="none">none</option></select></label>
   <div class="legend">
     <span class="tw-traffic" style="--c:#40c057">ok</span><span class="tw-traffic" style="--c:#fab005">checking</span><span class="tw-traffic" style="--c:#fa5252">flagged</span>
     <span style="--c:#7048e8">bridge</span><span style="--c:#4c6ef5">highway</span>
@@ -167,7 +173,7 @@ const PANEL_HTML = `
 <aside class="tw-panel tw-planner" id="editor" hidden>
   <div>
     <header><strong>Planner</strong><span class="muted">select, edit, validate &amp; save</span></header>
-    <div id="plannerHint" class="hint"><strong>Nothing selected</strong><span id="plannerHintText">Click a lane or a zone on the map and its editor appears here.</span></div>
+    <div id="plannerHint" class="hint" hidden><strong>Read-only zone</strong><span id="plannerHintText"></span></div>
     <div id="zoneActions" hidden>
       <h4>Selected zone</h4>
       <div class="row"><button id="zoneRedraw">Redraw outline</button><button id="zoneDeactivate">Deactivate</button></div>
@@ -1013,8 +1019,7 @@ export class TwinView {
     const box = this.$("selected");
     this.$("zoneActions").hidden = true;
     this.$("laneEdit").hidden = true; // the editors appear only once something is selected
-    this.$("plannerHint").hidden = false;
-    this.$("plannerHintText").textContent = "Click a lane or a zone on the map and its editor appears here.";
+    this.$("plannerHint").hidden = true; // shown only for a read-only zone
     if (typeof id === "string" && this.lanesById.has(id)) {
       const l = this.lanesById.get(id)!;
       this.selectedLane = l;
@@ -1034,6 +1039,7 @@ export class TwinView {
         this.$("plannerHint").hidden = true;
         void this.showZoneActions(f);
       } else {
+        this.$("plannerHint").hidden = false;
         this.$("plannerHintText").textContent = "This zone comes from the map file and is read-only. Draw a new zone below to add your own.";
       }
     } else if (id && typeof id === "object" && id.kind === "junction") {
@@ -1592,14 +1598,14 @@ export class TwinView {
     this.$("session").innerHTML = sessions.map((s) => `<option value="${esc(s.session_id)}">${esc(s.name ?? s.session_id)}</option>`).join("");
     await this.refreshLiveSources(sessions.map((s) => s.session_id));
     const want = o.session ?? sessions[0]?.session_id;
-    const town = o.town ?? towns[0];
-    if (o.town && towns.includes(o.town)) (this.$("town") as HTMLSelectElement).value = o.town;
+    const town = o.town ?? (towns.includes(DEFAULT_TOWN) ? DEFAULT_TOWN : towns[0]);
+    if (town && towns.includes(town)) (this.$("town") as HTMLSelectElement).value = town;
     if (want) {
       if (!o.session) o.onSession?.(want);
       await this.loadSession(want);
     } else if (town) await this.loadTown(town);
     if (this.disposed) return;
-    const mode = want && this.liveOnly.has(want) ? "live" : (o.mode ?? "replay"); // a live-only stream has nothing to replay
+    const mode = want && this.liveOnly.has(want) ? "live" : (o.mode ?? "live"); // a live-only stream has nothing to replay
     if (mode !== this.mode) this.setMode(mode);
     if (this.canEditProfile()) {
       const profiles = profileSummaries(await api.profiles().catch(() => []));

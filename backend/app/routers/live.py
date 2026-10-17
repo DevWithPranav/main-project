@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import storage
 from ..auth import Principal, bearer, current_user, principal, require
 from ..db import get_db
 from ..engine_bridge import condition_of, event_errors
@@ -93,9 +94,43 @@ async def live_event_update(event_id: str, event: dict = Body(...), db: AsyncSes
     errs = event_errors([event])
     if errs:
         raise HTTPException(422, "; ".join(errs[:10]))
+    kept = {k: v for k, v in ((row.data or {}).get("evidence") or {}).items() if k.endswith("_key")}
+    if kept:  # evidence uploaded while the event was open (live_evidence below): the final version keeps it
+        event = {**event, "evidence": {**(event.get("evidence") or {}), **kept}}
     new = to_row(event, await db.get(Session, row.session_id))
     for col in _UPDATED:
         setattr(row, col, getattr(new, col))
+    await db.commit()
+    out = to_api(row)
+    await hub.publish_event(out)
+    return out
+
+
+# evidence of a live event: the pipeline sends a snapshot when it flags the event and a clip a few seconds later
+EVIDENCE_KINDS = {"snapshot": (b"\xff\xd8", "_snap.jpg", "image/jpeg"), "clip": (b"\x1a\x45\xdf\xa3", ".webm", "video/webm")}
+EVIDENCE_MAX = 50_000_000  # bytes
+
+
+@router.post("/live/events/{event_id}/evidence")
+async def live_evidence(event_id: str, request: Request, kind: str, db: AsyncSession = Depends(get_db),
+                        _: Principal = Depends(require(service=True))):
+    """Body: a JPEG (kind=snapshot) or a VP8 WebM (kind=clip). Stored in S3 as evidence/<session>/<event_id>_snap.jpg
+    or .webm (the import's naming) and recorded on the event as evidence.<kind>_key; 404 until the event exists."""
+    if kind not in EVIDENCE_KINDS:
+        raise HTTPException(422, f"kind must be one of {', '.join(EVIDENCE_KINDS)}")
+    magic, suffix, ctype = EVIDENCE_KINDS[kind]
+    body = await request.body()
+    if not body.startswith(magic) or len(body) > EVIDENCE_MAX:
+        raise HTTPException(422, f"body must be a {ctype} file under {EVIDENCE_MAX} bytes")
+    row = await db.get(Event, event_id)
+    if row is None:
+        raise HTTPException(404, f"no event {event_id}")
+    key = f"evidence/{row.session_id}/{event_id}{suffix}"
+    await asyncio.to_thread(storage.put_bytes, body, key, ctype)
+    await db.refresh(row)  # the close (PUT) may have landed meanwhile
+    data = dict(row.data or {})
+    data["evidence"] = {**(data.get("evidence") or {}), f"{kind}_key": key}
+    row.data = data
     await db.commit()
     out = to_api(row)
     await hub.publish_event(out)

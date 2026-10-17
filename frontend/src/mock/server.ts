@@ -257,6 +257,7 @@ export async function mockFetch(input: string, init?: RequestInit): Promise<Resp
   }
   if (path === '/api/events' && method === 'GET') {
     const items = filtered(s, q);
+    if (q.get('order') === 'desc') items.reverse(); // newest first, like the backend
     const limit = Number(q.get('limit') ?? 200);
     const offset = Number(q.get('offset') ?? 0);
     return json({ total: items.length, items: items.slice(offset, offset + limit).map(strip) });

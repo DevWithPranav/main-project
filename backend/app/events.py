@@ -104,5 +104,7 @@ def event_filters(session_id: str | None = None, type: str | None = None, condit
     return EventFilters(session_id, type, condition, status, review, kind, since, until, bbox)
 
 
-def base_query() -> Select:
+def base_query(newest_first: bool = False) -> Select:
+    if newest_first:
+        return select(Event).order_by(Event.occurred_at.desc(), Event.event_id.desc())
     return select(Event).order_by(Event.occurred_at, Event.event_id)

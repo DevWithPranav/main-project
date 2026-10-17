@@ -60,11 +60,12 @@
    "params": {
     "min_s": 0.3333333333333333,
     "sigmas": 2.0,
-    "tolerance": "eu",
+    "tolerance": "none",
     "confirm_gap_s": 0.2,
     "close_gap_s": 2.0,
     "class_limits_kmh": {},
-    "min_track_age_s": 1.0
+    "min_track_age_s": 1.0,
+    "max_speed_kmh": 0.0
    }
   },
   "lane_violation": {
@@ -114,7 +115,9 @@
  "conditions": {},
  "place_memory": {
   "radius_m": 1.5,
-  "keep_s": 30.0
+  "keep_s": 30.0,
+  "vacate_kmh": 8.0,
+  "vacate_beyond_m": 1.0
  },
  "modules": {
   "static_check": true,

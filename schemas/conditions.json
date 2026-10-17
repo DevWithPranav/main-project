@@ -17,7 +17,7 @@
   {"id": "A6", "group": "lane", "name": "Driving on the shoulder", "engine_type": "lane_violation", "match": {"tag": "shoulder_driving"}, "status": "built"},
   {"id": "A7", "group": "lane", "name": "Wrong-way driving (counted under C1)", "engine_type": null, "status": "built", "alias_of": "C1"},
   {"id": "A8", "group": "lane", "name": "Unsafe lane change", "engine_type": "lane_violation", "match": {"tag": "unsafe_lane_change"}, "status": "built"},
-  {"id": "B1", "group": "illegal_stopping", "name": "Stopping on the main carriageway", "engine_type": "highway_stop", "match": {"default": true}, "status": "built"},
+  {"id": "B1", "group": "illegal_stopping", "name": "Stopping on the highway", "engine_type": "highway_stop", "match": {"default": true}, "status": "built"},
   {"id": "B2", "group": "illegal_stopping", "name": "Stopping on a highway shoulder", "engine_type": "highway_stop", "match": {"tag": "possible_breakdown"}, "status": "built", "priority": 1},
   {"id": "B3", "group": "illegal_stopping", "name": "Stopping in a no-stopping zone", "engine_type": "no_parking", "match": {"default": true}, "status": "built"},
   {"id": "B4", "group": "illegal_stopping", "name": "Stopping near an entrance or exit", "engine_type": "highway_stop", "match": {"tag": "ramp_area"}, "status": "built", "priority": 2},

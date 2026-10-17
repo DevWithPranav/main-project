@@ -44,12 +44,14 @@ import ViolationsPage from './pages/Violations';
 const TwinPage = lazy(() => import('./pages/Twin'));
 
 const SHOW_STATS = false; // Statistics page hidden (docs/Live_Page_Changes.md); true brings back the menu entry and route
+const SHOW_SESSIONS = false; // Sessions page hidden (docs/Live_Page_Changes.md); true brings back the menu entry and route
+const SHOW_USER_BADGE = false; // username + role badge in the header hidden (docs/Live_Page_Changes.md)
 
 const NAV = [
   { to: '/live', label: 'Live monitoring', icon: IconRadar },
   { to: '/violations', label: 'Violations', icon: IconListCheck },
   ...(SHOW_STATS ? [{ to: '/stats', label: 'Statistics', icon: IconChartBar }] : []),
-  { to: '/sessions', label: 'Sessions', icon: IconDatabase },
+  ...(SHOW_SESSIONS ? [{ to: '/sessions', label: 'Sessions', icon: IconDatabase }] : []),
   { to: '/config', label: 'Configuration', icon: IconAdjustments },
   { to: '/recommendations', label: 'Recommendations', icon: IconBulb },
   { to: '/twin', label: '3D digital twin', icon: IconCube },
@@ -103,10 +105,14 @@ export default function App() {
             )}
           </Group>
           <Group gap="xs">
-            <Text size="sm">{me.username}</Text>
-            <Badge color={ROLE_COLORS[me.role]} variant="light">
-              {me.role}
-            </Badge>
+            {SHOW_USER_BADGE && (
+              <>
+                <Text size="sm">{me.username}</Text>
+                <Badge color={ROLE_COLORS[me.role]} variant="light">
+                  {me.role}
+                </Badge>
+              </>
+            )}
             <Tooltip label="Toggle dark mode">
               <ActionIcon variant="subtle" onClick={() => setColorScheme(scheme === 'dark' ? 'light' : 'dark')}>
                 {scheme === 'dark' ? <IconSun size={18} /> : <IconMoon size={18} />}
@@ -144,7 +150,7 @@ export default function App() {
           <Route path="/live" element={<LivePage />} />
           <Route path="/violations" element={<ViolationsPage />} />
           {SHOW_STATS && <Route path="/stats" element={<StatsPage />} />}
-          <Route path="/sessions" element={<SessionsPage />} />
+          {SHOW_SESSIONS && <Route path="/sessions" element={<SessionsPage />} />}
           <Route path="/config" element={<ConfigPage />} />
           <Route path="/recommendations" element={<RecommendationsPage />} />
           <Route

@@ -7,8 +7,8 @@ ignores lane offsets, runs cars into guardrails and cut into the speeders (~40 c
 
   slow traffic         --slow-cars at a fixed --slow-kmh each, below the limit; they keep right and only
                        pass a car that holds them below 0.7 x their speed
-  E1  speeders         --speed-tiers x the posted limit (default 1.03 / 1.2 / 1.4 / 1.6: 93 / 108 / 126 /
-                       144 km/h in a 90; 1.03 is inside the tolerance, a negative). Behind a slow car they
+  E1  speeders         --speed-tiers x the posted limit (default 1.03 / 1.2 / 1.4 / 1.6: 88 / 102 / 119 /
+                       136 km/h in an 85; 1.03 is inside the tolerance, a negative). Behind a slow car they
                        slow to its speed and keep the gap, pass through a lane that is clear (gap scaled by
                        the closing speed), then return right once 1.5 s clear of the car they passed
   B1  stoppers         cruise at 63 km/h; on a highway lane (no junction in the next 80 m, 150 m of stretch past
@@ -22,7 +22,7 @@ stretch is teleported back to the upstream end at speed (recycled, not respawned
 ~0.6 s), so each speeder makes a fresh E1 pass every ~15 s. 2026-10-14 run 7: 115 E1 in 5 min, 1 contact.
 
 The default stretch is the northbound straight on Town04's east side (lanes 3-6, x ~ -6..-17, y -218..207):
-425 m at 90 km/h, 4 lanes, a 3.5 m outer shoulder, ~200 m bends at both ends. Road 45 (the old default) is
+425 m at 85 km/h, 4 lanes, a 3.5 m outer shoulder, ~200 m bends at both ends. Road 45 (the old default) is
 a 180 m radius arc, where a 3 m/s2 bend cap holds any car to ~84 km/h: no room for high speed. The
 southbound side drops to 60 and 30 km/h near y -40 in the scene and is left out.
 
@@ -59,11 +59,12 @@ REPO = Path(__file__).resolve().parents[2]
 SCENE = REPO / "ml" / "violation_engine" / "configs" / "scenes" / "Town04.json"
 OUT_ROOT = REPO / "ml" / "data" / "results" / "highway_violations"
 ROLE = "violation_scenario"  # traffic_flow.py never adopts or removes cars with this role (slow cars carry it too)
+TM_PORT = 8010  # set_autopilot() starts a Traffic Manager; its default port 8000 is the backend's (live test on one PC)
 BUS_BLUEPRINTS = {"vehicle.mitsubishi.fusorosa"}
 SLOW_MODELS = {"vehicle.micro.microlino", "vehicle.bmw.isetta", "vehicle.carlamotors.carlacola",
                "vehicle.carlamotors.firetruck", "vehicle.ford.ambulance", "vehicle.mercedes.sprinter",
                "vehicle.volkswagen.t2", "vehicle.volkswagen.t2_2021"}  # not given to speeders
-NOMINAL_LIMIT_KMH = 90.0  # the stretch's posted limit, for spawn speeds
+NOMINAL_LIMIT_KMH = 85.0  # the stretch's posted limit, for spawn speeds
 
 # rules.DEFAULTS
 E1_MIN_S, E1_MIN_AGE_S, E1_CONFIRM_GAP_S, E1_CLOSE_GAP_S = 10 / 30, 1.0, 0.2, 2.0
@@ -382,7 +383,7 @@ class HandDriver:
         self.dbg = None  # --debug: the last drive_lane() decision
         self.main_wp = None  # track(): the last mainline waypoint
         self.off_since = None  # when it left the stretch's lanes (main loop)
-        actor.set_autopilot(False)
+        actor.set_autopilot(False, TM_PORT)
 
     def set_state(self, s: str, now: float):
         self.state, self.t_state = s, now
@@ -1049,7 +1050,7 @@ def main() -> None:
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--port", type=int, default=2000)
     ap.add_argument("--center", type=float, nargs=2, default=(-10.0, -10.0), metavar=("X", "Y"),
-                    help="Default: the middle of Town04's east straight (425 m at 90 km/h). Road 45's arc: -311.6 436")
+                    help="Default: the middle of Town04's east straight (425 m at 85 km/h). Road 45's arc: -311.6 436")
     ap.add_argument("--radius", type=float, default=210.0,
                     help="Cars that leave it are respawned at the upstream end; 210 m ends just before the bends "
                          "at both ends of the east straight (road 45: 230)")

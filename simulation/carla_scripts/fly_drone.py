@@ -31,6 +31,9 @@ def main() -> None:
     ap.add_argument("--yaw-rate", type=float, default=45.0, help="deg/s at full stick / key")
     ap.add_argument("--rpc-timeout", type=float, default=5.0)
     ap.add_argument("--no-gamepad", action="store_true", help="Keyboard only; don't read a game controller")
+    ap.add_argument("--keys-anywhere", action="store_true",
+                    help="Fly with keys typed into any window (old behaviour); default: only while the simulator "
+                         "window or this console is in front")
     args = ap.parse_args()
 
     for attempt in range(30):  # CarlaAir may still be starting when this is launched with it
@@ -47,7 +50,7 @@ def main() -> None:
     client.armDisarm(True)
 
     kbd = KeyboardControl(args.airsim_port, speed=args.speed, yaw_rate=args.yaw_rate, rpc_timeout=args.rpc_timeout,
-                          use_gamepad=not args.no_gamepad, allow_quit=False)
+                          use_gamepad=not args.no_gamepad, allow_quit=False, keys_anywhere=args.keys_anywhere)
     kbd.start()
     print("=" * 50)
     print("  Drone controls (keyboard + gamepad) — no recording here")
@@ -55,6 +58,8 @@ def main() -> None:
     if not args.no_gamepad:
         print("  Gamepad: L-stick move, R-stick yaw, RT up, LT down, LB slow, RB fast, A takeoff, B land")
     print("  Record from another prompt: python record_flight.py --vehicles 0 --labels --no-control")
+    print("  Keys work only while the simulator window (or this console) is in front: click it before flying")
+    print("  Stop goto_spot.py first: it keeps turning the drone to its own heading")
     print("  Ctrl+C here to quit (the drone keeps hovering)")
     print("=" * 50)
     try:

@@ -13,7 +13,8 @@ import { Link } from 'react-router-dom';
 import { api } from '../api';
 import type { Page, PlannerHistoryEntry, Recommendation } from '../api/types';
 import { useAuth } from '../auth';
-import { fmtDateTime, fmtValue } from '../lib/format';
+import { useConditions } from '../hooks';
+import { fmtDateTime, fmtValue, typeLabel } from '../lib/format';
 import { can } from '../lib/permissions';
 
 type Obj = Record<string, unknown>;
@@ -27,7 +28,24 @@ const text = (v: unknown): string =>
     : typeof v === 'object' ? Object.entries(v as object).map(([k, x]) => `${k}: ${fmtValue(x)}`).join(', ') : String(v);
 const label = (s: string) => s.replace(/_/g, ' ');
 const BAND_COLOR: Record<string, string> = { high: 'red', medium: 'orange', low: 'gray' };
-const SIM_COLOR: Record<string, string> = { yes: 'green', partly: 'yellow', no: 'gray' };
+const SIM_COLOR: Record<string, string> = { yes: 'green', partial: 'yellow', partly: 'yellow', rule_side: 'yellow', no: 'gray' };
+// plain-English wording (docs/Live_Page_Changes.md); the Decide button and the recommendation id are hidden
+const SHOW_DECIDE = false;
+const SHOW_REC_ID = false;
+// short card: count + place + solution only; the rest (where / evidence / impact / confidence / test plan /
+// limitations / other options) is kept behind this switch
+const SHOW_DETAILS = false;
+// recommendation types not listed (docs/Live_Page_Changes.md); the backend still makes them
+const HIDDEN_REC_TYPES = new Set(['wrong_way', 'lane_violation']);
+const BAND_PLAIN: Record<string, string> = { high: 'High', medium: 'Medium', low: 'Low' };
+const TIER_PLAIN: Record<string, string> = { major_hotspot: 'Major hotspot', hotspot: 'Hotspot', emerging: 'Early pattern', flow: 'Traffic queue' };
+const SIM_PLAIN: Record<string, string> = { yes: 'Yes', partial: 'Partly', partly: 'Partly', rule_side: 'Only the rules', no: 'No' };
+/** "speeding violations", "lane violations" (not "lane violation violations"), singular for 1 */
+const countNoun = (type: string, n: number) => {
+  const t = (type ? typeLabel(type) : 'violation').toLowerCase().replace(/ violations?$/, '');
+  return `${t} violation${n === 1 ? '' : 's'}`;
+};
+const pct = (v: unknown) => `${Math.round(Number(v) * 100)}%`;
 
 function actionText(a: unknown): string {
   const o = obj(a);
@@ -44,9 +62,11 @@ function Row({ k, children }: { k: string; children: React.ReactNode }) {
 }
 
 function Counts({ m }: { m: unknown }) {
+  const { idx } = useConditions();
   const e = Object.entries(obj(m)).sort((a, b) => Number(b[1]) - Number(a[1]));
   if (!e.length) return null;
-  return <Group gap={4}>{e.map(([k, n]) => <Badge key={k} size="sm" variant="light" color="gray">{label(k)} {String(n)}</Badge>)}</Group>;
+  // condition names, not their codes ("Stopping on the highway: 123", not "B1 123")
+  return <Group gap={4}>{e.map(([k, n]) => <Badge key={k} size="sm" variant="light" color="gray" tt="none">{idx.get(k)?.name ?? label(k)}: {String(n)}</Badge>)}</Group>;
 }
 
 function twinLink(r: Recommendation, sessionId: string | null): string | null {
@@ -71,21 +91,35 @@ function RecCard({ r, sessionId, onDecide, canDecide }: {
     <Card withBorder>
       <Group justify="space-between" mb={6} wrap="nowrap" align="flex-start">
         <Group gap={6}>
-          {r.type && <Badge>{label(String(r.type))}</Badge>}
-          {r.area && <Badge variant="outline" color="gray">{r.area}</Badge>}
+          {r.type && <Badge tt="none">{typeLabel(String(r.type))}</Badge>}
           {known ? (
             <Tooltip label={str(pr.explanation) || 'priority'} multiline w={360}>
-              <Badge color={BAND_COLOR[band] ?? 'gray'}>priority {band} · {str(pr.score)}</Badge>
+              <Badge color={BAND_COLOR[band] ?? 'gray'} tt="none">Priority: {BAND_PLAIN[band] ?? band}</Badge>
             </Tooltip>
-          ) : r.priority != null && <Badge color="orange" variant="light">priority {text(r.priority)}</Badge>}
-          {r.tier && <Badge variant="light" color="grape">{label(r.tier)}</Badge>}
-          {(r.decision || r.status) && <Badge color="gray" variant="outline">{r.decision ?? r.status}</Badge>}
+          ) : r.priority != null && <Badge color="orange" variant="light" tt="none">Priority: {text(r.priority)}</Badge>}
+          {SHOW_DETAILS && r.tier && <Badge variant="light" color="grape" tt="none">{TIER_PLAIN[r.tier] ?? label(r.tier)}</Badge>}
+          {r.decision && <Badge color="gray" variant="outline" tt="none">{r.decision}</Badge>}
         </Group>
-        <Code>{r.id}</Code>
+        {SHOW_REC_ID && <Code>{r.id}</Code>}
       </Group>
-      <Text fw={600}>{typeof r.problem === 'string' ? r.problem : text(r.problem)}</Text>
-      <Text mt={4}>→ {actionText(r.action)}</Text>
-      {!known ? (
+      {SHOW_DETAILS ? (
+        <>
+          <Text fw={600}>{typeof r.problem === 'string' ? r.problem : text(r.problem)}</Text>
+          <Text mt={4}><Text span fw={600}>What to do: </Text>{actionText(r.action)}</Text>
+        </>
+      ) : (
+        <>
+          {/* the short card: how many violations where, and the fix */}
+          <Text fw={600}>
+            {str(ev.count) || '?'} {countNoun(String(r.type ?? ''), Number(ev.count))} recorded
+            {roads.length ? ` on road ${roads.join(', ')}` : ''}{str(loc.scene) ? ` (${str(loc.scene)})` : ''}
+            {twin && <> · <Anchor component={Link} to={twin} size="sm" fw={400}>show on the 3D map</Anchor></>}
+          </Text>
+          <Text mt={4}><Text span fw={600}>Solution: </Text>{actionText(r.action)}</Text>
+          <Text size="xs" c="dimmed" mt={6}>For more detail, test this change in the CARLA simulator.</Text>
+        </>
+      )}
+      {!SHOW_DETAILS ? null : !known ? (
         <Table mt="xs" withRowBorders={false} verticalSpacing={2}>
           <Table.Tbody>
             {([['Location', r.location], ['Evidence', r.evidence], ['Expected impact', r.expected_impact ?? r.projected_estimate],
@@ -99,58 +133,64 @@ function RecCard({ r, sessionId, onDecide, canDecide }: {
             <Table.Tbody>
               <Row k="Where">
                 {[str(loc.scene) || str(sim.town), roads.length ? `road ${roads.join(', ')}` : ''].filter(Boolean).join(', ') || '-'}
-                {loc.radius_m != null && ` · ${fmtValue(loc.radius_m)} m around (${arr(loc.centroid).map((x) => fmtValue(x)).join(', ')})`}
-                {twin && <> · <Anchor component={Link} to={twin} size="sm">open in twin</Anchor></>}
+                {loc.radius_m != null && `, within about ${Math.round(Number(loc.radius_m))} m of one spot`}
+                {twin && <> · <Anchor component={Link} to={twin} size="sm">show on the 3D map</Anchor></>}
               </Row>
-              <Row k="Evidence">
+              <Row k="What we saw">
                 <Stack gap={4}>
                   <Text size="sm">
-                    {str(ev.count)} events over {fmtValue(Number(period.span_s ?? 0) / 60)} min
-                    {ev.share_of_events_in_area != null && ` · ${Math.round(Number(ev.share_of_events_in_area) * 100)} % of the events in the area`}
-                    {ev.mean_event_confidence != null && ` · mean confidence ${fmtValue(ev.mean_event_confidence)}`}
+                    {str(ev.count)} times in {Math.round(Number(period.span_s ?? 0) / 60)} minutes
+                    {ev.share_of_events_in_area != null && `, ${pct(ev.share_of_events_in_area)} of all problems in this area`}
+                    {ev.mean_event_confidence != null && `. The system was ${pct(ev.mean_event_confidence)} sure on average`}
                   </Text>
                   <Counts m={ev.by_condition} />
                 </Stack>
               </Row>
-              <Row k="Expected impact">
-                <Badge size="xs" color="yellow" variant="light" mr={6}>{str(imp.label) || 'projected estimate'}</Badge>
-                {imp.reduction != null ? `${fmtValue(imp.reduction)} reduction` : str(imp.basis)}
-                {before.per_hour != null && <Text size="xs" c="dimmed">now: {fmtValue(before.per_hour)} per hour ({str(before.rate_note)})</Text>}
-                {src.name != null && (
-                  <Text size="xs" c="dimmed">source: {src.url ? <Anchor href={str(src.url)} target="_blank" size="xs">{str(src.name)}</Anchor> : str(src.name)}</Text>
+              <Row k="How much it could help">
+                {imp.reduction != null
+                  ? `About ${pct(obj(imp.reduction).low)} to ${pct(obj(imp.reduction).high)} fewer (${str(imp.basis)})`
+                  : str(imp.basis)}
+                {before.per_hour != null && <Text size="xs" c="dimmed">Right now: about {Math.round(Number(before.per_hour))} times an hour ({str(before.rate_note)})</Text>}
+                {imp.reduction != null && src.name != null && (
+                  <Text size="xs" c="dimmed">Source: {src.url ? <Anchor href={str(src.url)} target="_blank" size="xs">{str(src.name)}</Anchor> : str(src.name)}</Text>
                 )}
               </Row>
-              <Row k="Confidence">
-                <Badge size="sm" color={BAND_COLOR[str(conf.band)] ?? 'gray'} variant="light" mr={6}>{str(conf.band)} · {str(conf.score)}</Badge>
-                <Text span size="xs" c="dimmed">{arr(conf.basis).map(String).join(' · ')}</Text>
+              <Row k="How sure we are">
+                <Badge size="sm" color={BAND_COLOR[str(conf.band)] ?? 'gray'} variant="light" mr={6} tt="none">{BAND_PLAIN[str(conf.band)] ?? str(conf.band)} ({pct(conf.score)})</Badge>
+                <Text span size="xs" c="dimmed">{arr(conf.basis).map(String).join(', ')}</Text>
               </Row>
-              <Row k="CARLA validation">
-                <Badge size="sm" color={SIM_COLOR[simOk] ?? 'gray'} variant="light" mr={6}>simulable: {simOk || '?'}</Badge>
+              <Row k="Can we test it in the simulator?">
+                <Badge size="sm" color={SIM_COLOR[simOk] ?? 'gray'} variant="light" mr={6} tt="none">{SIM_PLAIN[simOk] ?? (simOk || '?')}</Badge>
                 {str(obj(sim.change).reason) && <Text span size="xs" c="dimmed">{str(obj(sim.change).reason)}</Text>}
               </Row>
             </Table.Tbody>
           </Table>
           <Accordion variant="contained" mt="xs" chevronPosition="left">
             <Accordion.Item value="validation">
-              <Accordion.Control><Text size="sm">How to validate</Text></Accordion.Control>
+              <Accordion.Control><Text size="sm">How to test it</Text></Accordion.Control>
               <Accordion.Panel>
-                <Text size="sm">{str(val.method)}</Text>
-                {str(val.success_criterion) && <Text size="sm" mt={4}><b>Success:</b> {str(val.success_criterion)}</Text>}
-                {arr(val.metrics).length > 0 && <List size="sm" mt={4}>{arr(val.metrics).map((m, i) => <List.Item key={i}>{String(m)}</List.Item>)}</List>}
+                <Text size="sm">{str(val.method)}.</Text>
+                {str(val.success_criterion) && <Text size="sm" mt={4}>{str(val.success_criterion)}.</Text>}
+                {arr(val.metrics).length > 0 && (
+                  <>
+                    <Text size="sm" mt={4}>What we measure:</Text>
+                    <List size="sm">{arr(val.metrics).map((m, i) => <List.Item key={i}>{String(m)}</List.Item>)}</List>
+                  </>
+                )}
                 {Object.keys(scen).length > 0 && (
                   <Text size="xs" c="dimmed" mt={4}>
-                    scenario: {str(scen.town)} · {str(scen.vehicles)} vehicles within {str(scen.radius_m)} m · {str(scen.duration_s)} s · seeds {arr(scen.seeds).join(', ')} · {str(scen.weather)}
+                    Test setup: {str(scen.town)}, {str(scen.vehicles)} cars within {str(scen.radius_m)} m, {Math.round(Number(scen.duration_s ?? 0) / 60)} minutes, {arr(scen.seeds).length} runs
                   </Text>
                 )}
               </Accordion.Panel>
             </Accordion.Item>
             <Accordion.Item value="limits">
-              <Accordion.Control><Text size="sm">Limitations ({arr(r.limitations).length})</Text></Accordion.Control>
+              <Accordion.Control><Text size="sm">Things to keep in mind ({arr(r.limitations).length})</Text></Accordion.Control>
               <Accordion.Panel><List size="sm">{arr(r.limitations).map((l, i) => <List.Item key={i}>{String(l)}</List.Item>)}</List></Accordion.Panel>
             </Accordion.Item>
             {arr(r.alternatives).length > 0 && (
               <Accordion.Item value="alts">
-                <Accordion.Control><Text size="sm">Alternatives ({arr(r.alternatives).length})</Text></Accordion.Control>
+                <Accordion.Control><Text size="sm">Other options ({arr(r.alternatives).length})</Text></Accordion.Control>
                 <Accordion.Panel>
                   <List size="sm">
                     {arr(r.alternatives).map((a, i) => {
@@ -164,7 +204,7 @@ function RecCard({ r, sessionId, onDecide, canDecide }: {
           </Accordion>
         </>
       )}
-      {canDecide && <Group mt="sm"><Button size="xs" onClick={() => onDecide(r)}>Decide…</Button></Group>}
+      {SHOW_DECIDE && canDecide && <Group mt="sm"><Button size="xs" onClick={() => onDecide(r)}>Decide…</Button></Group>}
     </Card>
   );
 }
@@ -191,7 +231,7 @@ export default function RecommendationsPage() {
     },
     onError: (e: Error) => notifications.show({ color: 'red', title: 'Failed', message: e.message }),
   });
-  const items = useMemo(() => [...list(recs.data)].sort((a, b) => {
+  const items = useMemo(() => [...list(recs.data)].filter((r) => !HIDDEN_REC_TYPES.has(String(r.type))).sort((a, b) => {
     const pa = obj(a.priority), pb = obj(b.priority);
     return (ORDER[str(pa.band)] ?? 3) - (ORDER[str(pb.band)] ?? 3) || Number(pb.score ?? 0) - Number(pa.score ?? 0);
   }), [recs.data]);
@@ -204,14 +244,14 @@ export default function RecommendationsPage() {
       <Group justify="space-between" align="flex-end">
         <div>
           <Title order={3}>Recommendations</Title>
-          <Text size="sm" c="dimmed">From hotspots and patterns in the event data. Expected impacts are projected estimates until a baseline-vs-modified CARLA run validates them.</Text>
+          <Text size="sm" c="dimmed">Suggestions based on where and how often rules are broken. The expected effects are rough guides until they are tested in the simulator.</Text>
         </div>
         <Select label="Session" placeholder="all sessions" clearable searchable w={340} data={sessionOptions}
           value={sessionId} onChange={setSessionId} />
       </Group>
       {recs.isError && <Alert color="red">{(recs.error as Error).message}</Alert>}
-      {!recs.isLoading && items.length === 0 && <Alert color="gray">No recommendations yet: they need imported sessions with enough events.</Alert>}
-      {items.length > 0 && <Text size="sm">{items.length} recommendations, highest priority first.</Text>}
+      {!recs.isLoading && items.length === 0 && <Alert color="gray">No suggestions yet: there are not enough recorded problems.</Alert>}
+      {items.length > 0 && <Text size="sm">{items.length} suggestions, most important first.</Text>}
       <SimpleGrid cols={{ base: 1, lg: 2 }}>
         {items.map((r) => <RecCard key={r.id} r={r} sessionId={sessionId} onDecide={setCur} canDecide={can(me?.role, 'decide_recommendation')} />)}
       </SimpleGrid>

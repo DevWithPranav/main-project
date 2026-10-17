@@ -8,7 +8,9 @@ param(
     [string]$Zones = "",              # scenario_log.json of a staged flight (zones + expected violations) when testing staged acts
     [double]$ClockOffset = 0.0,       # from net_check.py ping (seconds)
     [switch]$Dashboard,               # also reachable from Afif's PC (backend / dashboard listen on all interfaces)
-    [int]$Imgsz = 960
+    [switch]$Local,                   # everything on this PC (start_town04_live.ps1): no "tell Afif" summary at the end
+    [int]$Imgsz = 960,
+    [ValidateSet("auto", "on", "off")][string]$People = "auto"   # pedestrian detector (zebra rules): auto = only near a crosswalk
 )
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
@@ -53,7 +55,7 @@ else {
 Write-Host "`n== 4. Live pipeline under the watchdog (:5555) ==" -ForegroundColor Cyan
 if (Listening 5555) { Write-Host "something already listens on 5555 (a pipeline from an earlier run?). Run 04_stop_stack.ps1 first." -ForegroundColor Yellow }
 else {
-    $a = @("services\live\watchdog.py", "--backend", "http://127.0.0.1:8000", "--session", $Session, "--imgsz", "$Imgsz", "--tracker", "tracktrack_live")
+    $a = @("services\live\watchdog.py", "--backend", "http://127.0.0.1:8000", "--session", $Session, "--imgsz", "$Imgsz", "--tracker", "tracktrack_live", "--people", $People)
     if ($Zones) { $a += @("--zones", (Resolve-Path $Zones).Path) }
     if ($ClockOffset -ne 0.0) { $a += @("--clock-offset", "$ClockOffset") }
     Start-Process -FilePath $py -ArgumentList $a -WorkingDirectory $repo -WindowStyle Hidden `
@@ -63,6 +65,7 @@ else {
     else { Write-Host "pipeline did not open :5555: see ${Session}_pipeline.err" -ForegroundColor Red; exit 1 }
 }
 
+if ($Local) { return }
 $ts = (Get-Command tailscale -ErrorAction SilentlyContinue)
 $ip = if ($ts) { (& tailscale ip -4 2>$null | Select-Object -First 1) } else { $null }
 if (-not $ip) { $ip = "<this PC's Tailscale IP>" }

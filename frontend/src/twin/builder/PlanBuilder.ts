@@ -13,6 +13,9 @@ import { alternativesHtml, bestWorstHtml, compareHtml, compiledHtml, esc, eviden
 import { normalizeTraffic, setPath, trafficIsDefault, trafficProblems, trafficTabHtml, type Cfg } from './trafficUi';
 import { allItems, applyAlternative, countItems, defaultsFor, describeItem, emptyPlan, footprint, paramProblems, PlanStore } from './planStore';
 
+/** The bottom bar's "Custom traffic" switch and "Simulate virtual traffic" button are hidden, not removed (docs/Live_Page_Changes.md). */
+const SHOW_VIRTUAL_TRAFFIC = false;
+
 export interface DrawnItem {
   id: string;
   group: PlanGroup;
@@ -66,6 +69,14 @@ const CARLA_MARK = { supported: '✓', approximate: '≈', unsupported: '✕' } 
 const dash = (s: string) => s.replace(/_/g, ' ');
 /** Kinds placed on a junction's approaches (stop line at the junction edge, one controller per junction in the virtual traffic). */
 const JUNCTION_KINDS = new Set(['traffic_signal', 'stop_sign']);
+// hidden, not removed (docs/Live_Page_Changes.md): only the Props and Rules tabs are offered, and the
+// "Priority, schedule, note" section is kept in the form (so its values are still read) but not shown
+const SHOWN_TABS: Tab[] = ['prop', 'rule']; // all: ['prop', 'rule', 'scenario', 'traffic', 'template']
+const SHOW_ITEM_EXTRAS = false;
+const SHOW_RISKS = false; // "Risks" section of the Recommendations panel (hidden, not removed)
+// prop kinds offered in the "Add prop" list (null = all); the rest stay in the catalogue, just not listed
+const SHOWN_PROPS: string[] | null = ['traffic_signal'];
+const listed = (k: { group: string; key: string }) => k.group !== 'prop' || !SHOWN_PROPS || SHOWN_PROPS.includes(k.key);
 const COMPASS = ['E', 'NE', 'N', 'NW', 'W', 'SW', 'S', 'SE'];
 /** Driving direction as a compass point: CARLA y points south, so north is -y. */
 const compass = (headingDeg: number) => COMPASS[Math.round((((-headingDeg % 360) + 360) % 360) / 45) % 8];
@@ -331,7 +342,9 @@ export class PlanBuilder {
   private propKindKey(): string {
     const editing = this.editing ? this.store.find(this.editing)?.item : undefined;
     if (editing && this.kind(editing.kind)?.group === 'prop') return editing.kind;
-    return this.formKindByGroup.prop ?? Object.values(this.cat?.kinds ?? {}).find((k) => k.group === 'prop')?.key ?? '';
+    const shown = Object.values(this.cat?.kinds ?? {}).filter((k) => k.group === 'prop' && listed(k));
+    const last = this.formKindByGroup.prop;
+    return (last && shown.some((k) => k.key === last) ? last : shown[0]?.key) ?? '';
   }
 
   /** The approaches of a junction that already have an item of this kind (an item without approach_id covers all). */
@@ -422,7 +435,7 @@ export class PlanBuilder {
           <button class="mini" data-act="new">New</button></div>
       </div>
       ${where}
-      <nav class="tabs">${(['prop', 'rule', 'scenario', 'traffic', 'template'] as Tab[]).map((t) => `<button data-tab="${t}" class="${this.tab === t ? 'on' : ''}">${t === 'template' ? 'Templates' : t === 'traffic' ? 'Traffic' : GROUP_TITLE[t]}</button>`).join('')}</nav>
+      <nav class="tabs">${SHOWN_TABS.map((t) => `<button data-tab="${t}" class="${this.tab === t ? 'on' : ''}">${t === 'template' ? 'Templates' : t === 'traffic' ? 'Traffic' : GROUP_TITLE[t]}</button>`).join('')}</nav>
       <div class="tabbody">${this.tab === 'traffic'
         ? (this.tschema ? this.trafficHtml(canEdit) : `<p class="${this.tschemaError ? 'm-err' : 'muted'}">${esc(this.tschemaError || 'Loading the traffic settings…')}</p>`)
         : this.cat ? (this.tab === 'template' ? this.templatesHtml(canEdit) : this.formHtml(this.tab, canEdit)) : '<p class="muted">Loading the catalogue…</p>'}</div>
@@ -435,7 +448,7 @@ export class PlanBuilder {
   }
 
   private formHtml(group: PlanGroup, canEdit: boolean): string {
-    const kinds = Object.values(this.cat!.kinds).filter((k) => k.group === group);
+    const kinds = Object.values(this.cat!.kinds).filter((k) => k.group === group && listed(k));
     const editing = this.editing ? this.store.find(this.editing)?.item : undefined;
     const cur = (editing && this.kind(editing.kind)?.group === group ? this.kind(editing.kind) : undefined) ?? kinds.find((k) => k.key === this.formKind(group)) ?? kinds[0];
     const p = { ...defaultsFor(cur), ...(editing?.kind === cur.key ? editing.params ?? {} : {}) };
@@ -457,7 +470,7 @@ export class PlanBuilder {
         <span class="sup v-${cur.virtual?.status ?? 'unsupported'}" title="${esc(cur.virtual?.how ?? '')}">virtual traffic ${CARLA_MARK[cur.virtual?.status ?? 'unsupported']}</span>
         <span class="sup c-${cur.carla.status}" title="${esc(cur.carla.how)}">CARLA ${CARLA_MARK[cur.carla.status]} ${cur.carla.status}</span></div>
       <div class="grid2">${fields}${area && !atJunction ? `<label>Direction <span class="muted">(deg)</span><input type="number" data-f="yaw" step="1" value="${editing?.yaw_deg ?? this.anchor?.loc?.nearest_lane?.heading_deg ?? 0}"/></label>` : ''}</div>
-      <details><summary>Priority, schedule, note</summary><div class="grid2">
+      <details${SHOW_ITEM_EXTRAS ? '' : ' style="display:none"'}><summary>Priority, schedule, note</summary><div class="grid2">
         <label>Priority<input type="number" data-f="priority" step="1" value="${editing?.priority ?? 0}"/></label>
         <label>Note<input data-f="inote" value="${esc(editing?.note ?? '')}"/></label>
         <label>Active from <span class="muted">(s)</span><input type="number" data-f="from" step="any" value="${sch?.from_s ?? ''}"/></label>
@@ -527,7 +540,7 @@ export class PlanBuilder {
       a?.observed ? open('Observed baseline (before)', observedHtml(a.observed)) : open('Observed baseline (before)', '<p class="muted">Choose “Analyse on recorded traffic” in the bottom bar to measure speed, queue, density and travel time around the plan on the session’s recorded traffic.</p>', false),
       open('Violations before → after <span class="tag">replay (measured)</span>', a?.replay ? replayHtml(a) : replayHtml({ ...(pre as PlanAnalysis), replay: undefined })),
       open('Best case / worst case', a ? bestWorstHtml(a) : ''),
-      pre ? open('Risks <span class="tag">rule of thumb, not measured</span>', risksHtml(pre)) : '',
+      SHOW_RISKS && pre ? open('Risks <span class="tag">rule of thumb, not measured</span>', risksHtml(pre)) : '',
       pre ? open('Alternatives', alternativesHtml(pre.alternatives)) : '',
       pre ? open('After the change: not simulated yet', pendingHtml(pre), false) : '',
       open('Scenario comparison', compareHtml(this.compareRows())),
@@ -552,10 +565,10 @@ export class PlanBuilder {
         <button class="ib" data-act="stopp" title="Stop and rewind">⏹</button>
         <select data-f="speed" title="Simulation speed"><option>0.5</option><option>1</option><option selected>2</option><option>4</option><option>8</option></select><span class="muted">×</span></div>
       <div class="grp wide"><input type="range" data-f="tl" min="0" max="1000" value="${st.tMax > st.tMin ? Math.round(((st.t - st.tMin) / (st.tMax - st.tMin)) * 1000) : 0}" title="Timeline" /><span id="tlabel" class="muted"></span></div>
-      <div class="grp"><label class="inl" title="Virtual traffic on the map (blue); with items in the plan it follows the plan. Simplified model, not CARLA."><input type="checkbox" data-f="custom" ${this.host.customTraffic.isOn() ? 'checked' : ''} /> Custom traffic</label></div>
+      ${SHOW_VIRTUAL_TRAFFIC ? `<div class="grp"><label class="inl" title="Virtual traffic on the map (blue); with items in the plan it follows the plan. Simplified model, not CARLA."><input type="checkbox" data-f="custom" ${this.host.customTraffic.isOn() ? 'checked' : ''} /> Custom traffic</label></div>` : ''}
       <div class="grp"><label class="inl">Scenario <select data-f="view"><option value="">Draft (live preview)</option>${this.runs.map((r) => `<option value="${r.key}" ${r.key === this.shownRun ? 'selected' : ''}>${esc(r.name)}${r.stale ? ' (outdated)' : ''}</option>`).join('')}</select></label></div>
       <div class="grp"><button class="primary" data-act="analyze" ${canEdit && countItems(this.store.doc) && sid && !this.analysing ? '' : 'disabled'} title="${sid ? 'Replay the session’s recorded traffic with this plan' : 'Pick a recorded session in the info panel first'}">Analyse on recorded traffic</button>
-        <button class="primary" data-act="simulate" ${canEdit && countItems(this.store.doc) && !this.simulating ? '' : 'disabled'} title="Run vehicles on the map with this plan and with the baseline (virtual traffic model, several seeds), then play them here">Simulate virtual traffic</button>
+        ${SHOW_VIRTUAL_TRAFFIC ? `<button class="primary" data-act="simulate" ${canEdit && countItems(this.store.doc) && !this.simulating ? '' : 'disabled'} title="Run vehicles on the map with this plan and with the baseline (virtual traffic model, several seeds), then play them here">Simulate virtual traffic</button>` : ''}
         <button data-act="carla" disabled title="Phase 2: runs in CarlaAir on the simulator PC (baseline vs modified, several seeds). Not built yet.">Run in CARLA</button>
         <button data-act="report" ${countItems(this.store.doc) ? '' : 'disabled'} title="Planning report: PDF, Excel or CSV, with the observed, replayed and simulated results kept apart">Report</button></div>
       ${this.reportOpen ? this.reportHtml(canEdit) : ''}`;

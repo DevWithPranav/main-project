@@ -20,6 +20,7 @@ export interface EventFilters {
 export interface PageOpts {
   limit?: number;
   offset?: number;
+  order?: 'asc' | 'desc'; // by occurred_at; the API default is asc
 }
 
 const STRING_KEYS = ['session_id', 'type', 'condition', 'status', 'since', 'until'] as const;
@@ -41,6 +42,7 @@ export function filtersToParams(f: EventFilters, page: PageOpts = {}): URLSearch
   }
   if (page.limit !== undefined) p.set('limit', String(page.limit));
   if (page.offset !== undefined && page.offset > 0) p.set('offset', String(page.offset));
+  if (page.order) p.set('order', page.order);
   return p;
 }
 
@@ -83,7 +85,7 @@ export function matchesFilters(
   f: EventFilters,
 ): boolean {
   if (f.session_id && e.session_id !== f.session_id) return false;
-  if (f.type && e.type !== f.type) return false;
+  if (f.type && !f.type.split(',').includes(e.type)) return false; // the backend takes a comma list too
   if (f.condition && e.condition !== f.condition) return false;
   if (f.status && e.status !== f.status) return false;
   if (f.kind && (e.kind ?? 'violation') !== f.kind) return false;

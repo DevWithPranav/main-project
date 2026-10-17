@@ -2,7 +2,7 @@
 
 import { Alert, Badge, Button, Code, Divider, Drawer, Group, Image, Stack, Table, Text, Textarea } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, mediaUrl } from '../api';
 import { isAnomaly, type TrafficEvent } from '../api/types';
@@ -10,6 +10,13 @@ import { useAuth } from '../auth';
 import { useConditions } from '../hooks';
 import { conditionLabel, fmtDateTime, fmtSimTime, fmtValue, reviewState, STATUS_COLORS, statusLabel, TYPE_COLORS, typeLabel } from '../lib/format';
 import { canReview } from '../lib/permissions';
+
+// hidden, not removed (docs/Live_Page_Changes.md): the type / status / session pills, the engine's
+// dwell / grace values, the tags (e.g. id_switch_bridged) and the Review section
+const SHOW_HEADER_BADGES = false;
+const HIDDEN_VALUE_KEYS = new Set(['dwell_s', 'grace_s']);
+const SHOW_TAGS = false;
+const SHOW_REVIEW = false;
 
 export default function EventDrawer({ event, onClose }: { event: TrafficEvent | null; onClose: () => void }) {
   const { me } = useAuth();
@@ -28,7 +35,18 @@ export default function EventDrawer({ event, onClose }: { event: TrafficEvent | 
     onError: (e: Error) => notifications.show({ color: 'red', title: 'Review failed', message: e.message }),
   });
 
-  const e = event;
+  // the row the list loaded can be older than the event: a live event's clip is uploaded a few seconds
+  // after its snapshot, so fetch it fresh and look again until the clip is there
+  const fresh = useQuery({
+    queryKey: ['event', event?.event_id],
+    queryFn: () => api.event(event!.event_id),
+    enabled: !!event,
+    refetchInterval: (q) => {
+      const ev = q.state.data?.evidence;
+      return ev?.snapshot_url && !ev?.clip_url ? 3000 : false;
+    },
+  });
+  const e = fresh.data && fresh.data.event_id === event?.event_id ? fresh.data : event;
   const clip = mediaUrl(e?.evidence?.clip_url as string | undefined);
   const snap = mediaUrl(e?.evidence?.snapshot_url as string | undefined);
   const rows: [string, string][] = e
@@ -41,7 +59,7 @@ export default function EventDrawer({ event, onClose }: { event: TrafficEvent | 
           ['Flagged', fmtSimTime(e.flag_s)],
           ['Ended', e.end_s != null ? fmtSimTime(e.end_s) : 'ongoing / unknown'],
           ['Lane', e.lane_id ?? '-'],
-          ...Object.entries(e.value ?? {}).map(([k, v]): [string, string] => [k.replace(/_/g, ' '), fmtValue(v)]),
+          ...Object.entries(e.value ?? {}).filter(([k]) => !HIDDEN_VALUE_KEYS.has(k)).map(([k, v]): [string, string] => [k.replace(/_/g, ' '), fmtValue(v)]),
         ]
     : [];
 
@@ -49,18 +67,22 @@ export default function EventDrawer({ event, onClose }: { event: TrafficEvent | 
     <Drawer opened={!!e} onClose={onClose} position="right" size="lg" title={e ? typeLabel(e.type) : ''}>
       {e && (
         <Stack gap="sm">
-          <Group gap="xs">
-            <Badge color={TYPE_COLORS[e.type] ?? 'gray'}>{typeLabel(e.type)}</Badge>
-            <Badge color={STATUS_COLORS[e.status] ?? 'gray'} variant="light">{statusLabel(e.status)}</Badge>
-            <Badge variant="outline">conf {e.confidence.toFixed(2)}</Badge>
-            {e.session_id && <Badge variant="default">{e.session_id}</Badge>}
-          </Group>
+          {SHOW_HEADER_BADGES ? (
+            <Group gap="xs">
+              <Badge color={TYPE_COLORS[e.type] ?? 'gray'}>{typeLabel(e.type)}</Badge>
+              <Badge color={STATUS_COLORS[e.status] ?? 'gray'} variant="light">{statusLabel(e.status)}</Badge>
+              <Badge variant="outline">conf {e.confidence.toFixed(2)}</Badge>
+              {e.session_id && <Badge variant="default">{e.session_id}</Badge>}
+            </Group>
+          ) : (
+            <Text size="sm"><Text span c="dimmed">Confidence </Text><Text span fw={700}>{e.confidence.toFixed(2)}</Text></Text>
+          )}
           {clip ? (
             <video src={clip} controls autoPlay muted loop style={{ width: '100%', borderRadius: 8, background: '#000' }} />
           ) : snap ? (
             <Image src={snap} radius="md" />
           ) : (
-            <Alert color="gray">No evidence clip for this event (render_violations.py --clips makes them).</Alert>
+            <Alert color="gray">No evidence clip available for this event.</Alert>
           )}
           <Table withRowBorders={false} verticalSpacing={4}>
             <Table.Tbody>
@@ -76,9 +98,10 @@ export default function EventDrawer({ event, onClose }: { event: TrafficEvent | 
               </Table.Tr>
             </Table.Tbody>
           </Table>
-          {!!e.tags?.length && (
+          {SHOW_TAGS && !!e.tags?.length && (
             <Group gap={4}>{e.tags.map((t) => <Badge key={t} size="xs" variant="dot">{t}</Badge>)}</Group>
           )}
+          {SHOW_REVIEW && (<>
           <Divider label="Review" />
           {e.review ? (
             <Alert color={e.review.outcome === 'confirmed' ? 'green' : 'gray'} title={`${e.review.outcome} by ${e.review.by}`}>
@@ -98,6 +121,7 @@ export default function EventDrawer({ event, onClose }: { event: TrafficEvent | 
           ) : (
             <Text size="xs" c="dimmed">Your role ({me?.role}) can view but not review this event.</Text>
           )}
+          </>)}
         </Stack>
       )}
     </Drawer>

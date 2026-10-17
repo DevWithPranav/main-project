@@ -13,6 +13,10 @@ export const VIOLATION_TYPES = [
   'red_light',
 ] as const;
 export type ViolationType = (typeof VIOLATION_TYPES)[number];
+// not shown on the Violations page or as live notifications (2026-10-16: lane changes inside Town04's
+// highway junctions read as A1 false alarms); the backend still stores them
+export const HIDDEN_VIOLATION_TYPES: ReadonlySet<string> = new Set(['lane_violation']);
+export const SHOWN_VIOLATION_TYPES = VIOLATION_TYPES.filter((t) => !HIDDEN_VIOLATION_TYPES.has(t));
 
 export const ANOMALY_TYPES = ['pothole', 'crack', 'waterlogging', 'debris'] as const;
 export type AnomalyType = (typeof ANOMALY_TYPES)[number];
@@ -193,7 +197,7 @@ export interface Profile {
   };
   violations?: Partial<Record<ViolationType, ViolationConfig>>;
   conditions?: Record<string, boolean>;
-  place_memory?: { radius_m?: number; keep_s?: number };
+  place_memory?: { radius_m?: number; keep_s?: number; vacate_kmh?: number; vacate_beyond_m?: number };
   model?: Record<string, unknown>;
   modules?: Record<string, boolean>;
   road?: Record<string, unknown>;

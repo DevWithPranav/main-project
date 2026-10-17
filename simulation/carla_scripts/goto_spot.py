@@ -7,6 +7,12 @@ position), so it stays right after a map load.
 
 Usage (venv_sim, CarlaAir running, map already loaded):
     python simulation/carla_scripts/goto_spot.py -30.1 111.2 --yaw 0
+    python simulation/carla_scripts/goto_spot.py -12 -5 --yaw 90 --once   # then fly with fly_drone.py
+
+Without --once it holds the spot (and its heading) until Ctrl+C, re-sending it every few seconds. Do not fly
+with fly_drone.py while it holds: the two fight over the heading and the drone turns on its own. With --once
+it places the drone, waits for it to settle and exits; fly_drone.py then keeps it in the air (it sends a
+"stay still" command when no key is pressed).
 """
 
 import argparse
@@ -28,6 +34,9 @@ def main() -> None:
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--port", type=int, default=2000)
     ap.add_argument("--airsim-port", type=int, default=41451)
+    ap.add_argument("--once", action="store_true",
+                    help="Place the drone, let it settle, then exit (to fly with fly_drone.py); default: hold until Ctrl+C")
+    ap.add_argument("--settle-s", type=float, default=8.0, help="With --once: how long to hold before exiting")
     args = ap.parse_args()
 
     world = carla.Client(args.host, args.port).get_world()
@@ -61,10 +70,15 @@ def main() -> None:
 
     # A single hoverAsync() doesn't hold on this build (tested 2026-10-10: the drone sank to the
     # ground within 10 s), so keep re-sending the spot until Ctrl+C.
-    print("[goto] holding the spot; keep this window open, Ctrl+C when the spot is done")
+    if args.once:
+        print(f"[goto] placing the drone, settling for {args.settle_s:g} s, then exiting (fly with fly_drone.py)")
+    else:
+        print("[goto] holding the spot; keep this window open, Ctrl+C when the spot is done "
+              "(do not fly with fly_drone.py meanwhile: both steer the heading)")
     last = 0.0
+    t_end = time.time() + args.settle_s
     try:
-        while True:
+        while not args.once or time.time() < t_end:
             client.moveToPositionAsync(nx, ny, nz, 2.0, timeout_sec=3,
                                        yaw_mode=airsim.YawMode(False, args.yaw)).join()
             if time.time() - last > 10.0:
@@ -76,6 +90,12 @@ def main() -> None:
                       f"({err:.1f} m from the spot)", flush=True)
     except KeyboardInterrupt:
         print("\n[goto] stopped holding (the drone will sink); run again for the next spot")
+        return
+    if args.once:
+        client.hoverAsync()
+        t = drone.get_transform()
+        print(f"[goto] placed at ({t.location.x:.1f}, {t.location.y:.1f}), {t.location.z - ground:.1f} m above the road, "
+              f"yaw {t.rotation.yaw:.1f} deg; released (fly_drone.py keeps it up)")
 
 
 if __name__ == "__main__":

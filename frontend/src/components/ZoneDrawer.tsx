@@ -23,6 +23,10 @@ type Mode = { kind: 'view' } | { kind: 'draw'; type: ZoneType; pts: Pt[]; hover:
 interface FormState { open: boolean; editId: string | null; polygon: Pt[]; name: string; type: ZoneType; grace_s: number | ''; limit_kmh: number | ''; note: string }
 
 const SITE = 'site:';
+const DEFAULT_SCENE = 'Town04'; // scene the tab opens on (was Town05, docs/Live_Page_Changes.md)
+// zone types offered for drawing / in the legend: No U-turn hidden (docs/Live_Page_Changes.md); existing ones still show and edit
+const HIDDEN_ZONE_TYPES = new Set<ZoneType>(['no_u_turn']);
+const shownTypeOptions = zoneTypeOptions.filter((o) => !HIDDEN_ZONE_TYPES.has(o.value));
 const ZONE_FILE = (scene: string) => `backend/data/zones/${scene}.json`; // backend config.ZONE_OUT_DIR, repo-relative
 
 export default function ZoneDrawer() {
@@ -40,7 +44,7 @@ export default function ZoneDrawer() {
     ...(sites.length ? [{ group: 'Real-video sites', items: sites.map((s) => ({ value: SITE + s.session_id, label: s.name || s.session_id })) }] : []),
   ];
   const [scope, setScope] = useState<string | null>(null);
-  useEffect(() => { if (!scope && towns.length) setScope(towns.includes('Town05') ? 'Town05' : towns[0]); }, [towns, scope]);
+  useEffect(() => { if (!scope && towns.length) setScope(towns.includes(DEFAULT_SCENE) ? DEFAULT_SCENE : towns[0]); }, [towns, scope]);
   const isSite = !!scope?.startsWith(SITE);
   const sceneName = scope ? (isSite ? scope.slice(SITE.length) : scope) : null;
   const townScene = useScene(isSite ? null : scope);
@@ -190,7 +194,7 @@ export default function ZoneDrawer() {
             <Select data={options} value={scope} onChange={setScope} w={230} aria-label="Scene" searchable />
             {canEdit && mode.kind === 'view' && (
               <>
-                <Select data={zoneTypeOptions} value={drawType} onChange={(v) => v && setDrawType(v as ZoneType)} w={220} aria-label="Zone type" />
+                <Select data={shownTypeOptions} value={drawType} onChange={(v) => v && setDrawType(v as ZoneType)} w={220} aria-label="Zone type" />
                 <Button leftSection={<IconPlus size={14} />} onClick={() => { setSelected(null); setMode({ kind: 'draw', type: drawType, pts: [], hover: null }); }} disabled={!map.data}>
                   Draw zone
                 </Button>
@@ -218,7 +222,7 @@ export default function ZoneDrawer() {
             )}
           </Group>
           <Group gap={4}>
-            {zoneTypeOptions.map((o) => <Badge key={o.value} variant="dot" color={zoneColor(o.value)}>{o.label}</Badge>)}
+            {shownTypeOptions.map((o) => <Badge key={o.value} variant="dot" color={zoneColor(o.value)}>{o.label}</Badge>)}
           </Group>
         </Group>
         {mode.kind === 'draw' && (
@@ -313,7 +317,7 @@ export default function ZoneDrawer() {
       <Modal opened={form.open} onClose={() => setForm(emptyForm)} title={form.editId ? 'Zone settings' : 'New zone'} centered>
         <Stack gap="sm">
           <TextInput label="Name" placeholder="e.g. School entrance no stopping" value={form.name} onChange={(e) => setForm({ ...form, name: e.currentTarget.value })} required data-autofocus />
-          <Select label="Type" data={zoneTypeOptions} value={form.type} onChange={(v) => v && setForm({ ...form, type: v as ZoneType })} />
+          <Select label="Type" data={HIDDEN_ZONE_TYPES.has(form.type) ? zoneTypeOptions.filter((o) => o.value === form.type || !HIDDEN_ZONE_TYPES.has(o.value)) : shownTypeOptions} value={form.type} onChange={(v) => v && setForm({ ...form, type: v as ZoneType })} />
           <Text size="xs" c="dimmed" mt={-6}>Drives: {ZONE_TYPES[form.type].drives}</Text>
           {ZONE_TYPES[form.type].param === 'grace_s' && (
             <NumberInput label="Wait before flagging (s)" description="Empty: the rule's default from the profile. A few seconds makes it a no-stopping zone."

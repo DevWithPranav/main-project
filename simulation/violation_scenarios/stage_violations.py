@@ -986,13 +986,13 @@ BLUEPRINTS = {"car": [BLUEPRINT],
               "truck": ["vehicle.carlamotors.firetruck", "vehicle.carlamotors.european_hgv", "vehicle.carlamotors.carlacola"]}
 
 
-def spawn(world, bp_lib, tr: Trajectory, cls: str = "car"):
+def spawn(world, bp_lib, tr: Trajectory, cls: str = "car", role: str = SCRIPTED_ROLE):
     names = [n for n in BLUEPRINTS.get(cls, [BLUEPRINT]) if bp_lib.filter(n)]
     if not names:
         print(f"[spawn] no {cls} blueprint in this build ({BLUEPRINTS.get(cls)})")
         return None
     bp = bp_lib.find(names[0])
-    bp.set_attribute("role_name", SCRIPTED_ROLE)
+    bp.set_attribute("role_name", role)
     p, yaw = tr.at(0.0)
     v = world.try_spawn_actor(bp, carla.Transform(carla.Location(p[0], p[1], p[2] + 2.0), carla.Rotation(yaw=yaw)))
     if v is not None:

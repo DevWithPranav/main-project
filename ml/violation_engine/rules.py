@@ -42,7 +42,14 @@ DEFAULTS = {
     # keep_s: a stopped car's detection can drop out for tens of seconds under a tree crown (2026-10-10
     # staging, Town03 spots 1 / 4: gaps of 10 s and 24 s, both 45 s no-parking acts missed at 10 s;
     # at 30 s both caught, no negative triggered, events vs oracle 32 -> 28 false)
-    "place_memory": {"radius_m": 1.5, "keep_s": 30.0},
+    # vacate_*: a spot is free (its stop closes) once (a) a track not counted on it, seen on the spot after the
+    # stop began, is vacate_beyond_m past its radius and moving at >= vacate_kmh (the car left under a new ID,
+    # or another car drove through), or (b) a new track joins it after a gap, having driven at >= vacate_kmh
+    # since the spot was last occupied (it drove into the spot, so the spot was empty). Without them the next
+    # car stopping on a spot inherited the previous car's dwell whenever the tracker lost that car as it left
+    # (2026-10-15 Town04 zebra loop: two 6 s stops 17 s apart read as one 25 s stop, 4 of 18 short-stop
+    # negatives flagged)
+    "place_memory": {"radius_m": 1.5, "keep_s": 30.0, "vacate_kmh": 8.0, "vacate_beyond_m": 1.0},
     "wrong_way": {"angle_deg": 150.0, "min_s": 5 / 30, "min_back_m": 5.0, "min_kmh": 5.0,
                   "confirm_gap_s": 0.3, "close_gap_s": 2.0},
     # anywhere: also U-turns outside no_u_turn zones (D2-D4), judged by what the path crossed;
@@ -54,8 +61,10 @@ DEFAULTS = {
     # min_track_age_s: on flight 20261009_201727 every pipeline speeding episode began on its track's
     # first frame, and two were start-up transients (59.9 km/h read for a 29.6 km/h car entering at
     # the frame corner; 39.7 decaying to 30 within a second)
+    # max_speed_kmh: one limit for every road, used instead of the lanes' own (speed zones still win);
+    # 0 = off, the map's lane limits apply (Configuration > Thresholds, 2026-10-15)
     "speeding": {"min_s": 10 / 30, "sigmas": 2.0, "tolerance": "eu", "confirm_gap_s": 0.2, "close_gap_s": 2.0,
-                 "class_limits_kmh": {}, "min_track_age_s": 1.0},
+                 "class_limits_kmh": {}, "min_track_age_s": 1.0, "max_speed_kmh": 0.0},
     # unsafe_*: A8, TTC to the lead / lag vehicle in the target lane; 2 s is the common risky/safe
     # threshold, 1 s high risk; closing speed > 0.5 m/s as SinD 2.0 (docs/Research_Notes.md, M2).
     # Judged in the unsafe_window_s after the centre crosses (the lane-change moment, as highD does):
@@ -114,7 +123,9 @@ class StopInZoneMonitor(Monitor):
     (seen on Town05 flight 20261002_001635: one car on a crosswalk carried two IDs at once,
     each below the 10 s grace on its own), or a car lost and re-found under a new ID all keep
     one timer. A spot closes when one of its tracks is seen again without being stopped there
-    (the car left), or when nothing has been seen there for keep_s (the car is gone)."""
+    (the car left), when another vehicle drives off or through it, or into it after a gap
+    (vacate_kmh: the car left unseen or under a new ID), or when nothing has been seen there for
+    keep_s (the car is gone)."""
 
     def __init__(self, log, params, vtype: str, zone_type: str, stay_point: bool, queue_exempt: bool,
                  shoulder_breakdown: bool):
@@ -138,18 +149,52 @@ class StopInZoneMonitor(Monitor):
         if best is not None:
             return best[1]
         min_s = float(zone.params.get("grace_s", self.p["min_s"]))
-        s = {"zone": zone.id, "x": o.x, "y": o.y, "tracks": [],
+        s = {"zone": zone.id, "x": o.x, "y": o.y, "tracks": [], "t0": o.t,
              "ep": Episode(o.t, o.frame, min_s, self.p["close_gap_s"], self.p["close_gap_s"]),
              "last_hit_t": o.t, "last_frame": None}
         self.spots.append(s)
         return s
 
+    def _vacate(self, obs, hist) -> None:
+        """Close the spots a track has moved off: on the spot after the stop began, now clearly past it and
+        moving. Two cars cannot stand on one spot, so whoever stopped there has left (under a new ID), or the
+        spot was empty when another car drove through. A duplicate box on the stopped car never moves that far;
+        a car that crossed the spot before the stop began does not count. The spot's own track ids are
+        handled by the 'left' test in step."""
+        mp = self.mem_p
+        r, vac_kmh = mp["radius_m"], mp.get("vacate_kmh", 8.0)
+        beyond = r + mp.get("vacate_beyond_m", 1.0)
+        for o in obs:
+            if o.speed_kmh < vac_kmh:
+                continue
+            for s in list(self.spots):
+                if o.track_id in s["tracks"] or math.hypot(o.x - s["x"], o.y - s["y"]) <= beyond:
+                    continue
+                q = hist.obs.get(o.track_id, ())
+                if any(p.t >= s["t0"] and math.hypot(p.x - s["x"], p.y - s["y"]) <= r for p in q):
+                    self.spots.remove(s)
+                    self._close(s["ep"])
+
+    def _drove_in(self, s: dict, o: Obs, t: float, hist) -> bool:
+        """A new track joining an idle spot that drove there since the spot was last occupied: the spot was
+        empty, this is a new stop. A duplicate box or a parked car re-found under a new ID never drove in."""
+        if o.track_id in s["tracks"] or t - s["last_hit_t"] <= s["ep"].close_gap_s:
+            return False
+        vac_kmh = self.mem_p.get("vacate_kmh", 8.0)
+        return any(p.t > s["last_hit_t"] and p.speed_kmh >= vac_kmh for p in hist.obs.get(o.track_id, ()))
+
     def step(self, t, frame, obs, hist):
+        if self.spots:
+            self._vacate(obs, hist)
         for o in obs:
             for z in o.zones_of(self.zone_type):
                 if not self._cond(o, hist):
                     continue
                 s = self._spot(z, o)
+                if self._drove_in(s, o, t, hist):
+                    self.spots.remove(s)
+                    self._close(s["ep"])
+                    s = self._spot(z, o)
                 ep = s["ep"]
                 if o.track_id not in s["tracks"]:
                     s["tracks"].append(o.track_id)
@@ -289,12 +334,15 @@ class SpeedingMonitor(Monitor):
 
     def limit(self, o: Obs) -> tuple[float | None, str]:
         """The limit that applies and where it comes from: a speed zone overrides the lane's own limit
-        (E3); a lower limit for the vehicle's class caps either (E4)."""
+        (E3), max_speed_kmh (when set) replaces the lane limits everywhere outside speed zones, and a
+        lower limit for the vehicle's class caps any of them (E4)."""
         lim, src = None, "lane"
         for z in o.zones_of("speed"):
             if "limit_kmh" in z.params:
                 lim, src = float(z.params["limit_kmh"]), "zone"
                 break
+        if lim is None and float(self.p.get("max_speed_kmh") or 0) > 0:
+            lim, src = float(self.p["max_speed_kmh"]), "max_speed"
         lane = o.drive_lane or o.lane  # the limit of the lane it drives in, not of the oncoming one
         if lim is None and lane is not None and lane.lane.speed_limit_kmh:
             lim = float(lane.lane.speed_limit_kmh)

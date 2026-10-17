@@ -99,6 +99,13 @@ class Zone:
     params: dict
 
 
+def _zone(z: dict) -> Zone:
+    params = {k: v for k, v in z.items() if k not in ("id", "type", "polygon")}
+    zone = Zone(str(z["id"]), str(z["type"]), shapely.Polygon(z["polygon"]), params)
+    shapely.prepare(zone.polygon)
+    return zone
+
+
 class SceneMap:
     def __init__(self, data: dict):
         self.scene = data.get("scene", "")
@@ -108,12 +115,7 @@ class SceneMap:
         self.left_handed = bool(data.get("left_handed", self.coords.startswith("carla")))
         self.lanes = [self._lane(l) for l in data.get("lanes", []) if len(l["centreline"]) >= 2]
         self.lane_by_id = {l.id: l for l in self.lanes}
-        self.zones = []
-        for z in data.get("zones", []):
-            params = {k: v for k, v in z.items() if k not in ("id", "type", "polygon")}
-            self.zones.append(Zone(str(z["id"]), str(z["type"]), shapely.Polygon(z["polygon"]), params))
-        for z in self.zones:
-            shapely.prepare(z.polygon)
+        self.zones = [_zone(z) for z in data.get("zones", [])]
         self.stop_lines = data.get("stop_lines", [])
         # every lane segment, for nearest-segment search
         a, b, owner, k = [], [], [], []
@@ -208,6 +210,14 @@ class SceneMap:
             s = float(lane.cum[k] + t[i] * lane.seg_len[k])
             out.append(LaneMatch(lane, s, float(cross[i]), math.degrees(math.atan2(ab[i, 1], ab[i, 0]))))
         return out
+
+    def replace_zones(self, remove_ids, zones: list[dict]) -> None:
+        """Zones changed while the engine runs (services/live/pipeline.py: zones drawn in the dashboard): the
+        zones with an id in remove_ids or in `zones` go, `zones` (the --zones item shape) come in. Rules look
+        zones up per observation (zones_at), so the next frame uses them; the list is swapped in one step."""
+        new = [_zone(z) for z in zones]
+        gone = set(map(str, remove_ids)) | {z.id for z in new}
+        self.zones = [z for z in self.zones if z.id not in gone] + new
 
     def zones_at(self, x: float, y: float, types: set[str] | None = None) -> list[Zone]:
         p = shapely.Point(x, y)

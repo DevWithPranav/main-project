@@ -1,6 +1,6 @@
 // 3D digital twin page (/twin): mounts a TwinView (Cesium) in a div and disposes it on unmount. The
 // dashboard's login is used (no second login). URL: ?session=<id>&t=<sim s>&town=<Town03>
-// &anchor=lat,lon[,h]&mode=live. Changing ?session= or ?t= while the page is open moves the twin;
+// &anchor=lat,lon[,h]&mode=replay (default live). Changing ?session= or ?t= while the page is open moves the twin;
 // picking a session in the twin's panel writes ?session= back.
 
 import { useComputedColorScheme } from '@mantine/core';
@@ -30,7 +30,7 @@ export default function TwinPage() {
       t: num(params.get('t')),
       town: params.get('town'),
       anchor: params.get('anchor'),
-      mode: params.get('mode') === 'live' ? 'live' : 'replay',
+      mode: params.get('mode') === 'replay' ? 'replay' : 'live', // live by default; ?mode=replay for a recording
       dark,
       onSession: (id) => {
         shown.current = id;

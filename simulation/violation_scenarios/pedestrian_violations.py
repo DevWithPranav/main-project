@@ -41,9 +41,12 @@ import carla
 import numpy as np
 
 from pedestrian_acts import CAR_KMH, Crossing, plan_pedestrian_acts, set_pose, spawn_walkers
-from stage_violations import (SCENES_DIR, SCRIPTED_ROLE, XODR_DIR, Trajectory, crosswalk_polygons, plan_entry,
+from stage_violations import (SCENES_DIR, XODR_DIR, Trajectory, crosswalk_polygons, plan_entry,
                               spawn, xyz)
 
+# role_name of this script's car and walkers: not the stager's / highway_violations.py's "violation_scenario",
+# since each script removes its own role's actors at start (both run side by side on Town04, 2026-10-15)
+ZEBRA_ROLE = "zebra_scenario"
 GAP_S = 6.0  # between acts at a station: longer than the stop rules' close_gap_s (2 s), so two stops never merge
 STAGGER_S = 3.0  # between the first acts of different stations
 APPROACH_M = 30  # lane before the crossing the car drives in from
@@ -240,12 +243,12 @@ def run_live(args, m, town: str, stations: list[Station]) -> None:
     rng = random.Random(args.seed)
     if town not in world.get_map().name:
         raise SystemExit(f"The loaded map is {world.get_map().name}, not {town}")
-    old = [a for a in world.get_actors() if a.attributes.get("role_name") == SCRIPTED_ROLE and a.type_id.startswith(("vehicle.", "walker."))]
+    old = [a for a in world.get_actors() if a.attributes.get("role_name") == ZEBRA_ROLE and a.type_id.startswith(("vehicle.", "walker."))]
     if old:
         client.apply_batch([carla.command.DestroyActor(a.id) for a in old])
         print(f"[ped] removed {len(old)} scripted actors left by an earlier run")
         time.sleep(1.0)
-    others = [a for a in world.get_actors().filter("vehicle.*") if a.attributes.get("role_name") != SCRIPTED_ROLE]
+    others = [a for a in world.get_actors().filter("vehicle.*") if a.attributes.get("role_name") != ZEBRA_ROLE]
     for st in stations:
         near = [a for a in others if math.hypot(a.get_location().x - st.centre[0], a.get_location().y - st.centre[1]) < 80.0]
         if near:
@@ -260,9 +263,9 @@ def run_live(args, m, town: str, stations: list[Station]) -> None:
     runners, actors = [], []
     for i, st in enumerate(stations):
         first = st.acts[0]
-        car = spawn(world, bp_lib, first["traj"])
+        car = spawn(world, bp_lib, first["traj"], role=ZEBRA_ROLE)
         w_tr = next((a["walkers"][0] for a in st.acts if a["walkers"]), None)
-        walkers = spawn_walkers(world, bp_lib, [w_tr]) if w_tr is not None else []
+        walkers = spawn_walkers(world, bp_lib, [w_tr], role=ZEBRA_ROLE) if w_tr is not None else []
         if car is None or (w_tr is not None and not walkers):
             for x in [car] + walkers + actors:
                 if x is not None:

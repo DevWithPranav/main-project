@@ -9,6 +9,8 @@ import { useSessions } from '../hooks';
 import { fmtDateTime } from '../lib/format';
 import { can } from '../lib/permissions';
 
+const SHOW_SOURCE_COLUMN = false; // Source column hidden (docs/Live_Page_Changes.md)
+
 export default function SessionsPage() {
   const { me } = useAuth();
   const sessions = useSessions();
@@ -47,16 +49,16 @@ export default function SessionsPage() {
       <Card withBorder p={0}>
         <Table highlightOnHover>
           <Table.Thead>
-            <Table.Tr><Table.Th>Session</Table.Th><Table.Th>Source</Table.Th><Table.Th>Town</Table.Th><Table.Th>Started</Table.Th><Table.Th>Events</Table.Th><Table.Th>Profile</Table.Th><Table.Th /></Table.Tr>
+            <Table.Tr><Table.Th>Session</Table.Th>{SHOW_SOURCE_COLUMN && <Table.Th>Source</Table.Th>}<Table.Th>Town</Table.Th><Table.Th>Started</Table.Th><Table.Th>Events</Table.Th><Table.Th>Profile</Table.Th><Table.Th /></Table.Tr>
           </Table.Thead>
           <Table.Tbody>
             {!sessions.data?.length && (
-              <Table.Tr><Table.Td colSpan={7}><Text c="dimmed" p="md">{sessions.isLoading ? 'Loading…' : 'No sessions yet.'}</Text></Table.Td></Table.Tr>
+              <Table.Tr><Table.Td colSpan={SHOW_SOURCE_COLUMN ? 7 : 6}><Text c="dimmed" p="md">{sessions.isLoading ? 'Loading…' : 'No sessions yet.'}</Text></Table.Td></Table.Tr>
             )}
             {sessions.data?.map((s) => (
               <Table.Tr key={s.session_id}>
                 <Table.Td><Text fw={500} size="sm">{s.name || s.session_id}</Text></Table.Td>
-                <Table.Td><Badge variant="light">{s.source}</Badge></Table.Td>
+                {SHOW_SOURCE_COLUMN && <Table.Td><Badge variant="light">{s.source}</Badge></Table.Td>}
                 <Table.Td>{s.town ?? '-'}</Table.Td>
                 <Table.Td>{fmtDateTime(s.started_at)}</Table.Td>
                 <Table.Td>{s.n_events}</Table.Td>

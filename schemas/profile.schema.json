@@ -41,7 +41,8 @@
   },
   "place_memory": {
    "type": "object",
-   "properties": {"radius_m": {"type": "number", "exclusiveMinimum": 0}, "keep_s": {"type": "number", "minimum": 0}},
+   "properties": {"radius_m": {"type": "number", "exclusiveMinimum": 0}, "keep_s": {"type": "number", "minimum": 0},
+                  "vacate_kmh": {"type": "number", "minimum": 0}, "vacate_beyond_m": {"type": "number", "minimum": 0}},
    "additionalProperties": false
   },
   "model": {

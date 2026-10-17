@@ -64,6 +64,7 @@ PARAMS = {
 SEVERITY = {"wrong_way": 1.0, "red_light": 0.9, "speeding": 0.8, "illegal_u_turn": 0.8, "zebra_crossing": 0.75,
             "highway_stop": 0.7, "lane_violation": 0.6, "no_parking": 0.4, "flow": 0.5}
 TIER = {"major_hotspot": 1.0, "hotspot": 0.9, "emerging": 0.5, "flow": 0.6}
+TIER_PLAIN = {"major_hotspot": "a major hotspot", "hotspot": "a hotspot", "emerging": "an early pattern", "flow": "a traffic queue"}
 
 AREA = {"speeding": "Speed management", "lane_violation": "Lane management", "wrong_way": "Wrong-way prevention",
         "highway_stop": "Illegal stopping", "no_parking": "Illegal stopping", "zebra_crossing": "Pedestrian safety",
@@ -122,6 +123,10 @@ def _where(ctx, g):
     feats = [f for f, on in (("bridge", ctx["bridge"]), ("ramp", ctx["ramp"]), ("junction", ctx["junction"]),
                              ("highway", ctx["highway"])) if on]
     return f"road {', '.join(_roads(g)) or '?'}" + (f" ({', '.join(feats)})" if feats else "")
+
+
+def _cars(n) -> str:
+    return f"{n} car" if n == 1 else f"{n} cars"
 
 
 def _max_speed(g, events):
@@ -183,128 +188,128 @@ RULES = [
     # --- speed management
     {"id": "SPD-HWY", "types": {"speeding"}, "when": lambda c: c["highway"], "cm": "speed_camera",
      "alts": ["average_speed_camera", "speed_limit_review"],
-     "problem": lambda c, g: f"{g['n']} speeding event(s) on a high-speed {_where(c, g)}",
-     "action": lambda c, g: "Install speed enforcement (fixed or average-speed cameras) with advance warning signs",
+     "problem": lambda c, g: f"{_cars(g['n'])} went over the speed limit on a fast road ({_where(c, g)})",
+     "action": lambda c, g: "Put up speed cameras (at one spot, or average-speed cameras over a stretch) with warning signs before them",
      "sim": sim_speed_compliance},
     {"id": "SPD-VUL", "types": {"speeding"}, "when": lambda c: bool(c["crossings"]) or c["dominant"] == "E3",
      "cm": "traffic_calming", "alts": ["speed_camera", "speed_limit_review"],
-     "problem": lambda c, g: f"{g['n']} speeding event(s) near pedestrian crossing(s) {', '.join(c['crossings'][:3])} on {_where(c, g)}",
-     "action": lambda c, g: "Traffic calming before the crossing (speed humps / raised crossing) and review the limit "
-                            f"({'/'.join(f'{x:g}' for x in c['limits']) or '?'} km/h) down by 10 km/h",
+     "problem": lambda c, g: f"{_cars(g['n'])} went over the speed limit near a pedestrian crossing ({_where(c, g)})",
+     "action": lambda c, g: "Slow cars down before the crossing with speed humps or a raised crossing, and lower the speed limit "
+                            f"({'/'.join(f'{x:g}' for x in c['limits']) or '?'} km/h) by 10 km/h",
      "sim": sim_speed_limit},
     {"id": "SPD-URB", "types": {"speeding"}, "when": lambda c: True, "cm": "speed_camera",
      "alts": ["traffic_calming", "speed_limit_review"],
-     "problem": lambda c, g: f"{g['n']} speeding event(s) on {_where(c, g)}",
-     "action": lambda c, g: "Speed camera with signage; review the limit and add traffic calming if speeds stay high",
+     "problem": lambda c, g: f"{_cars(g['n'])} went over the speed limit ({_where(c, g)})",
+     "action": lambda c, g: "Put up a speed camera with signs; if cars are still too fast, lower the limit or add speed humps",
      "sim": sim_speed_compliance},
     # --- wrong-way prevention
     {"id": "WW-RAMP", "types": {"wrong_way"}, "when": lambda c: c["ramp"] or "C4" in c["conditions"],
      "cm": "wrong_way_signage", "alts": ["one_way_barrier"],
-     "problem": lambda c, g: f"{g['n']} wrong-way event(s) at a ramp, {_where(c, g)}",
-     "action": lambda c, g: "WRONG WAY / DO NOT ENTER signs on both sides of the ramp end, wrong-way pavement arrows",
-     "sim": sim_none("signs and markings exist in CARLA only in a regenerated OpenDRIVE map; TM traffic never drives the wrong way")},
+     "problem": lambda c, g: f"{_cars(g['n'])} drove the wrong way at a slip road ({_where(c, g)})",
+     "action": lambda c, g: "Put WRONG WAY and NO ENTRY signs on both sides of the end of the slip road, and arrows on the road",
+     "sim": sim_none("the simulator cannot add new signs, and its cars never drive the wrong way")},
     {"id": "WW-DIV", "types": {"wrong_way"}, "when": lambda c: c["highway"] or "C3" in c["conditions"],
      "cm": "wrong_way_signage", "alts": ["one_way_barrier"],
-     "problem": lambda c, g: f"{g['n']} wrong-way event(s) against traffic on a divided road, {_where(c, g)}",
-     "action": lambda c, g: "Wrong-way signs and arrows at the entry points of this carriageway; close crossovers in the median",
-     "sim": sim_none("TM traffic never drives the wrong way: no behavioural change to simulate")},
+     "problem": lambda c, g: f"{_cars(g['n'])} drove against the traffic on a divided road ({_where(c, g)})",
+     "action": lambda c, g: "Put wrong-way signs and arrows where cars enter this road, and close the gaps in the middle of the road",
+     "sim": sim_none("the simulator's cars never drive the wrong way, so there is nothing to compare")},
     {"id": "WW-ONEWAY", "types": {"wrong_way"}, "when": lambda c: True, "cm": "wrong_way_signage", "alts": ["one_way_barrier"],
-     "problem": lambda c, g: f"{g['n']} wrong-way event(s) on {_where(c, g)} ({c['share_in_area']:.0%} of events in the area)",
-     "action": lambda c, g: ("One-way conversion with physical separation (PRD 21.2: > 40 % wrong-way)"
+     "problem": lambda c, g: f"{_cars(g['n'])} drove the wrong way ({_where(c, g)}); that is {c['share_in_area']:.0%} of all problems here",
+     "action": lambda c, g: ("Make the road one-way with a physical barrier (more than 40 % of the problems here are wrong-way driving)"
                              if c["share_in_area"] > PARAMS["wrong_way_share"] else
-                             "ONE WAY and DO NOT ENTER signs with direction arrows"),
-     "sim": sim_none("TM traffic never drives the wrong way")},
+                             "Put ONE WAY and NO ENTRY signs with arrows"),
+     "sim": sim_none("the simulator's cars never drive the wrong way, so there is nothing to compare")},
     # --- U-turns
     {"id": "UT-MEDIAN", "types": {"illegal_u_turn"}, "when": lambda c: c["median"] or "D4" in c["conditions"],
      "cm": "median_closure", "alts": ["no_u_turn_signage"],
-     "problem": lambda c, g: f"{g['n']} U-turn(s) through the median, {_where(c, g)}",
-     "action": lambda c, g: "Close the median opening with a barrier (or bollards); provide a legal U-turn point downstream",
+     "problem": lambda c, g: f"{_cars(g['n'])} made a U-turn through a gap in the middle of the road ({_where(c, g)})",
+     "action": lambda c, g: "Close the gap in the middle of the road with a barrier or posts, and give drivers a legal place to turn further on",
      "sim": sim_zone("no_u_turn")},
     {"id": "UT-JUNCTION", "types": {"illegal_u_turn"}, "when": lambda c: c["junction"] or "D3" in c["conditions"],
      "cm": "no_u_turn_signage", "alts": ["signal_timing", "median_closure"],
-     "problem": lambda c, g: f"{g['n']} prohibited U-turn(s) at a junction, {_where(c, g)}",
-     "action": lambda c, g: "NO U-TURN signs on the approaches and a turn restriction; a protected turn phase if signalised",
+     "problem": lambda c, g: f"{_cars(g['n'])} made a U-turn at a junction where it is not allowed ({_where(c, g)})",
+     "action": lambda c, g: "Put NO U-TURN signs on the roads into the junction; if it has traffic lights, add a separate light for turning",
      "sim": sim_zone("no_u_turn")},
     {"id": "UT-ZONE", "types": {"illegal_u_turn"}, "when": lambda c: True, "cm": "no_u_turn_signage",
      "alts": ["median_closure"],
-     "problem": lambda c, g: f"{g['n']} illegal U-turn(s) on {_where(c, g)}",
-     "action": lambda c, g: "NO U-TURN signs, solid centre line through the stretch, and enforcement",
+     "problem": lambda c, g: f"{_cars(g['n'])} made an illegal U-turn ({_where(c, g)})",
+     "action": lambda c, g: "Put up NO U-TURN signs, paint a solid line down the middle, and check that drivers follow it",
      "sim": sim_zone("no_u_turn")},
     # --- illegal stopping
     {"id": "STOP-BRIDGE", "types": {"highway_stop"}, "when": lambda c: c["bridge"] or c["tunnel"] or "B5" in c["conditions"],
      "cm": "no_stopping_enforcement", "alts": ["stopping_bay"],
-     "problem": lambda c, g: f"{g['n']} vehicle(s) stopped on a bridge / tunnel, {_where(c, g)}",
-     "action": lambda c, g: "No-stopping enforcement on the bridge: signs at both ends, red-route markings, "
-                            "automatic stopped-vehicle detection with a VMS warning",
+     "problem": lambda c, g: f"{_cars(g['n'])} stopped on a bridge or in a tunnel ({_where(c, g)})",
+     "action": lambda c, g: "Ban stopping on the bridge: signs at both ends, red lines on the road, and a camera that spots "
+                            "stopped cars and warns other drivers on an electronic sign",
      "sim": sim_remove_stoppers},
     {"id": "STOP-RAMP", "types": {"highway_stop"}, "when": lambda c: c["ramp"] or "B4" in c["conditions"],
      "cm": "no_stopping_enforcement", "alts": ["stopping_bay"],
-     "problem": lambda c, g: f"{g['n']} vehicle(s) stopped near an entrance / exit, {_where(c, g)}",
-     "action": lambda c, g: "No-stopping restriction over the ramp area; review the ramp layout (merge length, sight lines)",
+     "problem": lambda c, g: f"{_cars(g['n'])} stopped near a highway entrance or exit ({_where(c, g)})",
+     "action": lambda c, g: "Ban stopping around the entrance or exit, and check its design (is the joining lane long enough, can drivers see well)",
      "sim": sim_remove_stoppers},
     {"id": "STOP-HWY", "types": {"highway_stop"}, "when": lambda c: True, "cm": "no_stopping_enforcement",
      "alts": ["stopping_bay"],
-     "problem": lambda c, g: f"{g['n']} vehicle(s) stopped on the carriageway, {_where(c, g)}",
-     "action": lambda c, g: "No-stopping enforcement and a VMS warning; an emergency lay-by if stops recur",
+     "problem": lambda c, g: f"{_cars(g['n'])} stopped on the highway ({_where(c, g)})",
+     "action": lambda c, g: "Ban stopping here and enforce it, with a warning on an electronic sign; if cars keep stopping, build an emergency stopping place",
      "sim": sim_remove_stoppers},
     {"id": "STOP-ZONE", "types": {"no_parking"}, "when": lambda c: True, "cm": "no_stopping_enforcement",
      "alts": ["stopping_bay"],
-     "problem": lambda c, g: f"{g['n']} stop(s) in a no-stopping zone, {_where(c, g)}",
-     "action": lambda c, g: "Enforce the stopping restriction, or provide a designated stopping bay if the demand is legitimate",
+     "problem": lambda c, g: f"{_cars(g['n'])} stopped in a no-parking area ({_where(c, g)})",
+     "action": lambda c, g: "Enforce the no-parking rule, or make a proper stopping place if people really need to stop here",
      "sim": sim_remove_stoppers},
     # --- pedestrian safety
     {"id": "ZEB-BLOCK", "types": {"zebra_crossing"}, "when": lambda c: c["dominant"] in ("F1", "F2", "F4", None),
      "cm": "keep_clear_box", "alts": ["signal_timing", "crossing_visibility"],
-     "problem": lambda c, g: f"{g['n']} vehicle(s) stopped on pedestrian crossing(s) {', '.join(g.get('zone_ids', {}) ) or ''} ({_where(c, g)})",
-     "action": lambda c, g: "KEEP CLEAR / yellow-box markings over the crossing, advance stop line; "
-                            "check the downstream signal timing that makes queues spill back",
+     "problem": lambda c, g: f"{_cars(g['n'])} stopped on a zebra crossing ({_where(c, g)})",
+     "action": lambda c, g: "Paint KEEP CLEAR or yellow box markings over the crossing and move the stop line back; "
+                            "check whether the traffic lights further on make queues back up onto the crossing",
      "sim": sim_signal_timing},
     {"id": "ZEB-YIELD", "types": {"zebra_crossing"}, "when": lambda c: True, "cm": "crossing_visibility",
      "alts": ["signal_timing"],
-     "problem": lambda c, g: f"{g['n']} crossing violation(s) at {', '.join(g.get('zone_ids', {})) or _where(c, g)}",
-     "action": lambda c, g: "High-visibility crossing markings, advance warning signs, a raised crossing or a pedestrian signal",
+     "problem": lambda c, g: f"{_cars(g['n'])} did not let people cross at a zebra crossing ({_where(c, g)})",
+     "action": lambda c, g: "Make the crossing easier to see: brighter markings, warning signs before it, a raised crossing or pedestrian lights",
      "sim": sim_signal_timing},
     # --- lane management
     {"id": "LANE-UNSAFE", "types": {"lane_violation"}, "when": lambda c: c["dominant"] in ("A8", "A3"),
      "cm": "marking_refresh", "alts": ["delineators", "speed_camera"],
-     "problem": lambda c, g: f"{g['n']} unsafe / prohibited lane change(s) on {_where(c, g)}",
-     "action": lambda c, g: "Solid lane line (no lane change) through the stretch with refreshed markings; "
-                            "advance lane-choice signs so drivers change earlier",
+     "problem": lambda c, g: f"{_cars(g['n'])} changed lanes in an unsafe or banned way ({_where(c, g)})",
+     "action": lambda c, g: "Paint a solid line (no lane changes) along this stretch and refresh the markings; "
+                            "add signs earlier so drivers pick their lane in time",
      "sim": sim_no_lane_change},
     {"id": "LANE-SOLID", "types": {"lane_violation"}, "when": lambda c: c["dominant"] == "A2",
      "cm": "delineators", "alts": ["marking_refresh"],
-     "problem": lambda c, g: f"{g['n']} solid-line crossing(s) on {_where(c, g)}",
-     "action": lambda c, g: "Flexible delineator posts (or a kerbed separator) along the solid line; refresh the line",
-     "sim": sim_none("TM already respects solid lines (OpenDRIVE lane-change permissions); a physical separator needs a regenerated map")},
+     "problem": lambda c, g: f"{_cars(g['n'])} crossed a solid line ({_where(c, g)})",
+     "action": lambda c, g: "Put flexible posts (or a small kerb) along the solid line and repaint it",
+     "sim": sim_none("the simulator's cars already keep to solid lines, and a barrier would need a new map")},
     {"id": "LANE-WRONG", "types": {"lane_violation"}, "when": lambda c: c["dominant"] == "A1",
      "cm": "lane_use_signage", "alts": ["marking_refresh"],
-     "problem": lambda c, g: f"{g['n']} vehicle(s) in a lane not leading where they went, {_where(c, g)}",
-     "action": lambda c, g: "Lane-use arrows and overhead lane signs before the split",
-     "sim": sim_none("lane-use signs exist only in a regenerated map")},
+     "problem": lambda c, g: f"{_cars(g['n'])} were in the wrong lane for where they were going ({_where(c, g)})",
+     "action": lambda c, g: "Paint lane arrows and put lane signs over the road before the split",
+     "sim": sim_none("lane signs can only be added with a new map")},
     {"id": "LANE-MARKING", "types": {"lane_violation"}, "when": lambda c: True, "cm": "marking_refresh",
      "alts": ["delineators", "lane_allocation"],
-     "problem": lambda c, g: f"{g['n']} lane violation(s) ({', '.join(f'{k}x{v}' for k, v in sorted(c['conditions'].items()))}) "
-                             f"on {_where(c, g)}" + (f", {c['share_in_area']:.0%} of events in the area (PRD 21.2: > 50 %)"
+     "problem": lambda c, g: f"{_cars(g['n'])} broke lane rules "
+                             f"({_where(c, g)})" + (f"; that is {c['share_in_area']:.0%} of all problems here"
                                                      if c["share_in_area"] > PARAMS["lane_share"] else ""),
-     "action": lambda c, g: "Refresh the lane markings" + (" and add rumble strips" if c["highway"] else "") +
-                            "; review lane widths / allocation if straddling persists",
+     "action": lambda c, g: "Repaint the lane markings" + (" and add rumble strips" if c["highway"] else "") +
+                            "; if cars keep driving over the lines, look at the lane widths and how the lanes are used",
      "sim": sim_no_lane_change},
     # --- red light (rule off by default)
     {"id": "RL-SIGNAL", "types": {"red_light"}, "when": lambda c: True, "cm": "signal_timing",
      "alts": ["signal_installation"],
-     "problem": lambda c, g: f"{g['n']} red-light violation(s) at {_where(c, g)}",
-     "action": lambda c, g: "Review the yellow / all-red clearance interval and signal visibility (backplates)",
+     "problem": lambda c, g: f"{_cars(g['n'])} went through a red light ({_where(c, g)})",
+     "action": lambda c, g: "Check how long the yellow and all-red lights last, and make the lights easier to see",
      "sim": sim_signal_timing},
     # --- traffic flow (from kinematics)
     {"id": "FLOW-QUEUE", "types": {"flow"}, "when": lambda c: True, "cm": "lane_allocation",
      "alts": ["signal_timing", "no_stopping_enforcement"],
-     "problem": lambda c, g: f"Queue on {_where(c, g)}: up to {g.get('max_stopped')} stopped vehicles, "
-                             f"{g.get('max_queue_m')} m",
-     "action": lambda c, g: ("Signal timing review at the downstream junction" if c["junction"] else
-                             "Remove the cause of the queue (stopped vehicles / incidents), then review lane allocation"),
+     "problem": lambda c, g: f"Traffic backed up on {_where(c, g)}: up to {_cars(g.get('max_stopped') or 0)} waiting, "
+                             f"a queue of {g.get('max_queue_m')} m",
+     "action": lambda c, g: ("Check the traffic light timing at the next junction" if c["junction"] else
+                             "Remove what causes the queue (stopped or broken-down cars), then check how the lanes are used"),
      "sim": lambda c, g, s: sim_signal_timing(c, g, s) if c["junction"] else
-     {"kind": "none", "reason": "no traffic light at this queue and lane allocation needs a regenerated map; "
-                               "if the road has stopping events, their recommendation measures the queue they cause"}},
+     {"kind": "none", "reason": "there is no traffic light at this queue, and changing the lanes needs a new map; "
+                               "if cars stop on this road, test that recommendation first"}},
 ]
 
 ZONE_GROUPED = {"zebra_crossing", "no_parking"}
@@ -316,6 +321,11 @@ PRIMARY_METRIC = {"speeding": "violations.speeding", "lane_violation": "conflict
                   "illegal_u_turn": "violations.illegal_u_turn", "highway_stop": "queue.max_m",
                   "no_parking": "queue.max_m", "zebra_crossing": "violations.zebra_crossing",
                   "red_light": "violations.red_light", "flow": "travel_time.mean_s"}
+
+
+PLAIN_METRIC = {"speeding": "speeding cars", "lane_violation": "near-misses", "wrong_way": "wrong-way cars",
+                "illegal_u_turn": "illegal U-turns", "highway_stop": "long queues", "no_parking": "long queues",
+                "zebra_crossing": "problems at the crossing", "red_light": "red-light runs", "flow": "delays"}
 
 
 def pick_rule(gtype: str, ctx: dict) -> dict:
@@ -402,9 +412,9 @@ def priority(gtype: str, g: dict, ctx: dict, params: dict) -> dict:
     sev = SEVERITY.get(gtype, 0.5)
     bumps = []
     if gtype == "highway_stop" and (ctx["bridge"] or ctx["tunnel"]):
-        sev, bumps = min(1.0, sev + 0.1), bumps + ["+0.1 severity: bridge/tunnel (no refuge)"]
+        sev, bumps = min(1.0, sev + 0.1), bumps + ["+0.1: on a bridge or in a tunnel, nowhere safe to stop"]
     if gtype == "speeding" and ctx["crossings"]:
-        sev, bumps = min(1.0, sev + 0.1), bumps + ["+0.1 severity: near a pedestrian crossing"]
+        sev, bumps = min(1.0, sev + 0.1), bumps + ["+0.1: near a pedestrian crossing"]
     n = g["n"] if gtype != "flow" else g.get("max_stopped", 0)
     freq = min(1.0, 0.3 + 0.7 * math.log1p(n) / math.log1p(params["major_events"]))
     qual = g["mean_confidence"] if g.get("mean_confidence") is not None else 0.7
@@ -415,22 +425,21 @@ def priority(gtype: str, g: dict, ctx: dict, params: dict) -> dict:
     return {"score": score, "band": band,
             "components": {"severity": round(sev, 2), "frequency": round(freq, 3), "evidence_quality": round(qual, 3),
                            "tier": tier, "objective": obj},
-            "explanation": (f"100 x severity {sev:.2f} ({gtype}{'; ' + '; '.join(bumps) if bumps else ''}) x frequency "
-                            f"{freq:.2f} ({n} {'events' if gtype != 'flow' else 'stopped vehicles'}, log-scaled to "
-                            f"{params['major_events']}) x evidence quality {qual:.2f} (mean event confidence) x tier "
-                            f"{tier} ({g['tier']}) x objective {obj} = {score}. Severity weights are design weights "
-                            "(configurable), not measured.")}
+            "explanation": (f"Score = 100 x how serious ({sev:.2f}{'; ' + '; '.join(bumps) if bumps else ''}) x how often "
+                            f"({freq:.2f}, {n} {'cases' if gtype != 'flow' else 'waiting cars'}) x how sure ({qual:.2f}) x "
+                            f"hotspot size ({tier}) x planner weight ({obj}) = {score}. How serious each kind of problem is "
+                            "is a set value, not a measured one.")}
 
 
 def confidence(g: dict, ctx: dict) -> dict:
     if g["tier"] == "flow":
-        return {"score": 0.5, "band": "low", "basis": ["queue measured from tracked kinematics, one observation window"]}
+        return {"score": 0.5, "band": "low", "basis": ["queue measured from the tracked cars, in one stretch of video"]}
     q = g["mean_confidence"]
     nr = g["statuses"].get("needs_review", 0) / max(1, g["n"])
     sess = len(g["sessions"])
     score = q * TIER[g["tier"]] * (1 - 0.3 * nr) * (1.0 if sess >= 2 else 0.85)
-    basis = [f"mean event confidence {q:.2f}", f"tier {g['tier']}",
-             f"{nr:.0%} of events need review", f"{sess} session(s)"]
+    basis = [f"the system was {q:.0%} sure on average", TIER_PLAIN.get(g["tier"], g["tier"]),
+             f"{nr:.0%} still need a person to check them", f"seen in {sess} recording{'' if sess == 1 else 's'}"]
     return {"score": round(score, 3), "band": "high" if score >= 0.7 else "medium" if score >= 0.45 else "low",
             "basis": basis}
 
@@ -438,45 +447,45 @@ def confidence(g: dict, ctx: dict) -> dict:
 def limitations(g: dict, ctx: dict, sim: dict, params: dict) -> list[str]:
     out = []
     if g["tier"] == "emerging":
-        out.append(f"Below the PRD hotspot threshold ({g['n']} < {params['min_events']} events within {params['eps_m']:g} m): "
-                   "an emerging pattern to watch, not a confirmed hotspot")
+        out.append(f"Only {g['n']} cases (a hotspot needs {params['min_events']} within {params['eps_m']:g} m): "
+                   "something to watch, not a confirmed hotspot")
     if g["tier"] in ("hotspot", "emerging") and g["n"] < params["major_events"]:
-        out.append(f"Fewer than the PRD's {params['major_events']} events per cluster for a major hotspot")
+        out.append(f"Fewer than {params['major_events']} cases here, the number for a major hotspot")
     if g.get("period") and g["period"]["span_s"] < 3600:
-        out.append(f"All evidence comes from {g['period']['span_s']:.0f} s of observation; no trend over days or hours")
+        out.append(f"All of this comes from {g['period']['span_s'] / 60:.0f} minutes of video, so we cannot see a trend over hours or days")
     if len(g.get("sessions", [])) == 1:
-        out.append("Single session: recurrence not shown")
+        out.append("Seen in one recording only, so we do not know yet if it keeps happening")
     if any("staged" in z for z in g.get("zone_ids", {})):
-        out.append("Some events come from staged scenario acts (stage_violations.py), not natural traffic")
+        out.append("Some of these were staged on purpose in the simulator, not real traffic")
     if g.get("statuses", {}).get("needs_review"):
-        out.append(f"{g['statuses']['needs_review']} event(s) still need human review")
+        out.append(f"{g['statuses']['needs_review']} of these still need a person to check them")
     if sim["kind"] == "none":
-        out.append("The proposed change cannot be simulated in CARLA: " + sim.get("reason", ""))
+        out.append("This change cannot be tried in the simulator: " + sim.get("reason", ""))
     elif SUPPORT[sim["kind"]] == "rule_side":
-        out.append("CARLA validation is rule-side only: autopilot traffic does not change behaviour")
-    out.append("Expected impact is a projected estimate from published crash studies, not a forecast for this site")
+        out.append("In the simulator test only the rules change; the simulated drivers do not react to it")
+    out.append("The expected effect is a rough guide from studies elsewhere, not a forecast for this place")
     return out
 
 
 def alternatives(keys: list[str], ctx: dict) -> list[dict]:
     trade = {
-        "average_speed_camera": "covers a whole section, avoids braking at a single camera; higher cost",
-        "speed_limit_review": "cheap; little effect without enforcement or design changes",
-        "traffic_calming": "self-enforcing; slows emergency vehicles, unsuitable on highways",
-        "speed_camera": "proven effect at the site; local effect only, acceptance issues",
-        "one_way_barrier": "removes the conflict physically; changes access for all users",
-        "median_closure": "removes the manoeuvre; longer detours, needs a legal U-turn point",
-        "no_u_turn_signage": "cheap and fast; relies on compliance / enforcement",
-        "signal_timing": "no construction; may move delay to other approaches",
-        "stopping_bay": "serves legitimate stops; needs space, not possible on most bridges",
-        "no_stopping_enforcement": "direct; needs patrol or detection capacity",
-        "crossing_visibility": "proven pedestrian benefit; does not stop queue spill-back",
-        "delineators": "physical deterrent; maintenance, hit by vehicles",
-        "marking_refresh": "cheap; effect limited if the layout causes the problem",
-        "lane_allocation": "addresses capacity; needs a traffic study",
-        "signal_installation": "large effect where unsignalised; cost and delay",
-        "keep_clear_box": "cheap; needs enforcement",
-        "lane_use_signage": "cheap; limited if drivers are unfamiliar",
+        "average_speed_camera": "covers a whole stretch, so drivers do not just brake at one camera; costs more",
+        "speed_limit_review": "cheap, but does little unless it is enforced or the road is changed",
+        "traffic_calming": "works by itself; slows ambulances too, and is not for highways",
+        "speed_camera": "known to work at the spot; only helps near the camera, some people dislike it",
+        "one_way_barrier": "makes the problem impossible; changes access for everyone",
+        "median_closure": "makes the turn impossible; longer trips, and drivers need a legal place to turn",
+        "no_u_turn_signage": "cheap and quick; only works if drivers obey or are checked",
+        "signal_timing": "no building work; may move the delay to other roads",
+        "stopping_bay": "gives a proper place to stop; needs space, not possible on most bridges",
+        "no_stopping_enforcement": "direct; needs patrols or cameras",
+        "crossing_visibility": "known to help people crossing; does not stop queues backing up",
+        "delineators": "physically stops cars; needs upkeep, gets hit by cars",
+        "marking_refresh": "cheap; helps little if the road layout is the problem",
+        "lane_allocation": "adds room for traffic; needs a traffic study first",
+        "signal_installation": "big effect where there are no lights; costs money and adds waiting",
+        "keep_clear_box": "cheap; only works if it is enforced",
+        "lane_use_signage": "cheap; helps less with drivers who do not know the road",
     }
     return [{"action": COUNTERMEASURES[k]["name"], "countermeasure": k, "trade_off": trade.get(k, ""),
              "impact_source": COUNTERMEASURES[k]["source"]} for k in keys]
@@ -485,18 +494,17 @@ def alternatives(keys: list[str], ctx: dict) -> list[dict]:
 def validation(gtype: str, g: dict, sim: dict, scene: dict | None, params: dict) -> dict:
     sc = dict(params["scenario"])
     sc.update(town=(scene or {}).get("scene"), center=g["centroid"])
-    metrics = ["violations per type (engine on true poses)", "TTC conflicts < 1.5 s (rear-end, crossing)",
-               "mean / 85th-percentile speed in the area", "travel time through the area", "queue length (max, mean)"]
+    metrics = ["how often each rule is broken", "near-misses (cars less than 1.5 s from hitting each other)",
+               "average and high speeds in the area", "time to drive through the area", "how long the queues get"]
     if sim["kind"] == "none":
-        how = ("Not simulable in CARLA (Expected_Output 5.3). Validate in the field: same drone survey window "
-               "before and after the change, compare events per hour of observed traffic")
+        how = ("This cannot be tried in the simulator. Instead, film the same place with the drone before and after "
+               "the change, for the same length of time, and compare how often it happens per hour")
     else:
-        how = (f"CARLA baseline vs modified ({SUPPORT[sim['kind']]} support): same town, seeds {sc['seeds']}, "
-               f"{sc['vehicles']} vehicles within {sc['radius_m']:g} m, weather {sc['weather']}, "
-               f"{sc['duration_s']:g} s after {sc['warmup_s']:g} s warm-up, synchronous at {sc['dt']} s")
+        how = (f"Run the simulator twice in the same place: once as it is now and once with the change. Do this "
+               f"{len(sc['seeds'])} times, with {sc['vehicles']} cars, for {sc['duration_s'] / 60:g} minutes each")
     return {"method": how, "scenario": sc, "metrics": metrics, "primary_metric": PRIMARY_METRIC[gtype],
-            "success_criterion": f"{PRIMARY_METRIC[gtype]} lower in modified than baseline in every seed, "
-                                 "with no rise in TTC conflicts or travel time beyond the seed spread",
+            "success_criterion": f"It works if there are fewer {PLAIN_METRIC[gtype]} with the change in every run, "
+                                 "and traffic does not get slower or more dangerous",
             "runner": "venv_sim\\Scripts\\python.exe simulation\\planning\\validate_recommendation.py "
                       "--recs <recommendations.json> --id <id>"}
 
@@ -522,8 +530,8 @@ def link_flow_to_stops(recs: list[dict]) -> None:
         rel = [s["id"] for s in stops if set(s["location"]["road_ids"]) & set(r["location"]["road_ids"])]
         if rel:
             r["evidence"]["related_recommendations"] = rel
-            r["limitations"].insert(0, "The queue may be caused by the stopped vehicles of " + ", ".join(rel) +
-                                    ": validate that recommendation first")
+            r["limitations"].insert(0, "This queue may be caused by the stopped cars in " + ", ".join(rel) +
+                                    ": test that recommendation first")
 
 
 def _sections(kinematics, scene):

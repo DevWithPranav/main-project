@@ -180,7 +180,7 @@ def plan_pedestrian_acts(wp_c, poly, view, Trajectory, xyz) -> list[dict]:
 
 # --- running (CARLA) ------------------------------------------------------------------------------
 
-def spawn_walkers(world, bp_lib, trajs: list) -> list:
+def spawn_walkers(world, bp_lib, trajs: list, role: str = "violation_scenario") -> list:
     """Walkers at their trajectories' start, physics off (moved by set_pose); [] if one fails."""
     import carla
     bps = bp_lib.filter(WALKER_BLUEPRINT) or bp_lib.filter("walker.pedestrian.*")
@@ -190,7 +190,7 @@ def spawn_walkers(world, bp_lib, trajs: list) -> list:
         if bp.has_attribute("is_invincible"):
             bp.set_attribute("is_invincible", "true")
         if bp.has_attribute("role_name"):
-            bp.set_attribute("role_name", "violation_scenario")
+            bp.set_attribute("role_name", role)
         p, yaw = tr.at(0.0)
         w = world.try_spawn_actor(bp, carla.Transform(carla.Location(p[0], p[1], p[2] + WALKER_Z + 0.3), carla.Rotation(yaw=yaw)))
         if w is None:

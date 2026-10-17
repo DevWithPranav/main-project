@@ -12,6 +12,11 @@ they are merged and sent before the vehicle states (a failed post is merged back
 SIGNAL_RETRY_S), so the twin always ends up with every light's latest state. Camera frames (raw + annotated JPEG for the
 dashboard's Live page) work the same way and go last.
 
+Evidence (evidence.py: a snapshot JPEG and a WebM clip per flagged event) is uploaded to
+/api/live/events/{event_id}/evidence after the events and before states and frames; the backend answers
+404 until the event's own post has arrived, so a failed upload is retried every EVIDENCE_RETRY_S, at
+most EVIDENCE_TRIES times (the files stay in <session>/evidence/ either way).
+
 Event updates: an event is POSTed to /api/events when it opens (flag time, "provisional" tag,
 confidence 0) and PUT to /api/live/events/{event_id} when it closes (final status, confidence,
 end); POST /api/events answers 409 for an existing event_id, the PUT replaces it (or creates it).
@@ -34,6 +39,9 @@ BACKOFF_S = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)  # PRD 29.2: 1, 2, 4, 8 s ... max 3
 BUFFER_MAX = 10000                              # events held while the backend is down (oldest dropped beyond this)
 SIGNAL_RETRY_S = 1.0                            # a failed traffic-light post is retried after this
 SIGNAL_MAX = 20000                              # changes held while the backend is down (oldest dropped beyond this)
+EVIDENCE_RETRY_S = 2.0                          # a failed evidence upload is retried after this
+EVIDENCE_TRIES = 30                             # and given up after this many attempts (~1 min)
+EVIDENCE_TIMEOUT_S = 30.0                       # a clip is a few MB: longer than the event posts' timeout
 
 
 class BackendClient:
@@ -48,6 +56,8 @@ class BackendClient:
         self.states = None
         self.frames = None  # (session, t_s, {kind: jpeg bytes}); newest only, sent after events and states
         self.signals: dict | None = None  # {"session_id", "lights"?, "changes"}: merged, never replaced
+        self.evidence: deque = deque()    # [event_id, kind, path, tries, next_try_wall]
+        self.evidence_ok = self.evidence_failed = 0
         self._sig_retry_at = 0.0
         self.cv = threading.Condition()
         self.ok = self.failed = 0
@@ -101,6 +111,42 @@ class BackendClient:
         cur["lights"] = sig["lights"] or cur["lights"]
         cur["changes"] = (cur["changes"] + sig["changes"])[-SIGNAL_MAX:]
 
+    def post_evidence(self, event_id: str, kind: str, path) -> None:
+        """A snapshot (kind=snapshot, JPEG) or clip (kind=clip, WebM) file of an event; never replaced."""
+        if not self.base:
+            return
+        with self.cv:
+            self.evidence.append([event_id, kind, Path(path), 0, 0.0])
+            self.cv.notify()
+
+    def _evidence_due(self) -> bool:
+        return bool(self.evidence) and time.time() >= self.evidence[0][4]
+
+    def _send_evidence(self) -> None:
+        with self.cv:
+            item = self.evidence.popleft() if self._evidence_due() else None
+        if item is None:
+            return
+        eid, kind, path, tries, _ = item
+        ctype = "video/webm" if kind == "clip" else "image/jpeg"
+        q = urllib.parse.urlencode({"kind": kind})
+        try:
+            body = path.read_bytes()
+        except OSError as e:
+            print(f"[backend] evidence {path.name} unreadable ({e}); dropped")
+            self.evidence_failed += 1
+            return
+        if self._post(f"/api/live/events/{urllib.parse.quote(eid)}/evidence?{q}", body, content_type=ctype,
+                      timeout=EVIDENCE_TIMEOUT_S):
+            self.evidence_ok += 1
+            return
+        if (400 <= self._status < 500 and self._status not in (404, 408, 429)) or tries + 1 >= EVIDENCE_TRIES:
+            self.evidence_failed += 1  # 404: the event's own post has not landed yet, worth retrying
+            print(f"[backend] evidence {kind} of {eid} not delivered ({self._status}, {tries + 1} tries); kept in {path.parent}")
+            return
+        with self.cv:  # behind the others, so one event that never arrives does not block the rest
+            self.evidence.append([eid, kind, path, tries + 1, time.time() + EVIDENCE_RETRY_S])
+
     def post_frames(self, session: str, t_s: float, jpgs: dict[str, bytes]) -> None:
         """Camera frames for the dashboard (raw / annotated JPEG); an unsent older set is replaced."""
         if not self.base:
@@ -115,7 +161,7 @@ class BackendClient:
         end = time.time() + timeout
         while time.time() < end:
             with self.cv:
-                if not self.events and not (self.buffer and not self.degraded):
+                if not self.events and not (self.buffer and not self.degraded) and not self.evidence:
                     break
             time.sleep(0.05)
         self._stop = True
@@ -128,13 +174,14 @@ class BackendClient:
     def buffered(self) -> int:
         return len(self.buffer)
 
-    def _post(self, path: str, body, method: str = "POST", content_type: str = "application/json") -> bool:
+    def _post(self, path: str, body, method: str = "POST", content_type: str = "application/json",
+              timeout: float | None = None) -> bool:
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         req = urllib.request.Request(self.base + path, data=data, method=method,
                                      headers={"Content-Type": content_type,
                                               "Authorization": f"Bearer {self.token}"})
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as r:
                 r.read()
             self._status = 200
             self.ok += 1
@@ -216,13 +263,16 @@ class BackendClient:
             with self.cv:
                 while (not self.events and self.states is None and self.frames is None and not self._stop
                        and not (self.buffer and time.time() >= self._retry_at)
-                       and not (self.signals is not None and time.time() >= self._sig_retry_at)):
+                       and not (self.signals is not None and time.time() >= self._sig_retry_at)
+                       and not (self._evidence_due() and not self.degraded)):
                     self.cv.wait(0.5)
                 has_events = bool(self.events) or bool(self.buffer and time.time() >= self._retry_at)
-                st, fr, sig = None, None, None
+                st, fr, sig, evi = None, None, None, False
                 if not has_events:
                     if self.signals is not None and time.time() >= self._sig_retry_at:
                         sig, self.signals = self.signals, None
+                    elif self._evidence_due() and not self.degraded:
+                        evi = True
                     else:
                         st, self.states = self.states, None
                         if st is None:
@@ -240,6 +290,8 @@ class BackendClient:
                         if newer is not None:
                             self._merge_signals(newer)
                     self._sig_retry_at = time.time() + SIGNAL_RETRY_S
+            elif evi:
+                self._send_evidence()
             elif st is not None:
                 self._post("/api/live/state", st)
             elif fr is not None:

@@ -15,6 +15,16 @@
          POST /api/live/signals as they arrive, stamped with CARLA's sim time (the vehicles' t_s
          clock), and saved as <session>/traffic_lights.json; with --red-light (or the profile's
          red_light module) the red-light rule runs on them (signals.LiveSignalLog)
+      -> zones drawn in the dashboard (zone_watch.py, off with --no-zone-watch): the backend's zone file
+         for the map (backend/data/zones/<map>.json) is loaded at start and re-read when it changes
+         (checked every 2 s), so saved, edited or deleted zones apply without a restart
+      -> pedestrians (people.py, --people auto|on|off): while a crosswalk is near the view (auto), a second
+         detector (full_train, pedestrian / people) with its own tracker and kinematics; its rows join
+         the vehicles' with ids offset, for the zebra rules F2 / F3 / F5
+      -> evidence (evidence.py, off with --no-evidence): a snapshot at each flagged event and a clip
+         from 6 s before to 4 s after it, from the processed frames with the event's vehicles marked;
+         saved as <session>/evidence/<event_id>_snap.jpg / .webm and uploaded to
+         POST /api/live/events/{event_id}/evidence (the Violations page shows them)
 
 Frames that arrive while one is being processed are dropped (latest-frame-wins), so latency stays
 bounded when the GPU is slower than the camera; --all-frames processes every frame instead
@@ -55,6 +65,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cv2  # noqa: E402
 
 from backend_client import BackendClient  # noqa: E402
+from evidence import EvidenceRecorder  # noqa: E402
+from people import PEOPLE_ID_OFFSET, PeoplePath, merge_batches  # noqa: E402
+from zone_watch import ZONE_DIR, ZoneWatcher  # noqa: E402
 from transport import DEFAULT_PORT, FrameReceiver  # noqa: E402
 from ground_coords import centre_dz  # noqa: E402
 
@@ -139,7 +152,14 @@ def frame_jpegs(img, boxes, width: int, quality: int = 75) -> dict[str, bytes]:
     `width`. boxes: (cx, cy, w, h, label, state) in source pixels."""
     k = min(1.0, width / img.shape[1])
     raw = cv2.resize(img, (round(img.shape[1] * k), round(img.shape[0] * k)), interpolation=cv2.INTER_AREA) if k < 1 else img
-    ann = raw.copy()
+    ann = draw_boxes(raw, boxes, k)
+    enc = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    return {kind: cv2.imencode(".jpg", im, enc)[1].tobytes() for kind, im in (("raw", raw), ("annotated", ann))}
+
+
+def draw_boxes(img, boxes, k: float):
+    """A copy of img (the source frame scaled by k) with the boxes (cx, cy, w, h, label, state; source pixels)."""
+    ann = img.copy()
     for cx, cy, w, h, label, state in boxes:
         c = STATE_BGR.get(state, STATE_BGR["ok"])
         x0, y0, x1, y1 = (round(v * k) for v in (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2))
@@ -147,8 +167,7 @@ def frame_jpegs(img, boxes, width: int, quality: int = 75) -> dict[str, bytes]:
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
         cv2.rectangle(ann, (x0, y0 - th - 4), (x0 + tw + 4, y0), c, -1)
         cv2.putText(ann, label, (x0 + 2, y0 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
-    enc = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
-    return {kind: cv2.imencode(".jpg", im, enc)[1].tobytes() for kind, im in (("raw", raw), ("annotated", ann))}
+    return ann
 
 
 def event_dict(e, session: str, provisional: bool) -> dict:
@@ -175,13 +194,21 @@ def main() -> None:
     ap.add_argument("--no-relink", action="store_true")
     ap.add_argument("--scene", type=Path, default=None, help="Lane map (default: configs/scenes/<map>.json)")
     ap.add_argument("--zones", type=Path, default=None, help="Extra zones / scenario log (as run_violations.py)")
-    ap.add_argument("--profile", type=Path, default=None)
+    ap.add_argument("--profile", type=Path, default=Path("default"),
+                    help="Profile: a file or a name in configs/profiles/ (default: 'default', the one the dashboard's "
+                         "Configuration > Thresholds saves; read at start). 'none' = rules.DEFAULTS only")
     ap.add_argument("--params", type=Path, default=None)
     ap.add_argument("--flat-ground", action="store_true")
     ap.add_argument("--red-light", action="store_true", help="Run the red-light rule on the streamed traffic lights")
     ap.add_argument("--state-hz", type=float, default=10.0)
     ap.add_argument("--frame-hz", type=float, default=10.0, help="Raw + annotated frames to the dashboard per s (0: off)")
     ap.add_argument("--frame-width", type=int, default=960, help="Width of the frames sent to the dashboard")
+    ap.add_argument("--people", choices=["auto", "on", "off"], default="auto",
+                    help="Pedestrian detector for the zebra rules F2 / F3 / F5: auto = only while a crosswalk is near the view")
+    ap.add_argument("--people-imgsz", type=int, default=None, help="People detector input size (default pedestrians.PEOPLE_IMGSZ)")
+    ap.add_argument("--no-evidence", action="store_true", help="No snapshot / clip per flagged event")
+    ap.add_argument("--no-zone-watch", action="store_true",
+                    help="Do not load / follow the dashboard's zone file for the map (backend/data/zones/<map>.json)")
     ap.add_argument("--session", default=None, help="Session id (default live_<date>_<time>)")
     ap.add_argument("--out", type=Path, default=LIVE_RESULTS)
     ap.add_argument("--clock-offset", type=float, default=0.0,
@@ -189,6 +216,8 @@ def main() -> None:
     ap.add_argument("--resume", action="store_true", help="Session folder exists (watchdog restart): append to its files")
     ap.add_argument("--once", action="store_true", help="Exit after the first source ends (default: wait for the next)")
     args = ap.parse_args()
+    if str(args.profile).lower() == "none":
+        args.profile = None
 
     from kinematics import edge_mask
     from online import LAG_S, IncrementalEngine, LiveCamera, OnlineKinematics
@@ -214,19 +243,35 @@ def main() -> None:
         rx.wait_signals(5.0)
         hello_lights = next((m["lights"] for m in list(rx.signals) if m.get("lights")), None)
     engine, surface, scene_path = build_engine(args, hello.get("map", ""), session, hello_lights, sig_log)
+    zw = None if args.no_zone_watch else ZoneWatcher(ZONE_DIR / f"{Path(scene_path).stem}.json", engine.scene)
+    if zw is not None:
+        zw.poll(force=True)
     cam = LiveCamera(hello["width"], hello["height"], hello.get("fov", 90.0), float(hello.get("ground_z", 0.0)))
     lag = LAG_S if args.lag is None else args.lag
     kin = OnlineKinematics(lag_s=lag, mode=args.kin, relink=not args.no_relink)
     ie = IncrementalEngine(engine)
+    people = None
+    if args.people != "off":
+        from pedestrians import PEOPLE_IMGSZ
+        people = PeoplePath(engine.scene.zones, lag, args.kin, not args.no_relink, imgsz=args.people_imgsz or PEOPLE_IMGSZ,
+                            always=args.people == "on")
+        if people.available:
+            people.warm_up()
+            print(f"[live] people detector on ({args.people}, imgsz {people.tracker.imgsz}, {len(people.gate.crossings)} crosswalks)")
+        else:
+            print("[live] people detector off: the scene has no crosswalk")
+            people = None
     backend = BackendClient(args.backend, spool_path=out / "backend_spool.jsonl")
+    evid = None if args.no_evidence else EvidenceRecorder(out / "evidence", draw_boxes, on_ready=backend.post_evidence)
     gpu = GpuSampler()
     gpu.start()
     (out / "run_config.json").write_text(json.dumps({
         "date": datetime.datetime.now().isoformat(timespec="seconds"), "command": " ".join(sys.argv),
         "hello": hello_log, "weights": str(args.weights), "imgsz": args.imgsz, "conf": DETECT_CONF,
         "tracker": tracker_cfg, "skip": args.skip, "all_frames": args.all_frames, "kin": args.kin, "lag_s": lag,
-        "relink": not args.no_relink, "scene": scene_path, "zones": str(args.zones), "profile": str(args.profile),
-        "road_surface": surface is not None, "backend": args.backend}, indent=1))
+        "relink": not args.no_relink, "scene": scene_path, "zones": str(args.zones), "zone_file": str(zw.path) if zw else None, "profile": str(args.profile),
+        "road_surface": surface is not None, "backend": args.backend,
+        "people": args.people if people is not None else "off", "people_imgsz": people.tracker.imgsz if people is not None else None}, indent=1))
 
     mode = "a" if args.resume else "w"
     ev_file = open(out / "events.jsonl", mode)
@@ -293,6 +338,8 @@ def main() -> None:
                         recent_flag[tid] = now_wall
                 if phase == "close" or e.status != "suppressed":
                     backend.post_event(d, phase)
+                if evid is not None and e.status != "suppressed":  # once per event: at its flag, or at its close
+                    evid.flag(e.event_id, e.flag_s if e.flag_s is not None else e.start_s, e.track_ids)
                 print(f"[event] {phase:5s} {e.event_id} {e.type} {e.condition} {e.status} tracks={e.track_ids} "
                       f"flag_s={e.flag_s} latency={lat}s")
 
@@ -331,6 +378,8 @@ def main() -> None:
         while True:
             beat()
             drain_signals()
+            if zw is not None:
+                zw.poll()
             if stop_file.exists():
                 print("[live] STOP file found: finishing", flush=True)
                 break
@@ -361,6 +410,7 @@ def main() -> None:
             img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
             t1 = time.perf_counter()
             ms["decode"].append((t1 - t_start) * 1000)
+            cam.set_pose(frame, h["pose"])
             res = model.track(img, persist=True, tracker=tracker_cfg, classes=classes, conf=DETECT_CONF,
                               imgsz=args.imgsz, verbose=False)[0]
             t2 = time.perf_counter()
@@ -374,7 +424,6 @@ def main() -> None:
                 ids = res.boxes.id.cpu().numpy().astype(int)
                 confs = res.boxes.conf.cpu().numpy()
                 clss = res.boxes.cls.cpu().numpy().astype(int)
-                cam.set_pose(frame, h["pose"])
                 u, v = xywh[:, 0], xywh[:, 1]
                 dz = centre_dz(res.names[int(c)].lower() for c in clss)  # buses / trucks: taller box centre
                 g = cam.to_ground_on_roads(frame, u, v, surface, dz) if surface is not None else cam.to_ground(frame, u, v, dz=dz)
@@ -391,7 +440,16 @@ def main() -> None:
                 trk_w.writerow([frame, t, src_of.get(d["tracker_id"], -1), d["tracker_id"], d["cls"],
                                 *(round(float(x), 1) for x in xywh[i]), round(d["conf"], 3),
                                 round(d["x"], 3), round(d["y"], 3), 1])
-            batches = kin.emit(t)
+            p_dets, p_live = [], []
+            if people is not None:
+                tp = time.perf_counter()
+                p_dets, p_live = people.step(frame, t, img, cam, edge_mask)
+                ms["people"].append((time.perf_counter() - tp) * 1000)
+                for d in p_dets:
+                    trk_w.writerow([frame, t, d["track_id"], d["tracker_id"], d["cls"], *(round(float(x), 1) for x in d["xywh"]),
+                                    round(d["conf"], 3), round(d["x"], 3), round(d["y"], 3), 1])
+                live = live + p_live
+            batches = kin.emit(t) if people is None else merge_batches(kin.emit(t), people.emit(t))
             t4 = time.perf_counter()
             ms["kinematics"].append((t4 - t3) * 1000)
             run_engine(batches)
@@ -414,20 +472,33 @@ def main() -> None:
                                    "lane_id": lane, "t_s": s["t_s"],
                                    "state": "flagged" if s["track_id"] in flagged else ("ok" if s["confirmed"] else "checking")})
                 backend.post_states(states)
-            if args.frame_hz > 0 and backend.base and now >= next_frame:
-                period = 1.0 / args.frame_hz
-                next_frame = max(next_frame + period, now - period)
+            post_frame = args.frame_hz > 0 and backend.base and now >= next_frame
+            if post_frame or evid is not None:  # evidence keeps every processed frame
+                if post_frame:
+                    period = 1.0 / args.frame_hz
+                    next_frame = max(next_frame + period, now - period)
                 t6 = time.perf_counter()
                 flagged = ie.open_track_ids() | {k for k, w in recent_flag.items() if now - w < RECENT_FLAG_S}
                 by_id = {s["track_id"]: s for s in live or []}
-                boxes = []
+                boxes, tids = [], []
                 for i, d in enumerate(dets):
                     tid = src_of.get(d["tracker_id"], -1)
                     s = by_id.get(tid)
                     state = "flagged" if tid in flagged else ("ok" if s and s["confirmed"] else "checking")
                     label = f"{tid if tid >= 0 else '?'} {d['cls']}" + (f" {s['speed_kmh']:.0f} km/h" if s else "")
                     boxes.append((*xywh[i], label, state))
-                backend.post_frames(session, t, frame_jpegs(img, boxes, args.frame_width))
+                    tids.append(tid)
+                for d in p_dets:
+                    tid = d["track_id"]
+                    s = by_id.get(tid)
+                    state = "flagged" if tid in flagged else ("ok" if s and s["confirmed"] else "checking")
+                    boxes.append((*d["xywh"], f"ped {tid - PEOPLE_ID_OFFSET if tid >= 0 else '?'}", state))
+                    tids.append(tid)
+                jpgs = frame_jpegs(img, boxes, args.frame_width)
+                if post_frame:
+                    backend.post_frames(session, t, jpgs)
+                if evid is not None:
+                    evid.add_frame(t, jpgs["raw"], boxes, tids, min(1.0, args.frame_width / img.shape[1]))
                 ms["frames_out"].append((time.perf_counter() - t6) * 1000)
             ms["total"].append((time.perf_counter() - t_start) * 1000)
             ms["post_engine"].append((time.perf_counter() - t5) * 1000)
@@ -440,10 +511,12 @@ def main() -> None:
         print("[live] stopping")
     finally:
         drain_signals(force_write=True)
-        run_engine(kin.flush())
+        run_engine(kin.flush() if people is None else merge_batches(kin.flush(), people.flush()))
         opened, closed = ie.finish()
         handle(opened, closed, time.time())
         elapsed = time.time() - (first_wall or time.time())
+        if evid is not None:
+            evid.finish()  # the clips still waiting, then their uploads go out with the backend's last posts
         backend.close()
         gpu.stop = True
         ev_file.close()
@@ -472,6 +545,11 @@ def main() -> None:
             "backend_posts_ok": backend.ok, "backend_posts_failed": backend.failed,
             "backend_events_dropped": backend.dropped, "backend_events_buffered_at_exit": backend.buffered,
             "events_final": len(final_events), "kinematics_stats": dict(kin.stats),
+            "zone_reloads": zw.reloads if zw is not None else None,
+            "people": ({"frames_detected": people.frames_on, "kinematics_stats": dict(people.kin.stats)}
+                       if people is not None else None),
+            "evidence": ({**evid.made, "failed": evid.failed, "uploaded": backend.evidence_ok,
+                          "upload_failed": backend.evidence_failed} if evid is not None else None),
             "gpu_util_pct": stats([s[0] for s in gpu.samples]), "gpu_mem_mib": stats([s[1] for s in gpu.samples]),
         }
         (out / "summary.json").write_text(json.dumps(summary, indent=1))

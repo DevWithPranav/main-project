@@ -167,6 +167,28 @@ class Speeding(unittest.TestCase):
         fn = (lambda t: (-150 + kmh(45) * t, 0), 10.0)
         self.assertEqual(len(counted(run(sc, track(fn)), "speeding")), 1)
 
+    @staticmethod
+    def run_max(sc, rows, max_kmh):
+        return counted(Engine(sc, {"speeding": {"max_speed_kmh": max_kmh}}).run(rows), "speeding")
+
+    def test_max_speed_replaces_lane_limit(self):
+        """max_speed_kmh 30: 45 km/h on a 50 km/h lane is speeding, against the max."""
+        ev = self.run_max(self.sc, track((lambda t: (-150 + kmh(45) * t, 0), 10.0)), 30)
+        self.assertEqual(len(ev), 1)
+        self.assertEqual((ev[0].value["limit_kmh"], ev[0].value["limit_source"]), (30.0, "max_speed"))
+
+    def test_max_speed_above_lane_limit_allows_more(self):
+        """max_speed_kmh 90 instead of the lane's 50: 70 km/h is no longer speeding; 0 = lane limits again."""
+        rows = track((lambda t: (-150 + kmh(70) * t, 0), 10.0))
+        self.assertEqual(self.run_max(self.sc, rows, 90), [])
+        self.assertEqual(len(self.run_max(self.sc, rows, 0)), 1)
+
+    def test_speed_zone_beats_max_speed(self):
+        sc = scene(zones=[{"id": "school", "type": "speed", "polygon": rect(-200, 200, -2, 2), "limit_kmh": 30}])
+        ev = self.run_max(sc, track((lambda t: (-150 + kmh(45) * t, 0), 10.0)), 90)
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0].value["limit_source"], "zone")
+
 
 class UTurn(unittest.TestCase):
     sc = scene(zones=[{"id": "nou", "type": "no_u_turn", "polygon": rect(-20, 20, -2, 6)}])
@@ -252,6 +274,56 @@ class Zebra(unittest.TestCase):
         evs = [e for e in run(self.sc, car, ahead) if e.type == "zebra_crossing"]
         self.assertEqual([e for e in evs if e.status in COUNTED_STATUS], [])
         self.assertTrue(any("queue" in e.tags for e in evs))
+
+    @staticmethod
+    def relabel_after(rows, t, tid):
+        """The tracker gives the car a new ID from time t on (as it pulls away)."""
+        for r in rows:
+            if r["time_s"] >= t:
+                r["track_id"] = tid
+        return rows
+
+    def test_two_short_stops_on_one_spot_with_id_switch_on_leaving(self):
+        """6 s + 6 s, 14 s apart, the first car's ID changing as it pulls away (Town04 live, 2026-10-15): two
+        stops under the 10 s rule, not one 26 s stop."""
+        t_stop = (102 + 40) / kmh(30)
+        first = self.relabel_after(track(drive_stop_leave(102, 0, 6), tid=1), t_stop + 5.0, 3)
+        second = track(drive_stop_leave(102, 0, 6), tid=2, t0=6.0 + 14.0)
+        self.assertEqual(counted(run(self.sc, first, second), "zebra_crossing"), [])
+
+    def test_car_lost_on_the_spot_then_next_car_drives_in(self):
+        """The first car's track ends on the crossing (not followed as it left); 17 s later the next car drives
+        onto the same spot: two 6 s stops, not one (Town04 live 2026-10-15, event 0024)."""
+        t_stop = (102 + 40) / kmh(30)
+        # cut out of a longer stop: rows smoothed with the pull-away still ahead would read as leaving
+        first = [r for r in track(drive_stop_leave(102, 0, 20), tid=1) if r["time_s"] <= t_stop + 6.0]
+        second = track(drive_stop_leave(102, 0, 6), tid=2, t0=6.0 + 14.0)
+        self.assertEqual(counted(run(self.sc, first, second), "zebra_crossing"), [])
+
+    def test_parked_car_hidden_then_refound_still_bridged(self):
+        """keep_s's purpose (tree crown, Town03 2026-10-10): 8 s seen, 12 s hidden, then the same standing car
+        under a new ID for 8 s: never drove in, so one stop."""
+        t_stop = (102 + 40) / kmh(30)
+        rows = track(drive_stop_leave(102, 0, 28), tid=1)
+        seen = [r for r in rows if r["time_s"] <= t_stop + 8.0]
+        refound = [dict(r, track_id=2) for r in rows if t_stop + 20.0 <= r["time_s"] <= t_stop + 28.0]
+        ev = counted(run(self.sc, seen, refound), "zebra_crossing")
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0].track_ids, [1, 2])
+
+    def test_id_switch_while_stopped_still_bridged(self):
+        """The place memory's purpose stays: a 16 s stop whose ID changes at 8 s is one event with both IDs."""
+        t_stop = (102 + 40) / kmh(30)
+        rows = self.relabel_after(track(drive_stop_leave(102, 0, 16), tid=1), t_stop + 8.0, 2)
+        ev = counted(run(self.sc, rows), "zebra_crossing")
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0].track_ids, [1, 2])
+
+    def test_car_crossing_the_spot_before_the_stop_does_not_vacate_it(self):
+        """A car that drove over the spot just before another stopped there, now driving on, ends nothing."""
+        passer = track(drive_stop_leave(102, 0, 0.0, x_start=-30), tid=2)  # over the spot ~1 s before the stopper
+        stopper = track(drive_stop_leave(102, 0, 15), tid=1)
+        self.assertEqual(len(counted(run(self.sc, stopper, passer), "zebra_crossing")), 1)
 
 
 class HighwayStop(unittest.TestCase):

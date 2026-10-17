@@ -23,8 +23,9 @@ router = APIRouter()
 HOTSPOT_CELL_M = 25.0  # hotspot grid cell; about one junction / road segment in CARLA towns
 
 
-async def filtered(db: AsyncSession, f: EventFilters, limit: int | None = None, offset: int = 0) -> list[Event]:
-    q = f.apply(base_query()).offset(offset)
+async def filtered(db: AsyncSession, f: EventFilters, limit: int | None = None, offset: int = 0,
+                   newest_first: bool = False) -> list[Event]:
+    q = f.apply(base_query(newest_first)).offset(offset)
     if limit is not None:
         q = q.limit(limit)
     return list((await db.execute(q)).scalars())
@@ -32,10 +33,11 @@ async def filtered(db: AsyncSession, f: EventFilters, limit: int | None = None, 
 
 @router.get("/events")
 async def list_events(f: EventFilters = Depends(event_filters), limit: int = Query(200, ge=1, le=5000),
-                      offset: int = Query(0, ge=0), db: AsyncSession = Depends(get_db),
-                      _: Principal = Depends(current_user)):
+                      offset: int = Query(0, ge=0),
+                      order: str = Query("asc", pattern="^(asc|desc)$", description="by occurred_at; desc = newest first"),
+                      db: AsyncSession = Depends(get_db), _: Principal = Depends(current_user)):
     total = (await db.execute(f.apply(select(func.count()).select_from(Event)))).scalar_one()
-    return {"total": total, "items": [to_api(r) for r in await filtered(db, f, limit, offset)]}
+    return {"total": total, "items": [to_api(r) for r in await filtered(db, f, limit, offset, order == "desc")]}
 
 
 @router.get("/events/{event_id}")

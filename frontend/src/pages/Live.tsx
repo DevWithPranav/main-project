@@ -7,13 +7,13 @@
 // video (else the raw one) plays it drives t and the other follows; a slider seek moves both.
 
 import { ActionIcon, Alert, Badge, Button, Card, Grid, Group, Loader, Progress, ScrollArea, SegmentedControl, Select, Slider, Stack, Text, Title } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
+import { notifications, notificationsStore } from '@mantine/notifications';
 import { IconMap, IconPlayerPause, IconPlayerPlay, IconPlayerSkipBack } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, keepMediaUrl, openLive, tokenStore, type LiveStatus } from '../api';
-import { eventTime, isAnomaly, type SessionVideo, type TrafficEvent, type VehicleState, type VideoKind } from '../api/types';
+import { eventTime, HIDDEN_VIOLATION_TYPES, isAnomaly, type SessionVideo, type TrafficEvent, type VehicleState, type VideoKind } from '../api/types';
 import { useAuth } from '../auth';
 import EventDrawer from '../components/EventDrawer';
 import LaneMap, { type MapPoint, type Trail } from '../components/LaneMap';
@@ -31,6 +31,10 @@ const MANTINE_HEX: Record<string, string> = {
 const hex = (c: string | undefined) => MANTINE_HEX[c ?? 'gray'] ?? c ?? '#868e96';
 const TRAIL_S = 3; // trail length, seconds (same as the twin)
 const SHOW_MAP_AND_EVENTS = false; // map + event feed hidden on this page (docs/Live_Page_Changes.md)
+const SHOW_SERVICE_BADGES = false; // db / redis / s3 status tags hidden (docs/Live_Page_Changes.md)
+const DEFAULT_TOWN = 'Town04'; // map shown when the session carries no town (live sessions), unless ?town= says otherwise
+const VIOLATION_NOTE_ID = 'live-violation'; // one violation pop-up at a time: a new event replaces it
+const SHOW_RAW_SUBTITLE = false; // "as received by the detector" under the camera panel hidden (docs/Live_Page_Changes.md)
 
 function Health() {
   const q = useQuery({ queryKey: ['health'], queryFn: api.health, refetchInterval: 10_000 });
@@ -38,7 +42,7 @@ function Health() {
   return (
     <Group gap={4}>
       {Object.entries(q.data ?? {}).map(([k, v]) =>
-        typeof v === 'string' ? (
+        SHOW_SERVICE_BADGES && typeof v === 'string' ? (
           <Badge key={k} color={v === 'ok' ? 'green' : 'red'} variant="light" title={v}>{k}</Badge>
         ) : null,
       )}
@@ -148,7 +152,7 @@ export default function LivePage() {
   const sid = sp.get('session');
   const setSid = (v: string | null) => setSp(v ? { session: v } : {}, { replace: true });
   const setTown = (v: string | null) => setSp({ ...(sid ? { session: sid } : {}), ...(v ? { town: v } : {}) }, { replace: true });
-  const [mode, setMode] = useState<'replay' | 'live'>('replay');
+  const [mode, setMode] = useState<'replay' | 'live'>('live'); // opens on Live (was Replay, docs/Live_Page_Changes.md)
   const [selected, setSelected] = useState<TrafficEvent | null>(null);
   useEffect(() => {
     if (!sid && sessions.data?.length) setSid(sessions.data[0].session_id);
@@ -158,7 +162,7 @@ export default function LivePage() {
   const scenes = useQuery({ queryKey: ['scenes'], queryFn: api.scenes, staleTime: Infinity });
   const townNames = (scenes.data ?? []).map((x) => (typeof x === 'string' ? x : String(x.town ?? x.scene ?? x.name ?? ''))).filter(Boolean);
   const ownTown = sessionTown(session);
-  const fallbackTown = sp.get('town') ?? sessionTown(sessions.data?.find((x) => sessionTown(x))) ?? townNames[0] ?? null;
+  const fallbackTown = sp.get('town') ?? (townNames.includes(DEFAULT_TOWN) ? DEFAULT_TOWN : null) ?? sessionTown(sessions.data?.find((x) => sessionTown(x))) ?? townNames[0] ?? null;
   // a real clip (source video) is in its own site's metres: its map comes with the session, not a town
   const isVideo = session?.source === 'video';
   const town = isVideo ? null : ownTown ?? fallbackTown;
@@ -289,7 +293,12 @@ export default function LivePage() {
       } else if (m.type === 'event') {
         setLiveEvents((l) => [m.event, ...l.filter((e) => e.event_id !== m.event.event_id)].slice(0, 200));
         qc.invalidateQueries({ queryKey: ['events'] });
-        notifications.show({ color: isAnomaly(m.event) ? 'lime' : 'red', title: typeLabel(m.event.type), message: eventSummary(m.event), autoClose: 4000 });
+        if (HIDDEN_VIOLATION_TYPES.has(m.event.type)) return;
+        const note = { id: VIOLATION_NOTE_ID, color: isAnomaly(m.event) ? 'lime' : 'red', title: typeLabel(m.event.type), message: eventSummary(m.event), autoClose: 4000 };
+        const st = notificationsStore.getState();
+        if ([...st.notifications, ...st.queue].some((n) => n.id === VIOLATION_NOTE_ID)) notifications.update(note);
+        // closing it (x, or its timer) clears every notification on screen and in the queue
+        else notifications.show({ ...note, onClose: () => notifications.clean() });
       }
     }, setStatus);
   }, [mode, sid]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -383,7 +392,7 @@ export default function LivePage() {
                 <Group justify="space-between" mb={6}>
                   <Text fw={600}>{KIND_TITLE[kind]}</Text>
                   <Text size="xs" c="dimmed">
-                    {mode === 'live' ? (kind === 'raw' ? 'as received by the detector' : 'detections, track IDs, km/h, rule state')
+                    {mode === 'live' ? (kind === 'raw' ? (SHOW_RAW_SUBTITLE ? 'as received by the detector' : '') : 'detections, track IDs, km/h')
                       : readyInfo(q.data) ? `${q.data?.source}${master?.info === q.data ? ', leads the clock' : ', synced'}` : ''}
                   </Text>
                 </Group>

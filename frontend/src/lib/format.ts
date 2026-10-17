@@ -48,10 +48,12 @@ export function conditionIndex(conditions: Condition[] | undefined): Map<string,
   return new Map((conditions ?? []).map((c) => [c.id, c]));
 }
 
+const SHOW_CONDITION_IDS = false; // "B1 · " prefix hidden in condition labels (docs/Live_Page_Changes.md)
+
 export function conditionLabel(id: string | null | undefined, idx: Map<string, Condition>): string {
   if (!id) return '—';
   const c = idx.get(id);
-  return c ? `${id} · ${c.name}` : id;
+  return c ? (SHOW_CONDITION_IDS ? `${id} · ${c.name}` : c.name) : id;
 }
 
 /** Sim/flight seconds as m:ss.s (events carry sim time, not wall-clock). */
